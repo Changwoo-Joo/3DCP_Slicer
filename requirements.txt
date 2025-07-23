@@ -4,3 +4,4 @@ trimesh
 plotly
 numpy-stl
 chardet
+scipy
