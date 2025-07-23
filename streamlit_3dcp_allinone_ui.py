@@ -230,7 +230,8 @@ if uploaded:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
             tmp.write(stl_bytes)
             mesh = trimesh.load_mesh(tmp.name)
-
+        if isinstance(mesh, trimesh.Scene):  # 추가
+            mesh = mesh.dump().sum()         # 추가
         gcode = generate_gcode(
             mesh,
             z_int=z_int,
