@@ -1,0 +1,6 @@
+streamlit
+numpy
+trimesh
+plotly
+numpy-stl
+chardet
