@@ -225,13 +225,22 @@ if uploaded:
         auto_start = st.checkbox("이전 레이어 시작점에 가깝게 시작")
         m30_on = st.checkbox("M30 명령 추가")
 
-    if st.button("🚀 G-code 생성"):
-        stl_bytes = save_stl_bytes(stl_mesh)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
-            tmp.write(stl_bytes)
+if st.button("🚀 G-code 생성"):
+    stl_bytes = save_stl_bytes(stl_mesh)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+        tmp.write(stl_bytes)
+        tmp.flush()
+
+        # ✅ Trimesh 로드 및 검증
+        try:
             mesh = trimesh.load_mesh(tmp.name)
-        if isinstance(mesh, trimesh.Scene):  # 추가
-            mesh = mesh.dump().sum()         # 추가
+            if isinstance(mesh, trimesh.Scene):
+                mesh = mesh.dump().sum()
+            if not isinstance(mesh, trimesh.Trimesh) or mesh.bounds is None:
+                raise ValueError("유효하지 않은 Trimesh 객체입니다.")
+        except Exception as e:
+            st.error(f"❌ STL 메쉬 로드 중 오류 발생: {e}")
+            st.stop()
         gcode = generate_gcode(
             mesh,
             z_int=z_int,
