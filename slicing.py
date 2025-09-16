@@ -3,13 +3,13 @@ import numpy as np
 import trimesh
 import tempfile
 import plotly.graph_objects as go
-from typing import List
+from typing import List, Tuple
 
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 st.title("3DCP Slicer")
 
 # -----------------------
-# Geometry helpers
+# Geometry helpers (연산식 그대로 유지)
 # -----------------------
 def trim_segment_end(segment, trim_distance=30.0):
     segment = np.array(segment)
@@ -42,7 +42,7 @@ def shift_to_nearest_start(segment, ref_point):
     return np.concatenate([segment[idx:], segment[1:idx + 1]], axis=0), segment[idx]
 
 # -----------------------
-# G-code generator
+# G-code generator (연산식 그대로 유지)
 # -----------------------
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -115,7 +115,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # -----------------------
-# Slice path computation (for preview)
+# Slice path computation (미리보기용)
 # -----------------------
 def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
                         trim_dist=30.0, min_spacing=3.0, auto_start=False,
@@ -127,7 +127,7 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
     z_values.append(z_max + 0.01)
 
     prev_start_xy = None
-    paths = []
+    paths: List[Tuple[np.ndarray, np.ndarray | None]] = []
     for z in z_values:
         sec = mesh.section(plane_origin=[0,0,z], plane_normal=[0,0,1])
         if sec is None:
@@ -158,7 +158,6 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
             trimmed    = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
 
-            # E 값 누적 계산
             if e_on:
                 extrusion_k = 0.05
                 e_values = [0.0]
@@ -176,9 +175,9 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
     return paths
 
 # -----------------------
-# Plotly visualizations
+# Plotly 시각화
 # -----------------------
-def plot_trimesh(mesh: trimesh.Trimesh) -> go.Figure:
+def plot_trimesh(mesh: trimesh.Trimesh, height=720) -> go.Figure:
     v = mesh.vertices
     f = mesh.faces
     fig = go.Figure(data=[go.Mesh3d(
@@ -186,10 +185,10 @@ def plot_trimesh(mesh: trimesh.Trimesh) -> go.Figure:
         i=f[:,0], j=f[:,1], k=f[:,2],
         opacity=0.6, flatshading=True
     )])
-    fig.update_layout(scene=dict(aspectmode="data"))
+    fig.update_layout(scene=dict(aspectmode="data"), height=height, margin=dict(l=0, r=0, t=10, b=0))
     return fig
 
-def plot_paths(paths: List, e_on=False) -> go.Figure:
+def plot_paths(paths: List[Tuple[np.ndarray, np.ndarray | None]], e_on=False, height=720) -> go.Figure:
     fig = go.Figure()
     for poly, e_vals in paths:
         if e_on and e_vals is not None:
@@ -208,15 +207,18 @@ def plot_paths(paths: List, e_on=False) -> go.Figure:
                 line=dict(width=3),
                 showlegend=False
             ))
-    fig.update_layout(scene=dict(aspectmode="data"))
+    fig.update_layout(scene=dict(aspectmode="data"), height=height, margin=dict(l=0, r=0, t=10, b=0))
     return fig
 
 # -----------------------
-# Layout
+# 레이아웃: 왼쪽(좁게) / 오른쪽(큼직하게)
 # -----------------------
-col_left, col_right = st.columns([0.4, 0.6])
+left, right = st.columns([0.25, 0.75])  # 왼쪽 좁게, 오른쪽 크게
 
-with col_left:
+with left:
+    # 업로더를 최상단에
+    uploaded = st.file_uploader("Upload STL", type=["stl"])
+
     st.header("Parameters")
     z_int        = st.number_input("Z interval (mm)",  1.0, 1000.0, 15.0)
     feed         = st.number_input("Feedrate (F)",     1,    100000, 2000)
@@ -235,42 +237,88 @@ with col_left:
     auto_start   = st.checkbox("Start next layer near previous start")
     m30_on       = st.checkbox("Append M30 at end", value=False)
 
-    uploaded = st.file_uploader("Upload STL", type=["stl"])
+    # 버튼 폭 동일: 두 컬럼으로 정렬
+    bcol1, bcol2 = st.columns(2)
+    slice_clicked = bcol1.button("슬라이싱", use_container_width=True)
+    gen_clicked   = bcol2.button("G-code 생성", use_container_width=True)
 
-    mesh = None
+    if "mesh" not in st.session_state:
+        st.session_state.mesh = None
+    if "paths" not in st.session_state:
+        st.session_state.paths = None
+    if "gcode_text" not in st.session_state:
+        st.session_state.gcode_text = None
+
+    # STL 로드
     if uploaded is not None:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
             tmp.write(uploaded.read())
             tmp_path = tmp.name
         mesh = trimesh.load_mesh(tmp_path)
+        if not isinstance(mesh, trimesh.Trimesh):
+            st.error("STL must contain a single mesh")
+            st.stop()
+        # Z 축 미세 확장 (기존 로직)
         scale_matrix = np.eye(4)
         scale_matrix[2, 2] = 1.0000001
         mesh.apply_transform(scale_matrix)
-        st.success("STL loaded")
+        st.session_state.mesh = mesh
 
-        if st.button("슬라이싱"):
-            paths = compute_slice_paths(mesh, z_int, (ref_x, ref_y),
-                                        trim_dist, min_spacing, auto_start, e_on)
-            st.session_state.paths = paths
-            st.success("Slicing complete")
+    # 동작
+    if slice_clicked and st.session_state.mesh is not None:
+        paths = compute_slice_paths(
+            st.session_state.mesh,
+            z_int=z_int,
+            ref_pt_user=(ref_x, ref_y),
+            trim_dist=trim_dist,
+            min_spacing=min_spacing,
+            auto_start=auto_start,
+            e_on=e_on
+        )
+        st.session_state.paths = paths
+        st.success("Slicing complete")
 
-        if st.button("G-code 생성"):
-            gcode_text = generate_gcode(mesh, z_int, feed, (ref_x, ref_y),
-                                        e_on, start_e_on, start_e_val,
-                                        e0_on, trim_dist, min_spacing,
-                                        auto_start, m30_on)
-            st.session_state.gcode_text = gcode_text
-            st.success("G-code ready")
+    if gen_clicked and st.session_state.mesh is not None:
+        gcode_text = generate_gcode(
+            st.session_state.mesh,
+            z_int=z_int,
+            feed=feed,
+            ref_pt_user=(ref_x, ref_y),
+            e_on=e_on,
+            start_e_on=start_e_on,
+            start_e_val=start_e_val,
+            e0_on=e0_on,
+            trim_dist=trim_dist,
+            min_spacing=min_spacing,
+            auto_start=auto_start,
+            m30_on=m30_on
+        )
+        st.session_state.gcode_text = gcode_text
+        st.success("G-code ready")
 
-        if "gcode_text" in st.session_state:
-            st.download_button("G-code 저장", st.session_state.gcode_text,
-                               file_name="output.gcode", mime="text/plain")
+    if st.session_state.get("gcode_text"):
+        st.download_button("G-code 저장", st.session_state.gcode_text,
+                           file_name="output.gcode", mime="text/plain", use_container_width=True)
 
-with col_right:
-    if uploaded is not None and mesh is not None:
-        st.subheader("STL Preview")
-        st.plotly_chart(plot_trimesh(mesh), use_container_width=True)
+with right:
+    # 탭으로 큰 뷰어 3개 구성 (필요한 것만 표시)
+    tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-code Viewer"])
 
-        if "paths" in st.session_state:
-            st.subheader("Sliced Paths (3D)")
-            st.plotly_chart(plot_paths(st.session_state.paths, e_on), use_container_width=True)
+    with tab_stl:
+        if st.session_state.get("mesh") is not None:
+            st.plotly_chart(plot_trimesh(st.session_state.mesh, height=780), use_container_width=True)
+        else:
+            st.info("STL을 업로드하세요.")
+
+    with tab_paths:
+        if st.session_state.get("paths") is not None:
+            st.plotly_chart(plot_paths(st.session_state.paths, e_on=e_on, height=780), use_container_width=True)
+        else:
+            st.info("슬라이싱을 실행하세요.")
+
+    with tab_gcode:
+        if st.session_state.get("gcode_text"):
+            # 코드 뷰어: 라인 넘버 포함
+            st.code(st.session_state.gcode_text, language="gcode")
+        else:
+            st.info("G-code를 생성하세요.")
