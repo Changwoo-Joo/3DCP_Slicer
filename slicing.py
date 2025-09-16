@@ -291,7 +291,7 @@ m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 # 버튼 동일 폭
 b1, b2 = st.sidebar.columns(2)
 slice_clicked = b1.button("슬라이싱", use_container_width=True)
-gen_clicked   = b2.button("G-code생성", use_container_width=True)
+gen_clicked   = b2.button("G코드생성", use_container_width=True)
 
 # =========================
 # Load mesh on upload
