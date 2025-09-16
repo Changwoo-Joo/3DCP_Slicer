@@ -346,7 +346,7 @@ if gen_clicked and st.session_state.mesh is not None:
 
 if st.session_state.get("gcode_text"):
     st.sidebar.download_button(
-        "G-code 저장",
+        "Save G-code",
         st.session_state.gcode_text,
         file_name="output.gcode",
         mime="text/plain",
