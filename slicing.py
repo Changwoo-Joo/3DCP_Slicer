@@ -289,7 +289,6 @@ auto_start   = st.sidebar.checkbox("Start next layer near previous start")
 m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
 # 버튼 동일 폭
-b1, b2 = st.sidebar.columns(2)
 slice_clicked = b1.button("Slicing", use_container_width=True)
 gen_clicked   = b2.button("G-Code", use_container_width=True)
 
