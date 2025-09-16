@@ -3,7 +3,7 @@ import numpy as np
 import trimesh
 import tempfile
 import plotly.graph_objects as go
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 # =========================
 # App basics
@@ -11,11 +11,11 @@ from typing import List, Tuple
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 st.title("3DCP Slicer")
 
-# 압출량 상수 (generate와 preview 일치)
 EXTRUSION_K = 0.05
+PATH_COLOR = "#222222"  # 단색 유지
 
 # =========================
-# Helpers (연산식 그대로 유지)
+# Helpers (연산식 동일)
 # =========================
 def trim_segment_end(segment, trim_distance=30.0):
     segment = np.array(segment)
@@ -123,20 +123,30 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
 # =========================
 # Slice path computation (미리보기용)
-#  - e_on=True면 누적 E 배열 포함
+#   - e_on=True면 누적 E 포함
+#   - 레이어 간 travel(점선) 포함
+# 리턴: List[ (polyline Nx3, e_values(또는 None), is_travel_bool) ]
 # =========================
-def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
-                        trim_dist=30.0, min_spacing=3.0, auto_start=False,
-                        e_on=False) -> List[Tuple[np.ndarray, np.ndarray | None]]:
+def compute_slice_paths_with_travel(
+    mesh,
+    z_int=30.0,
+    ref_pt_user=(0.0, 0.0),
+    trim_dist=30.0,
+    min_spacing=3.0,
+    auto_start=False,
+    e_on=False
+) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
     z_values.append(z_max + 0.01)
 
-    prev_start_xy = None
-    paths: List[Tuple[np.ndarray, np.ndarray | None]] = []
+    all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
+    prev_layer_last_end: Optional[np.ndarray] = None
+    prev_layer_first_start: Optional[np.ndarray] = None
 
+    prev_start_xy = None
     for z in z_values:
         sec = mesh.section(plane_origin=[0,0,z], plane_normal=[0,0,1])
         if sec is None:
@@ -146,6 +156,7 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
         except Exception:
             continue
 
+        # 원시 세그먼트 -> 3D
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
@@ -154,6 +165,7 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
         if not segments:
             continue
 
+        # 레이어 내부 순서 조정
         if auto_start and prev_start_xy is not None:
             dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
             first_idx = int(np.argmin(dists))
@@ -162,25 +174,44 @@ def compute_slice_paths(mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
         else:
             ref_pt_layer = np.array(ref_pt_user)
 
+        layer_polys: List[np.ndarray] = []
+
+        # 각 세그먼트 처리
         for i_seg, seg3d in enumerate(segments):
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
             trimmed    = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-
-            if e_on:
-                e_values = [0.0]
-                total = 0.0
-                for p1, p2 in zip(simplified[:-1], simplified[1:]):
-                    dist = np.linalg.norm(p2[:2] - p1[:2])
-                    total += dist * EXTRUSION_K
-                    e_values.append(total)
-                paths.append((simplified, np.array(e_values)))
-            else:
-                paths.append((simplified, None))
-
+            layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
-    return paths
+
+        if not layer_polys:
+            continue
+
+        # === 레이어 간 travel(점선) 추가 ===
+        first_poly_start = layer_polys[0][0]
+        if prev_layer_last_end is not None:
+            travel = np.vstack([prev_layer_last_end, first_poly_start])
+            # travel은 비압출: e_values = [0, 0]
+            all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+
+        # 레이어 내부 폴리라인 추가 (압출 O)
+        for poly in layer_polys:
+            if e_on:
+                e_vals = [0.0]
+                total = 0.0
+                for p1, p2 in zip(poly[:-1], poly[1:]):
+                    dist = np.linalg.norm(p2[:2] - p1[:2])
+                    total += dist * EXTRUSION_K
+                    e_vals.append(total)
+                all_items.append((poly, np.array(e_vals), False))
+            else:
+                all_items.append((poly, None, False))
+
+        prev_layer_last_end = layer_polys[-1][-1]
+        prev_layer_first_start = layer_polys[0][0]
+
+    return all_items
 
 # =========================
 # Plotly: STL & Paths
@@ -191,28 +222,34 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     fig = go.Figure(data=[go.Mesh3d(
         x=v[:,0], y=v[:,1], z=v[:,2],
         i=f[:,0], j=f[:,1], k=f[:,2],
-        opacity=0.6, flatshading=True
+        color="#888888",
+        opacity=0.6,
+        flatshading=True
     )])
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0))
     return fig
 
-def plot_paths(paths: List[Tuple[np.ndarray, np.ndarray | None]], e_on=False, height=820) -> go.Figure:
+def plot_paths(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on=False, height=820) -> go.Figure:
     fig = go.Figure()
-    for poly, e_vals in paths:
+    for poly, e_vals, is_travel in items:
         if e_on and e_vals is not None:
-            # 압출 O(ΔE>0) = 실선, 압출 X(ΔE=0) = 점선
+            # 압출 구간(ΔE>0) = 실선 / 이동(ΔE=0) = 점선
             for (p1, p2, e1, e2) in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
                 dash_style = "solid" if (e2 - e1) > 1e-12 else "dot"
                 fig.add_trace(go.Scatter3d(
                     x=[p1[0], p2[0]], y=[p1[1], p2[1]], z=[p1[2], p2[2]],
-                    mode="lines", line=dict(width=3, dash=dash_style),
+                    mode="lines",
+                    line=dict(width=3, dash=dash_style, color=PATH_COLOR),
                     showlegend=False
                 ))
         else:
+            # e_on=False면 모두 단색 실선으로 표시 (요청사항: 단색)
+            # travel(레이어 간)도 e_on=False에서는 그냥 실선(단, 색상 동일)
             fig.add_trace(go.Scatter3d(
                 x=poly[:,0], y=poly[:,1], z=poly[:,2],
-                mode="lines", line=dict(width=3), showlegend=False
+                mode="lines", line=dict(width=3, color=PATH_COLOR),
+                showlegend=False
             ))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0))
@@ -223,119 +260,124 @@ def plot_paths(paths: List[Tuple[np.ndarray, np.ndarray | None]], e_on=False, he
 # =========================
 if "mesh" not in st.session_state:
     st.session_state.mesh = None
-if "paths" not in st.session_state:
-    st.session_state.paths = None
+if "paths_items" not in st.session_state:
+    st.session_state.paths_items = None
 if "gcode_text" not in st.session_state:
     st.session_state.gcode_text = None
 
 # =========================
-# Layout: 왼쪽(좁고 스크롤) / 오른쪽(큰 뷰어)
+# Sidebar (스크롤 자동)
 # =========================
-left, right = st.columns([0.22, 0.78])  # 뷰어 크게
+uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"])
 
-with left:
-    # 스크롤 가능한 컨테이너 (sidebar 느낌)
-    st.markdown('<div style="height:85vh; overflow-y:auto; padding-right:10px;">', unsafe_allow_html=True)
+st.sidebar.header("Parameters")
+z_int        = st.sidebar.number_input("Z interval (mm)",  1.0, 1000.0, 15.0)
+feed         = st.sidebar.number_input("Feedrate (F)",     1,    100000, 2000)
+ref_x        = st.sidebar.number_input("Reference X",      value=0.0)
+ref_y        = st.sidebar.number_input("Reference Y",      value=0.0)
 
-    # 업로더 최상단
-    uploaded = st.file_uploader("Upload STL", type=["stl"])
+st.sidebar.subheader("Extrusion options")
+e_on         = st.sidebar.checkbox("Insert E values")
+start_e_on   = st.sidebar.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
+start_e_val  = st.sidebar.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
+e0_on        = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
-    st.header("Parameters")
-    z_int        = st.number_input("Z interval (mm)",  1.0, 1000.0, 15.0)
-    feed         = st.number_input("Feedrate (F)",     1,    100000, 2000)
-    ref_x        = st.number_input("Reference X",      value=0.0)
-    ref_y        = st.number_input("Reference Y",      value=0.0)
+st.sidebar.subheader("Path processing")
+trim_dist    = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
+min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
+auto_start   = st.sidebar.checkbox("Start next layer near previous start")
+m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
-    st.subheader("Extrusion options")
-    e_on         = st.checkbox("Insert E values")
-    start_e_on   = st.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
-    start_e_val  = st.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
-    e0_on        = st.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
+# 버튼 동일 폭
+b1, b2 = st.sidebar.columns(2)
+slice_clicked = b1.button("슬라이싱", use_container_width=True)
+gen_clicked   = b2.button("G-code 생성", use_container_width=True)
 
-    st.subheader("Path processing")
-    trim_dist    = st.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
-    min_spacing  = st.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
-    auto_start   = st.checkbox("Start next layer near previous start")
-    m30_on       = st.checkbox("Append M30 at end", value=False)
+# =========================
+# Load mesh on upload
+# =========================
+if uploaded is not None:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+        tmp.write(uploaded.read())
+        tmp_path = tmp.name
+    mesh = trimesh.load_mesh(tmp_path)
+    if not isinstance(mesh, trimesh.Trimesh):
+        st.error("STL must contain a single mesh")
+        st.stop()
+    # Z 축 미세 확장 (기존 로직)
+    scale_matrix = np.eye(4)
+    scale_matrix[2, 2] = 1.0000001
+    mesh.apply_transform(scale_matrix)
+    st.session_state.mesh = mesh
 
-    # 버튼 동일 폭
-    bcol1, bcol2 = st.columns(2)
-    slice_clicked = bcol1.button("슬라이싱", use_container_width=True)
-    gen_clicked   = bcol2.button("G-code 생성", use_container_width=True)
+# =========================
+# Actions
+# =========================
+if slice_clicked and st.session_state.mesh is not None:
+    items = compute_slice_paths_with_travel(
+        st.session_state.mesh,
+        z_int=z_int,
+        ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        e_on=e_on
+    )
+    st.session_state.paths_items = items
+    st.success("Slicing complete")
 
-    # 업로드 시 메쉬 로드 (즉시 STL 프리뷰 가능)
-    if uploaded is not None:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
-            tmp.write(uploaded.read())
-            tmp_path = tmp.name
-        mesh = trimesh.load_mesh(tmp_path)
-        if not isinstance(mesh, trimesh.Trimesh):
-            st.error("STL must contain a single mesh")
-            st.stop()
-        # Z 축 미세 확장 (기존 로직)
-        scale_matrix = np.eye(4)
-        scale_matrix[2, 2] = 1.0000001
-        mesh.apply_transform(scale_matrix)
-        st.session_state.mesh = mesh
+if gen_clicked and st.session_state.mesh is not None:
+    gcode_text = generate_gcode(
+        st.session_state.mesh,
+        z_int=z_int,
+        feed=feed,
+        ref_pt_user=(ref_x, ref_y),
+        e_on=e_on,
+        start_e_on=start_e_on,
+        start_e_val=start_e_val,
+        e0_on=e0_on,
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        m30_on=m30_on
+    )
+    st.session_state.gcode_text = gcode_text
+    st.success("G-code ready")
 
-    # 동작
-    if slice_clicked and st.session_state.mesh is not None:
-        paths = compute_slice_paths(
-            st.session_state.mesh,
-            z_int=z_int,
-            ref_pt_user=(ref_x, ref_y),
-            trim_dist=trim_dist,
-            min_spacing=min_spacing,
-            auto_start=auto_start,
-            e_on=e_on
+if st.session_state.get("gcode_text"):
+    st.sidebar.download_button(
+        "G-code 저장",
+        st.session_state.gcode_text,
+        file_name="output.gcode",
+        mime="text/plain",
+        use_container_width=True
+    )
+
+# =========================
+# Right: Viewers (크게)
+# =========================
+tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-code Viewer"])
+
+with tab_stl:
+    if st.session_state.get("mesh") is not None:
+        st.plotly_chart(
+            plot_trimesh(st.session_state.mesh, height=820),
+            use_container_width=True
         )
-        st.session_state.paths = paths
-        st.success("Slicing complete")
+    else:
+        st.info("STL을 업로드하세요.")
 
-    if gen_clicked and st.session_state.mesh is not None:
-        gcode_text = generate_gcode(
-            st.session_state.mesh,
-            z_int=z_int,
-            feed=feed,
-            ref_pt_user=(ref_x, ref_y),
-            e_on=e_on,
-            start_e_on=start_e_on,
-            start_e_val=start_e_val,
-            e0_on=e0_on,
-            trim_dist=trim_dist,
-            min_spacing=min_spacing,
-            auto_start=auto_start,
-            m30_on=m30_on
+with tab_paths:
+    if st.session_state.get("paths_items") is not None:
+        st.plotly_chart(
+            plot_paths(st.session_state.paths_items, e_on=e_on, height=820),
+            use_container_width=True
         )
-        st.session_state.gcode_text = gcode_text
-        st.success("G-code ready")
+    else:
+        st.info("슬라이싱을 실행하세요.")
 
+with tab_gcode:
     if st.session_state.get("gcode_text"):
-        st.download_button("G-code 저장",
-                           st.session_state.gcode_text,
-                           file_name="output.gcode",
-                           mime="text/plain",
-                           use_container_width=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)  # 스크롤 컨테이너 끝
-
-with right:
-    tab_stl, tab_paths = st.tabs(["STL Preview", "Sliced Paths (3D)"])
-
-    with tab_stl:
-        if st.session_state.get("mesh") is not None:
-            st.plotly_chart(
-                plot_trimesh(st.session_state.mesh, height=820),
-                use_container_width=True
-            )
-        else:
-            st.info("STL을 업로드하세요.")
-
-    with tab_paths:
-        if st.session_state.get("paths") is not None:
-            st.plotly_chart(
-                plot_paths(st.session_state.paths, e_on=e_on, height=820),
-                use_container_width=True
-            )
-        else:
-            st.info("슬라이싱을 실행하세요.")
+        st.code(st.session_state.gcode_text, language="gcode")
+    else:
+        st.info("G-code를 생성하세요.")
