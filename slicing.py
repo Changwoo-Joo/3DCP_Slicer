@@ -44,7 +44,7 @@ def trim_segment_end(segment, trim_distance=30.0):
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
-    XY 기준 Ramer–Douglas–Peucker 간소화.
+    XY 기준 Ramer–Douglas–Pe커 간소화.
     - 직선 구간은 양 끝점만 유지 (중간 포인트 제거)
     - 곡선/꺾임이 있는 부분만 점 유지
     - min_dist(=epsilon 규모)를 키울수록 더 과감히 단순화
@@ -703,10 +703,24 @@ tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-
 
 with tab_stl:
     if st.session_state.get("mesh") is not None:
+        mesh = st.session_state.mesh
         st.plotly_chart(
-            plot_trimesh(st.session_state.mesh, height=820),
+            plot_trimesh(mesh, height=820),
             use_container_width=True
         )
+
+        # === Size & Coordinate Range 표시 (변환 적용 후 현재 메시 기준) ===
+        bounds = mesh.bounds  # shape (2, 3) → [[xmin, ymin, zmin], [xmax, ymax, zmax]]
+        (xmin, ymin, zmin), (xmax, ymax, zmax) = bounds
+        size_x = xmax - xmin
+        size_y = ymax - ymin
+        size_z = zmax - zmin
+
+        st.markdown("### 📐 Mesh Size & Coordinate Range")
+        st.write(f"**Size (X, Y, Z):** {size_x:.2f} mm × {size_y:.2f} mm × {size_z:.2f} mm")
+        st.write(f"**X range:** {xmin:.2f} → {xmax:.2f} mm")
+        st.write(f"**Y range:** {ymin:.2f} → {ymax:.2f} mm")
+        st.write(f"**Z range:** {zmin:.2f} → {zmax:.2f} mm")
     else:
         st.info("STL을 업로드하세요.")
 
