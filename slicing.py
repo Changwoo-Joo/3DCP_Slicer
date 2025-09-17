@@ -123,9 +123,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
 # =========================
 # Slice path computation (미리보기용)
-#   - e_on=True면 누적 E 포함
-#   - 레이어 간 travel(점선) 포함
-# 리턴: List[ (polyline Nx3, e_values(또는 None), is_travel_bool) ]
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -156,7 +153,6 @@ def compute_slice_paths_with_travel(
         except Exception:
             continue
 
-        # 원시 세그먼트 -> 3D
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
@@ -165,7 +161,6 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
-        # 레이어 내부 순서 조정
         if auto_start and prev_start_xy is not None:
             dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
             first_idx = int(np.argmin(dists))
@@ -176,7 +171,6 @@ def compute_slice_paths_with_travel(
 
         layer_polys: List[np.ndarray] = []
 
-        # 각 세그먼트 처리
         for i_seg, seg3d in enumerate(segments):
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
             trimmed    = trim_segment_end(shifted, trim_dist)
@@ -188,14 +182,11 @@ def compute_slice_paths_with_travel(
         if not layer_polys:
             continue
 
-        # === 레이어 간 travel(점선) 추가 ===
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
             travel = np.vstack([prev_layer_last_end, first_poly_start])
-            # travel은 비압출: e_values = [0, 0]
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
-        # 레이어 내부 폴리라인 추가 (압출 O)
         for poly in layer_polys:
             if e_on:
                 e_vals = [0.0]
@@ -234,7 +225,6 @@ def plot_paths(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on=
     fig = go.Figure()
     for poly, e_vals, is_travel in items:
         if e_on and e_vals is not None:
-            # 압출 구간(ΔE>0) = 실선 / 이동(ΔE=0) = 점선
             for (p1, p2, e1, e2) in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
                 dash_style = "solid" if (e2 - e1) > 1e-12 else "dot"
                 fig.add_trace(go.Scatter3d(
@@ -244,8 +234,6 @@ def plot_paths(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on=
                     showlegend=False
                 ))
         else:
-            # e_on=False면 모두 단색 실선으로 표시 (요청사항: 단색)
-            # travel(레이어 간)도 e_on=False에서는 그냥 실선(단, 색상 동일)
             fig.add_trace(go.Scatter3d(
                 x=poly[:,0], y=poly[:,1], z=poly[:,2],
                 mode="lines", line=dict(width=3, color=PATH_COLOR),
@@ -268,7 +256,13 @@ if "gcode_text" not in st.session_state:
 # =========================
 # Sidebar (스크롤 자동)
 # =========================
-uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"])
+# --- Access Key (추가) ---
+st.sidebar.header("Access")
+access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
+KEY_OK = bool(access_key.strip())
+
+# 업로드는 키 없으면 비활성화
+uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
 st.sidebar.header("Parameters")
 z_int        = st.sidebar.number_input("Z interval (mm)",  1.0, 1000.0, 15.0)
@@ -288,10 +282,10 @@ min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0
 auto_start   = st.sidebar.checkbox("Start next layer near previous start")
 m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# 버튼 동일 폭
+# 버튼 동일 폭 (키 없으면 버튼 비활성화)
 b1, b2 = st.sidebar.columns(2)
-slice_clicked = b1.button("슬라이싱", use_container_width=True)
-gen_clicked   = b2.button("G-code 생성", use_container_width=True)
+slice_clicked = b1.button("슬라이싱", use_container_width=True, disabled=not KEY_OK)
+gen_clicked   = b2.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 
 # =========================
 # Load mesh on upload
@@ -313,7 +307,7 @@ if uploaded is not None:
 # =========================
 # Actions
 # =========================
-if slice_clicked and st.session_state.mesh is not None:
+if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
         z_int=z_int,
@@ -326,7 +320,7 @@ if slice_clicked and st.session_state.mesh is not None:
     st.session_state.paths_items = items
     st.success("Slicing complete")
 
-if gen_clicked and st.session_state.mesh is not None:
+if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh,
         z_int=z_int,
@@ -381,3 +375,7 @@ with tab_gcode:
         st.code(st.session_state.gcode_text, language="gcode")
     else:
         st.info("G-code를 생성하세요.")
+
+# 키가 없을 때 안내 메시지 (비동작 안내, 본문 UI는 그대로 유지)
+if not KEY_OK:
+    st.warning("Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
