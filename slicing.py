@@ -100,8 +100,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     if e_on:
         g.append("M83")
 
+    z_min = mesh.bounds[0, 2]
     z_max = mesh.bounds[1, 2]
-    z_values = list(np.arange(z_int, z_max + 0.001, z_int))
+    start = z_min + z_int
+    if start > z_max + 1e-6:
+        return "\n".join(g + [f"; NOTE: No layers — start({start:.3f}) > z_max({z_max:.3f})"])
+
+    z_values = list(np.arange(start, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
     z_values.append(z_max + 0.01)  # 최상단 캡쳐
@@ -138,13 +143,15 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            start = simplified[0]
+            if len(simplified) == 0:
+                continue
+            startp = simplified[0]
 
             g.append(f"G01 F{feed}")
             if start_e_on:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
+                g.append(f"G01 X{startp[0]:.3f} Y{startp[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
             else:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+                g.append(f"G01 X{startp[0]:.3f} Y{startp[1]:.3f} Z{z:.3f}")
 
             for p1, p2 in zip(simplified[:-1], simplified[1:]):
                 dist = np.linalg.norm(p2[:2] - p1[:2])
@@ -157,7 +164,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 g.append("G01 E0")
 
             if i_seg == 0:
-                prev_start_xy = start[:2]
+                prev_start_xy = startp[:2]
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -176,8 +183,13 @@ def compute_slice_paths_with_travel(
     auto_start=False,
     e_on=False
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
+    z_min = mesh.bounds[0, 2]
     z_max = mesh.bounds[1, 2]
-    z_values = list(np.arange(z_int, z_max + 0.001, z_int))
+    start = z_min + z_int
+    if start > z_max + 1e-6:
+        return []
+
+    z_values = list(np.arange(start, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
     z_values.append(z_max + 0.01)
@@ -216,6 +228,8 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+            if len(simplified) == 0:
+                continue
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -400,12 +414,12 @@ st.sidebar.number_input("Shift X (mm)", step=1.0, key="shift_x")
 st.sidebar.number_input("Shift Y (mm)", step=1.0, key="shift_y")
 st.sidebar.number_input("Shift Z (mm)", step=1.0, key="shift_z")
 
-# ✅ 피벗 선택: 모델 중심 / 월드 원점
+# ✅ 피벗 선택(기본: 월드 오리진)
 pivot_choice = st.sidebar.selectbox(
     "Transform Pivot",
     ["Model center (recommended)", "World origin (0,0,0)"],
-    index=0,
-    help="회전/확대의 기준점. 모델 중심 권장"
+    index=1,  # 기본을 World origin으로
+    help="회전/확대의 기준점. 모델 중심/원점 중 선택"
 )
 
 apply_transform_clicked = st.sidebar.button("Apply Transform", use_container_width=True, disabled=not KEY_OK)
@@ -490,7 +504,7 @@ if apply_transform_clicked:
         ry = np.deg2rad(st.session_state.rot_y_deg)
         rz = np.deg2rad(st.session_state.rot_z_deg)
 
-        # 순서: (센터로 이동) → 스케일 → 회전X → 회전Y → 회전Z → (센터 복귀)
+        # 순서: (피벗으로 이동) → 스케일 → RX → RY → RZ → (피벗 복귀)
         M_total = (
             _T(cx, cy, cz) @ _rot_z(rz) @ _rot_y(ry) @ _rot_x(rx) @ _S(s) @ _T(-cx, -cy, -cz)
         )
@@ -502,7 +516,7 @@ if apply_transform_clicked:
         st.session_state.mesh = m  # 뷰어/슬라이서 대상 메시 갱신
         st.session_state.paths_items = None  # 이전 슬라이스 무효화
         st.session_state.gcode_text = None   # 이전 G-code 무효화
-        st.success("변환 적용 완료: 선택한 Pivot 기준으로 회전/확대가 적용되었고, 이 상태로 슬라이싱/생성됩니다.")
+        st.success("변환 적용 완료: 선택한 Pivot 기준으로 회전/확대/시프트가 적용되었고, 이 상태로 슬라이싱/생성됩니다.")
 
 # =========================
 # Actions
@@ -518,7 +532,11 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    st.success("Slicing complete")
+    if len(items) == 0:
+        (zmin, zmax) = (st.session_state.mesh.bounds[0,2], st.session_state.mesh.bounds[1,2])
+        st.warning(f"레이어가 생성되지 않았습니다. (z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}) — Z interval 또는 모델 위치/회전을 확인하세요.")
+    else:
+        st.success(f"Slicing complete: {len(items)} path items")
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
@@ -584,15 +602,7 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
     """
-    cone1500.modx 스타일 MODULE 생성:
-      MODULE Converted
-      VAR string sFileCount := "64000";
-      VAR string d3dpDynLoad{64000} := [
-        "X,Y,Z,Rx,Ry,Rz,A1,A2,A3,A4",
-        ...
-      ];
-      ENDMODULE
-    좌표 라인이 부족하면 PAD_LINE으로 채움(정확히 64,000줄).
+    cone1500.modx 스타일 MODULE 생성 (정확히 64,000줄로 패딩).
     """
     lines_out = []
     cur_x = 0.0
@@ -735,15 +745,20 @@ with tab_stl:
         st.write(f"**X range:** {xmin:.2f} → {xmax:.2f} mm")
         st.write(f"**Y range:** {ymin:.2f} → {ymax:.2f} mm")
         st.write(f"**Z range:** {zmin:.2f} → {zmax:.2f} mm")
+        st.caption(f"Debug: z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}")
     else:
         st.info("STL을 업로드하세요.")
 
 with tab_paths:
-    if st.session_state.get("paths_items") is not None:
+    if st.session_state.get("paths_items") is not None and len(st.session_state.paths_items) > 0:
         st.plotly_chart(
             plot_paths(st.session_state.paths_items, e_on=e_on, height=820),
             use_container_width=True
         )
+        # 추가 디버그 정보
+        zmin = st.session_state.mesh.bounds[0,2]
+        zmax = st.session_state.mesh.bounds[1,2]
+        st.caption(f"Paths Debug: z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}")
     else:
         st.info("슬라이싱을 실행하세요.")
 
