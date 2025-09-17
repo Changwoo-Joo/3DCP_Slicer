@@ -5,7 +5,7 @@ import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from datetime import date, datetime
-from pathlib import Path  # ★ 파일명 추출용
+from pathlib import Path  # 파일명 추출용
 
 # =========================
 # App basics
@@ -17,18 +17,20 @@ EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"  # 단색 유지
 
 # =========================
-# Helpers (연산식 동일)
+# Helpers
 # =========================
 def trim_segment_end(segment, trim_distance=30.0):
     segment = np.array(segment)
-    total_len = np.sum(np.linalg.norm(np.diff(segment, axis=0), axis=1))
+    total_len = np.sum(np.linalg.norm(np.diff(segment, axis=0)[:, :2], axis=1))
     if total_len <= trim_distance:
         return segment
     trimmed = [segment[0]]
     acc = 0.0
     for i in range(1, len(segment)):
         p1, p2 = segment[i - 1], segment[i]
-        d = np.linalg.norm(p2 - p1)
+        d = np.linalg.norm((p2 - p1)[:2])
+        if d == 0:
+            continue
         if acc + d >= total_len - trim_distance:
             r = (total_len - trim_distance - acc) / d
             trimmed.append(p1 + (p2 - p1) * r)
@@ -37,20 +39,64 @@ def trim_segment_end(segment, trim_distance=30.0):
         acc += d
     return np.array(trimmed)
 
-def simplify_segment(segment, min_dist):
-    simplified = [segment[0]]
-    for pt in segment[1:-1]:
-        if np.linalg.norm(pt[:2] - simplified[-1][:2]) >= min_dist:
-            simplified.append(pt)
-    simplified.append(segment[-1])
-    return np.array(simplified)
+def simplify_segment(segment, min_dist: float):
+    """
+    XY 평면 기준으로 '최소 간격(min_dist)'마다 점을 보간하여 재샘플링.
+    - min_dist <= 0 이면 원본 반환
+    - 구간 길이가 짧으면 끝점만 추가해 종결
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) <= 2 or min_dist <= 0:
+        return pts
+
+    out = [pts[0].copy()]
+    carry = 0.0  # 이전 구간에서 다음 간격까지 남은 거리
+
+    for i in range(1, len(pts)):
+        p_prev = out[-1]
+        p_cur = pts[i]
+        # 현재 out의 마지막 점(p_prev)에서 p_cur까지 진행
+        vec = p_cur - p_prev
+        seg_xy = vec[:2]
+        d = np.linalg.norm(seg_xy)
+        if d == 0:
+            continue
+
+        # 남은 거리(carry) 채우며, 필요한 만큼 중간 점 생성
+        dist_left = d
+        dir_xy = seg_xy / d
+        dir_full = vec / d  # XYZ 비율(여기서 Z는 보통 레이어 고정이지만 일반화)
+
+        while carry + dist_left >= min_dist:
+            step = min_dist - carry  # p_prev에서 step만큼 진행
+            new_pt = p_prev + dir_full * step
+            out.append(new_pt)
+            # 새 기준점으로 갱신
+            p_prev = new_pt
+            vec = p_cur - p_prev
+            dist_left = np.linalg.norm(vec[:2])
+            if dist_left == 0:
+                carry = 0.0
+                break
+            dir_full = vec / np.linalg.norm(vec[:2])
+            carry = 0.0
+
+        # 구간이 남았지만 min_dist에 못 미치면 carry에 적산
+        carry += dist_left
+        # 마지막 원본 점과 out의 마지막 점이 충분히 떨어져 있으면 끝점 보정
+        if i == len(pts) - 1:
+            if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-9:
+                out.append(pts[-1])
+
+    return np.array(out)
 
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
-    return np.concatenate([segment[idx:], segment[1:idx + 1]], axis=0), segment[idx]
+    # 폐곡선 기준으로 시작점만 회전 이동
+    return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
 # =========================
-# G-code generator (동일 로직)
+# G-code generator
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -143,7 +189,6 @@ def compute_slice_paths_with_travel(
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
     prev_layer_last_end: Optional[np.ndarray] = None
-    prev_layer_first_start: Optional[np.ndarray] = None
 
     prev_start_xy = None
     for z in z_values:
@@ -172,7 +217,6 @@ def compute_slice_paths_with_travel(
             ref_pt_layer = np.array(ref_pt_user)
 
         layer_polys: List[np.ndarray] = []
-
         for i_seg, seg3d in enumerate(segments):
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
             trimmed    = trim_segment_end(shifted, trim_dist)
@@ -202,7 +246,6 @@ def compute_slice_paths_with_travel(
                 all_items.append((poly, None, False))
 
         prev_layer_last_end = layer_polys[-1][-1]
-        prev_layer_first_start = layer_polys[0][0]
 
     return all_items
 
@@ -255,7 +298,7 @@ if "paths_items" not in st.session_state:
 if "gcode_text" not in st.session_state:
     st.session_state.gcode_text = None
 if "base_name" not in st.session_state:
-    st.session_state.base_name = "output"  # ★ 기본 파일명
+    st.session_state.base_name = "output"
 
 # ==== Rapid session keys (추가 기능용) ====
 if "show_rapid_panel" not in st.session_state:
@@ -274,19 +317,13 @@ if "rapid_text" not in st.session_state:
 # =========================
 st.sidebar.header("Access")
 
-# ▶ 키 목록과 만료일(YYYY-MM-DD) 지정: None이면 만료 없음(상시 사용)
 ALLOWED_WITH_EXPIRY = {
     "robotics5107": None,
     "kmou*":  "2026-12-31",
-    
 }
-
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
 
 def check_key_valid(k: str):
-    """키 유효성/만료여부 확인.
-    Returns: (is_valid: bool, expiry_date: Optional[date], remaining_days: Optional[int], status_txt: str)
-    """
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
     exp = ALLOWED_WITH_EXPIRY[k]
@@ -307,7 +344,6 @@ def check_key_valid(k: str):
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
 
-# 상태 표시
 if access_key:
     if KEY_OK:
         if EXP_DATE is None:
@@ -320,7 +356,6 @@ if access_key:
 else:
     st.sidebar.warning("Access Key를 입력하세요.")
 
-# 업로드는 키 없으면 비활성화
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
 st.sidebar.header("Parameters")
@@ -341,7 +376,6 @@ min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0
 auto_start   = st.sidebar.checkbox("Start next layer near previous start")
 m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
-
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 
@@ -359,13 +393,11 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # Z 축 미세 확장 (기존 로직)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
 
-    # ★ 업로드 원본 파일명 저장 (확장자 제외)
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
@@ -403,7 +435,7 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     st.success("G-code ready")
 
 if st.session_state.get("gcode_text"):
-    base = st.session_state.get("base_name", "output")  # ★ 파일명 반영
+    base = st.session_state.get("base_name", "output")
     st.sidebar.download_button(
         "G-code 저장",
         st.session_state.gcode_text,
@@ -415,9 +447,7 @@ if st.session_state.get("gcode_text"):
 # =========================
 # >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
 # =========================
-
 def _fmt_pos(v: float) -> str:
-    # +0000.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -425,7 +455,6 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    # +000.00
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -436,7 +465,6 @@ PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+000
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
-    """G-code에서 X/Y/Z 좌표 지정이 포함된 G0/G1 라인의 개수만 카운트"""
     cnt = 0
     for raw in gcode_text.splitlines():
         t = raw.strip()
@@ -448,15 +476,6 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
-    """
-    cone1500.modx 형식의 전체 MODULE 텍스트 생성:
-      - MODULE Converted
-      - 헤더 주석
-      - VAR string sFileCount := "64000";
-      - VAR string d3dpDynLoad{64000} := [ "....", ... ];
-      - ENDMODULE
-    64,000 라인 미만이면 PAD_LINE으로 채움.
-    """
     lines_out = []
     cur_x = 0.0
     cur_y = 0.0
@@ -494,11 +513,9 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         if len(lines_out) >= MAX_LINES:
             break
 
-    # 패딩
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
-    # MODULE 래핑 (cone1500 스타일)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = (
         "MODULE Converted\n"
@@ -522,7 +539,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
 
-# 사이드바: Generate Rapid 버튼
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
@@ -555,7 +571,7 @@ if KEY_OK:
                 st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
-                base = st.session_state.get("base_name", "output")  # ★ 파일명 반영
+                base = st.session_state.get("base_name", "output")
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
