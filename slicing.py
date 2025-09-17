@@ -261,10 +261,9 @@ st.sidebar.header("Access")
 
 # ▶ 키 목록과 만료일(YYYY-MM-DD) 지정: None이면 만료 없음(상시 사용)
 ALLOWED_WITH_EXPIRY = {
-    "alpha123": "2025-12-31",
-    "beta456":  "2025-09-30",
-    "darobotics": None,   # 만료 없음
-    "guest2025": "2025-10-31",
+    "robotics5107": None,
+    "kmou*":  "2026-12-31",
+    
 }
 
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
