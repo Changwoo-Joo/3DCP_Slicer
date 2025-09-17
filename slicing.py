@@ -20,7 +20,10 @@ PATH_COLOR = "#222222"  # 단색 유지
 # Helpers
 # =========================
 def trim_segment_end(segment, trim_distance=30.0):
-    segment = np.array(segment)
+    """XY 누적 길이 기준으로 마지막 trim_distance만큼 잘라냄."""
+    segment = np.array(segment, dtype=float)
+    if len(segment) < 2:
+        return segment
     total_len = np.sum(np.linalg.norm(np.diff(segment, axis=0)[:, :2], axis=1))
     if total_len <= trim_distance:
         return segment
@@ -39,60 +42,55 @@ def trim_segment_end(segment, trim_distance=30.0):
         acc += d
     return np.array(trimmed)
 
-def simplify_segment(segment, min_dist: float):
+def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
-    XY 평면 기준으로 '최소 간격(min_dist)'마다 점을 보간하여 재샘플링.
-    - min_dist <= 0 이면 원본 반환
-    - 구간 길이가 짧으면 끝점만 추가해 종결
+    XY 기준 Ramer–Douglas–Peucker 간소화.
+    - 직선 구간은 양 끝점만 유지 (중간 포인트 제거)
+    - 곡선/꺾임이 있는 부분만 점 유지
+    - min_dist(=epsilon 규모)를 키울수록 더 과감히 단순화
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
 
-    out = [pts[0].copy()]
-    carry = 0.0  # 이전 구간에서 다음 간격까지 남은 거리
+    eps = float(min_dist) / 2.0  # 권장: 최소 간격의 절반 정도 허용 오차
 
-    for i in range(1, len(pts)):
-        p_prev = out[-1]
-        p_cur = pts[i]
-        # 현재 out의 마지막 점(p_prev)에서 p_cur까지 진행
-        vec = p_cur - p_prev
-        seg_xy = vec[:2]
-        d = np.linalg.norm(seg_xy)
-        if d == 0:
-            continue
+    def _perp_dist_xy(p, a, b) -> float:
+        ab = b[:2] - a[:2]
+        ap = p[:2] - a[:2]
+        denom = np.dot(ab, ab)
+        if denom <= 1e-18:
+            return np.linalg.norm(ap)
+        t = np.clip(np.dot(ap, ab) / denom, 0.0, 1.0)
+        proj = a[:2] + t * ab
+        return np.linalg.norm(p[:2] - proj)
 
-        # 남은 거리(carry) 채우며, 필요한 만큼 중간 점 생성
-        dist_left = d
-        dir_xy = seg_xy / d
-        dir_full = vec / d  # XYZ 비율(여기서 Z는 보통 레이어 고정이지만 일반화)
+    def _rdp_xy(points: np.ndarray, eps_val: float) -> np.ndarray:
+        if len(points) <= 2:
+            return points
+        a = points[0]
+        b = points[-1]
+        # 가장 멀리 벗어나는 점 탐색
+        dmax = -1.0
+        idx = -1
+        for i in range(1, len(points) - 1):
+            d = _perp_dist_xy(points[i], a, b)
+            if d > dmax:
+                dmax = d
+                idx = i
+        if dmax <= eps_val:
+            # 충분히 직선으로 근사 가능 → 끝점만
+            return np.vstack([a, b])
+        # 곡률 존재 → 분할
+        left = _rdp_xy(points[: idx + 1], eps_val)
+        right = _rdp_xy(points[idx:], eps_val)
+        return np.vstack([left[:-1], right])  # 분기점 중복 제거
 
-        while carry + dist_left >= min_dist:
-            step = min_dist - carry  # p_prev에서 step만큼 진행
-            new_pt = p_prev + dir_full * step
-            out.append(new_pt)
-            # 새 기준점으로 갱신
-            p_prev = new_pt
-            vec = p_cur - p_prev
-            dist_left = np.linalg.norm(vec[:2])
-            if dist_left == 0:
-                carry = 0.0
-                break
-            dir_full = vec / np.linalg.norm(vec[:2])
-            carry = 0.0
-
-        # 구간이 남았지만 min_dist에 못 미치면 carry에 적산
-        carry += dist_left
-        # 마지막 원본 점과 out의 마지막 점이 충분히 떨어져 있으면 끝점 보정
-        if i == len(pts) - 1:
-            if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-9:
-                out.append(pts[-1])
-
-    return np.array(out)
+    return _rdp_xy(pts, eps)
 
 def shift_to_nearest_start(segment, ref_point):
+    """시작점을 ref_point(XY)에서 가장 가까운 정점으로 돌려 배치."""
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
-    # 폐곡선 기준으로 시작점만 회전 이동
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
 # =========================
@@ -109,11 +107,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    z_values.append(z_max + 0.01)
+    z_values.append(z_max + 0.01)  # 최상단 캡쳐
 
     prev_start_xy = None
     for z in z_values:
-        sec = mesh.section(plane_origin=[0,0,z], plane_normal=[0,0,1])
+        sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
         if sec is None:
             continue
         try:
@@ -124,7 +122,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg),1)), np.ones((len(seg),1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
@@ -137,13 +135,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             segments = segments[first_idx:] + segments[:first_idx]
             ref_pt_layer = prev_start_xy
         else:
-            ref_pt_layer = np.array(ref_pt_user)
+            ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         for i_seg, seg3d in enumerate(segments):
-            shifted, _  = shift_to_nearest_start(seg3d, ref_pt_layer)
-            trimmed     = trim_segment_end(shifted, trim_dist)
-            simplified  = simplify_segment(trimmed, min_spacing)
-            start       = simplified[0]
+            shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
+            trimmed = trim_segment_end(shifted, trim_dist)
+            simplified = simplify_segment(trimmed, min_spacing)
+            start = simplified[0]
 
             g.append(f"G01 F{feed}")
             if start_e_on:
@@ -189,10 +187,10 @@ def compute_slice_paths_with_travel(
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
     prev_layer_last_end: Optional[np.ndarray] = None
-
     prev_start_xy = None
+
     for z in z_values:
-        sec = mesh.section(plane_origin=[0,0,z], plane_normal=[0,0,1])
+        sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
         if sec is None:
             continue
         try:
@@ -203,7 +201,7 @@ def compute_slice_paths_with_travel(
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg),1)), np.ones((len(seg),1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
@@ -214,12 +212,12 @@ def compute_slice_paths_with_travel(
             segments = segments[first_idx:] + segments[:first_idx]
             ref_pt_layer = prev_start_xy
         else:
-            ref_pt_layer = np.array(ref_pt_user)
+            ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
         for i_seg, seg3d in enumerate(segments):
             shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
-            trimmed    = trim_segment_end(shifted, trim_dist)
+            trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
@@ -256,8 +254,8 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
     f = mesh.faces
     fig = go.Figure(data=[go.Mesh3d(
-        x=v[:,0], y=v[:,1], z=v[:,2],
-        i=f[:,0], j=f[:,1], k=f[:,2],
+        x=v[:, 0], y=v[:, 1], z=v[:, 2],
+        i=f[:, 0], j=f[:, 1], k=f[:, 2],
         color="#888888",
         opacity=0.6,
         flatshading=True
@@ -280,7 +278,7 @@ def plot_paths(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on=
                 ))
         else:
             fig.add_trace(go.Scatter3d(
-                x=poly[:,0], y=poly[:,1], z=poly[:,2],
+                x=poly[:, 0], y=poly[:, 1], z=poly[:, 2],
                 mode="lines", line=dict(width=3, color=PATH_COLOR),
                 showlegend=False
             ))
@@ -319,7 +317,7 @@ st.sidebar.header("Access")
 
 ALLOWED_WITH_EXPIRY = {
     "robotics5107": None,
-    "kmou*":  "2026-12-31",
+    "kmou*": "2026-12-31",
 }
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
 
@@ -344,6 +342,7 @@ def check_key_valid(k: str):
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
 
+# 상태 표시
 if access_key:
     if KEY_OK:
         if EXP_DATE is None:
@@ -356,31 +355,32 @@ if access_key:
 else:
     st.sidebar.warning("Access Key를 입력하세요.")
 
+# 업로드는 키 없으면 비활성화
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
 st.sidebar.header("Parameters")
-z_int        = st.sidebar.number_input("Z interval (mm)",  1.0, 1000.0, 15.0)
-feed         = st.sidebar.number_input("Feedrate (F)",     1,    100000, 2000)
-ref_x        = st.sidebar.number_input("Reference X",      value=0.0)
-ref_y        = st.sidebar.number_input("Reference Y",      value=0.0)
+z_int = st.sidebar.number_input("Z interval (mm)", 1.0, 1000.0, 15.0)
+feed = st.sidebar.number_input("Feedrate (F)", 1, 100000, 2000)
+ref_x = st.sidebar.number_input("Reference X", value=0.0)
+ref_y = st.sidebar.number_input("Reference Y", value=0.0)
 
 st.sidebar.subheader("Extrusion options")
-e_on         = st.sidebar.checkbox("Insert E values")
-start_e_on   = st.sidebar.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
-start_e_val  = st.sidebar.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
-e0_on        = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
+e_on = st.sidebar.checkbox("Insert E values")
+start_e_on = st.sidebar.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
+start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
+e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
 st.sidebar.subheader("Path processing")
-trim_dist    = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
-min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
-auto_start   = st.sidebar.checkbox("Start next layer near previous start")
-m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
+trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
+auto_start = st.sidebar.checkbox("Start next layer near previous start")
+m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 
 slice_clicked = b1.button("Slice Model", use_container_width=True)
-gen_clicked   = b2.button("Generate G-Code", use_container_width=True)
+gen_clicked = b2.button("Generate G-Code", use_container_width=True)
 
 # =========================
 # Load mesh on upload
@@ -393,11 +393,13 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
+    # Z 축 미세 확장 (최대 Z 절단면 인식 보정)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
 
+    # 업로드 원본 파일명 저장 (확장자 제외)
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
@@ -448,6 +450,7 @@ if st.session_state.get("gcode_text"):
 # >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
 # =========================
 def _fmt_pos(v: float) -> str:
+    # +0000.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -455,6 +458,7 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
+    # +000.00
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -465,17 +469,29 @@ PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+000
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
+    """G-code에서 X/Y/Z 좌표 지정이 포함된 G0/G1 라인의 개수만 카운트"""
     cnt = 0
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
             continue
-        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
+        has_xyz = any(p.startswith(("X", "Y", "Z")) for p in t.split())
         if has_xyz:
             cnt += 1
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
+    """
+    cone1500.modx 스타일 MODULE 생성:
+      MODULE Converted
+      VAR string sFileCount := "64000";
+      VAR string d3dpDynLoad{64000} := [
+        "X,Y,Z,Rx,Ry,Rz,A1,A2,A3,A4",
+        ...
+      ];
+      ENDMODULE
+    좌표 라인이 부족하면 PAD_LINE으로 채움(정확히 64,000줄).
+    """
     lines_out = []
     cur_x = 0.0
     cur_y = 0.0
@@ -494,14 +510,23 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         has_xyz = False
         for p in parts:
             if p.startswith("X"):
-                try: cur_x = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_x = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
             elif p.startswith("Y"):
-                try: cur_y = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_y = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
             elif p.startswith("Z"):
-                try: cur_z = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_z = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
 
         if not has_xyz:
             continue
@@ -513,9 +538,11 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         if len(lines_out) >= MAX_LINES:
             break
 
+    # 패딩
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
+    # MODULE 래핑
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = (
         "MODULE Converted\n"
@@ -539,6 +566,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
 
+# 사이드바: Generate Rapid
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
