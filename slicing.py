@@ -314,4 +314,466 @@ if "orig_mesh" not in st.session_state:
 if "upload_token" not in st.session_state:
     st.session_state.upload_token = None
 
-# ==== Transform defa
+# ==== Transform defaults (ensure variables always exist) ====
+for k, v in {
+    "scale_percent": 100.0,
+    "rot_x_deg": 0.0,
+    "rot_y_deg": 0.0,
+    "rot_z_deg": 0.0,
+    "shift_x": 0.0,
+    "shift_y": 0.0,
+    "shift_z": 0.0,
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+# ==== Rapid session keys (추가 기능용) ====
+if "show_rapid_panel" not in st.session_state:
+    st.session_state.show_rapid_panel = False
+if "rapid_rx" not in st.session_state:
+    st.session_state.rapid_rx = 0.0
+if "rapid_ry" not in st.session_state:
+    st.session_state.rapid_ry = 0.0
+if "rapid_rz" not in st.session_state:
+    st.session_state.rapid_rz = 0.0
+if "rapid_text" not in st.session_state:
+    st.session_state.rapid_text = None
+
+# =========================
+# Sidebar (Access Key + 만료일)
+# =========================
+st.sidebar.header("Access")
+
+ALLOWED_WITH_EXPIRY = {
+    "robotics5107": None,
+    "kmou*": "2026-12-31",
+}
+access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
+
+def check_key_valid(k: str):
+    if not k or k not in ALLOWED_WITH_EXPIRY:
+        return False, None, None, "유효하지 않은 키입니다."
+    exp = ALLOWED_WITH_EXPIRY[k]
+    if exp is None:
+        return True, None, None, "만료일 없음"
+    try:
+        exp_date = date.fromisoformat(exp)
+    except Exception:
+        return False, None, None, "키 만료일 형식 오류(YYYY-MM-DD)."
+    today = date.today()
+    remaining = (exp_date - today).days
+    if remaining < 0:
+        return False, exp_date, remaining, f"만료일 경과: {exp_date.isoformat()}"
+    elif remaining == 0:
+        return True, exp_date, remaining, f"오늘 만료 ({exp_date.isoformat()})"
+    else:
+        return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
+
+KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
+
+# 상태 표시
+if access_key:
+    if KEY_OK:
+        if EXP_DATE is None:
+            st.sidebar.success(STATUS_TXT)
+        else:
+            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
+            st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
+    else:
+        st.sidebar.error(STATUS_TXT)
+else:
+    st.sidebar.warning("Access Key를 입력하세요.")
+
+# 업로드는 키 없으면 비활성화
+uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
+
+st.sidebar.header("Parameters")
+z_int = st.sidebar.number_input("Z interval (mm)", 1.0, 1000.0, 15.0)
+feed = st.sidebar.number_input("Feedrate (F)", 1, 100000, 2000)
+ref_x = st.sidebar.number_input("Reference X", value=0.0)
+ref_y = st.sidebar.number_input("Reference Y", value=0.0)
+
+st.sidebar.subheader("Extrusion options")
+e_on = st.sidebar.checkbox("Insert E values")
+start_e_on = st.sidebar.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
+start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
+e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
+
+st.sidebar.subheader("Path processing")
+trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
+auto_start = st.sidebar.checkbox("Start next layer near previous start")
+m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
+
+# === Geometry Transform (scale/rotate/shift) ===
+st.sidebar.subheader("Geometry Transform")
+st.sidebar.number_input("Scale (%)", min_value=0.0001, max_value=100000.0, step=1.0,
+                        key="scale_percent", help="100%=원본, 200%=2배 확대, 50%=절반")
+st.sidebar.number_input("Rotate X (deg)", step=1.0, key="rot_x_deg", help="X축 기준 회전 (도)")
+st.sidebar.number_input("Rotate Y (deg)", step=1.0, key="rot_y_deg", help="Y축 기준 회전 (도)")
+st.sidebar.number_input("Rotate Z (deg)", step=1.0, key="rot_z_deg", help="Z축 기준 회전 (도)")
+st.sidebar.number_input("Shift X (mm)", step=1.0, key="shift_x")
+st.sidebar.number_input("Shift Y (mm)", step=1.0, key="shift_y")
+st.sidebar.number_input("Shift Z (mm)", step=1.0, key="shift_z")
+
+# ✅ 피벗 선택(기본: 월드 오리진)
+pivot_choice = st.sidebar.selectbox(
+    "Transform Pivot",
+    ["Model center (recommended)", "World origin (0,0,0)"],
+    index=1,  # 기본을 World origin으로
+    help="회전/확대의 기준점. 모델 중심/원점 중 선택"
+)
+
+apply_transform_clicked = st.sidebar.button("Apply Transform", use_container_width=True, disabled=not KEY_OK)
+
+b1 = st.sidebar.container()
+b2 = st.sidebar.container()
+
+slice_clicked = b1.button("Slice Model", use_container_width=True)
+gen_clicked = b2.button("Generate G-Code", use_container_width=True)
+
+# =========================
+# Load mesh on upload  (❗새 파일일 때만 로드)
+# =========================
+if uploaded is not None:
+    up_token = (uploaded.name, getattr(uploaded, "size", None))
+    if st.session_state.upload_token != up_token:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+            tmp.write(uploaded.read())
+            tmp_path = tmp.name
+        mesh = trimesh.load_mesh(tmp_path)
+        if not isinstance(mesh, trimesh.Trimesh):
+            st.error("STL must contain a single mesh")
+            st.stop()
+        # Z 축 미세 확장 (최대 Z 절단면 인식 보정)
+        scale_matrix = np.eye(4)
+        scale_matrix[2, 2] = 1.0000001
+        mesh.apply_transform(scale_matrix)
+
+        # 원본/작업용 저장
+        st.session_state.orig_mesh = mesh.copy()
+        st.session_state.mesh = mesh.copy()
+
+        # 파일명 저장
+        st.session_state.base_name = Path(uploaded.name).stem or "output"
+        # 업로드 토큰 갱신
+        st.session_state.upload_token = up_token
+
+# =========================
+# Apply Transform (Pivot-aware: center/origin)
+# =========================
+def _rot_x(theta_rad: float) -> np.ndarray:
+    c, s = np.cos(theta_rad), np.sin(theta_rad)
+    R = np.eye(4)
+    R[1, 1], R[1, 2] = c, -s
+    R[2, 1], R[2, 2] = s,  c
+    return R
+
+def _rot_y(theta_rad: float) -> np.ndarray:
+    c, s = np.cos(theta_rad), np.sin(theta_rad)
+    R = np.eye(4)
+    R[0, 0], R[0, 2] =  c, s
+    R[2, 0], R[2, 2] = -s, c
+    return R
+
+def _rot_z(theta_rad: float) -> np.ndarray:
+    c, s = np.cos(theta_rad), np.sin(theta_rad)
+    R = np.eye(4)
+    R[0, 0], R[0, 1] = c, -s
+    R[1, 0], R[1, 1] = s,  c
+    return R
+
+if apply_transform_clicked:
+    if st.session_state.orig_mesh is None:
+        st.warning("먼저 STL을 업로드하세요.")
+    else:
+        # 항상 '원본' 기준으로 변환(누적오차 방지)
+        m = st.session_state.orig_mesh.copy()
+
+        # === 피벗 계산 ===
+        use_center_pivot = (pivot_choice.startswith("Model center"))
+        if use_center_pivot:
+            (minx, miny, minz), (maxx, maxy, maxz) = m.bounds
+            cx, cy, cz = ((minx + maxx) / 2.0, (miny + maxy) / 2.0, (minz + maxz) / 2.0)
+        else:
+            cx, cy, cz = (0.0, 0.0, 0.0)
+
+        # 헬퍼: 4x4 변환 행렬들
+        def _T(tx, ty, tz):
+            T = np.eye(4); T[:3, 3] = [tx, ty, tz]; return T
+        def _S(s):
+            M = np.eye(4); M[0,0]=M[1,1]=M[2,2]=s; return M
+
+        # 입력 값
+        s  = float(st.session_state.scale_percent) / 100.0
+        rx = np.deg2rad(st.session_state.rot_x_deg)
+        ry = np.deg2rad(st.session_state.rot_y_deg)
+        rz = np.deg2rad(st.session_state.rot_z_deg)
+
+        # 순서: (피벗으로 이동) → 스케일 → RX → RY → RZ → (피벗 복귀)
+        M_total = (
+            _T(cx, cy, cz) @ _rot_z(rz) @ _rot_y(ry) @ _rot_x(rx) @ _S(s) @ _T(-cx, -cy, -cz)
+        )
+        m.apply_transform(M_total)
+
+        # 마지막: 사용자 시프트
+        m.apply_transform(_T(st.session_state.shift_x, st.session_state.shift_y, st.session_state.shift_z))
+
+        st.session_state.mesh = m  # 뷰어/슬라이서 대상 메시 갱신
+        st.session_state.paths_items = None  # 이전 슬라이스 무효화
+        st.session_state.gcode_text = None   # 이전 G-code 무효화
+        st.success("변환 적용 완료: 선택한 Pivot 기준으로 회전/확대/시프트가 적용되었고, 이 상태로 슬라이싱/생성됩니다.")
+
+# =========================
+# Actions
+# =========================
+if KEY_OK and slice_clicked and st.session_state.mesh is not None:
+    items = compute_slice_paths_with_travel(
+        st.session_state.mesh,
+        z_int=z_int,
+        ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        e_on=e_on
+    )
+    st.session_state.paths_items = items
+    if len(items) == 0:
+        (zmin, zmax) = (st.session_state.mesh.bounds[0,2], st.session_state.mesh.bounds[1,2])
+        st.warning(f"레이어가 생성되지 않았습니다. (z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}) — Z interval 또는 모델 위치/회전을 확인하세요.")
+    else:
+        st.success(f"Slicing complete: {len(items)} path items")
+
+if KEY_OK and gen_clicked and st.session_state.mesh is not None:
+    gcode_text = generate_gcode(
+        st.session_state.mesh,
+        z_int=z_int,
+        feed=feed,
+        ref_pt_user=(ref_x, ref_y),
+        e_on=e_on,
+        start_e_on=start_e_on,
+        start_e_val=start_e_val,
+        e0_on=e0_on,
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        m30_on=m30_on
+    )
+    st.session_state.gcode_text = gcode_text
+    st.success("G-code ready")
+
+if st.session_state.get("gcode_text"):
+    base = st.session_state.get("base_name", "output")
+    st.sidebar.download_button(
+        "G-code 저장",
+        st.session_state.gcode_text,
+        file_name=f"{base}.gcode",
+        mime="text/plain",
+        use_container_width=True
+    )
+
+# =========================
+# >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
+# =========================
+def _fmt_pos(v: float) -> str:
+    # +0000.0
+    s = f"{v:+.1f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(4)
+    return f"{sign}{intpart}.{dec}"
+
+def _fmt_ang(v: float) -> str:
+    # +000.00
+    s = f"{v:+.2f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(3)
+    return f"{sign}{intpart}.{dec}"
+
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+MAX_LINES = 64000
+
+def _extract_xyz_lines_count(gcode_text: str) -> int:
+    """G-code에서 X/Y/Z 좌표 지정이 포함된 G0/G1 라인의 개수만 카운트"""
+    cnt = 0
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+            continue
+        has_xyz = any(p.startswith(("X", "Y", "Z")) for p in t.split())
+        if has_xyz:
+            cnt += 1
+    return cnt
+
+def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
+    """
+    cone1500.modx 스타일 MODULE 생성 (정확히 64,000줄로 패딩).
+    """
+    lines_out = []
+    cur_x = 0.0
+    cur_y = 0.0
+    cur_z = 0.0
+    frx = _fmt_ang(rx)
+    fry = _fmt_ang(ry)
+    frz = _fmt_ang(rz)
+    tail = "+0000.0,+0000.0,+0000.0,+0000.0"
+
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not t or not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+            continue
+
+        parts = t.split()
+        has_xyz = False
+        for p in parts:
+            if p.startswith("X"):
+                try:
+                    cur_x = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+            elif p.startswith("Y"):
+                try:
+                    cur_y = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+            elif p.startswith("Z"):
+                try:
+                    cur_z = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+
+        if not has_xyz:
+            continue
+
+        fx = _fmt_pos(cur_x)
+        fy = _fmt_pos(cur_y)
+        fz = _fmt_pos(cur_z)
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
+        if len(lines_out) >= MAX_LINES:
+            break
+
+    # 패딩
+    while len(lines_out) < MAX_LINES:
+        lines_out.append(PAD_LINE)
+
+    # MODULE 래핑
+    ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
+    header = (
+        "MODULE Converted\n"
+        "!***************************************************************...****************************************************************\n"
+        "!*\n"
+        f"!*** Generated {ts} by Gcode→RAPID converter.\n"
+        "!\n"
+        "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+        "!\n"
+        "!***************************************************************...****************************************************************\n"
+    )
+    cnt_str = str(MAX_LINES)
+    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
+    body = ""
+    for i, ln in enumerate(lines_out):
+        q = f'"{ln}"'
+        if i < len(lines_out) - 1:
+            body += q + ",\n"
+        else:
+            body += q + "\n"
+    close_decl = "];\nENDMODULE\n"
+    return header + open_decl + body + close_decl
+
+# 사이드바: Generate Rapid
+st.sidebar.markdown("---")
+if KEY_OK:
+    if st.sidebar.button("Generate Rapid", use_container_width=True):
+        st.session_state.show_rapid_panel = True
+
+    if st.session_state.show_rapid_panel:
+        with st.sidebar.expander("Rapid Settings", expanded=True):
+            st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
+            st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
+            st.session_state.rapid_rz = st.number_input("Rz (deg)", value=float(st.session_state.rapid_rz), step=0.1, format="%.2f")
+
+            gtxt = st.session_state.get("gcode_text")
+            over = None
+            if gtxt is not None:
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
+
+            save_rapid_clicked = st.button("Save Rapid", use_container_width=True, disabled=(gtxt is None))
+            if gtxt is None:
+                st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+            elif over:
+                st.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+            elif save_rapid_clicked:
+                st.session_state.rapid_text = gcode_to_cone1500_module(
+                    gtxt,
+                    rx=st.session_state.rapid_rx,
+                    ry=st.session_state.rapid_ry,
+                    rz=st.session_state.rapid_rz,
+                )
+                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
+
+            if st.session_state.get("rapid_text"):
+                base = st.session_state.get("base_name", "output")
+                st.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+
+# =========================
+# Right: Viewers (크게)
+# =========================
+tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-code Viewer"])
+
+with tab_stl:
+    if st.session_state.get("mesh") is not None:
+        mesh = st.session_state.mesh
+        st.plotly_chart(
+            plot_trimesh(mesh, height=820),
+            use_container_width=True
+        )
+
+        # === Size & Coordinate Range 표시 (변환 적용 후 현재 메시 기준) ===
+        bounds = mesh.bounds  # [[xmin, ymin, zmin], [xmax, ymax, zmax]]
+        (xmin, ymin, zmin), (xmax, ymax, zmax) = bounds
+        size_x = xmax - xmin
+        size_y = ymax - ymin
+        size_z = zmax - zmin
+
+        st.markdown("### 📐 Mesh Size & Coordinate Range")
+        st.write(f"**Size (X, Y, Z):** {size_x:.2f} mm × {size_y:.2f} mm × {size_z:.2f} mm")
+        st.write(f"**X range:** {xmin:.2f} → {xmax:.2f} mm")
+        st.write(f"**Y range:** {ymin:.2f} → {ymax:.2f} mm")
+        st.write(f"**Z range:** {zmin:.2f} → {zmax:.2f} mm")
+        st.caption(f"Debug: z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}")
+    else:
+        st.info("STL을 업로드하세요.")
+
+with tab_paths:
+    if st.session_state.get("paths_items") is not None and len(st.session_state.paths_items) > 0:
+        st.plotly_chart(
+            plot_paths(st.session_state.paths_items, e_on=e_on, height=820),
+            use_container_width=True
+        )
+        # 추가 디버그 정보
+        zmin = st.session_state.mesh.bounds[0,2]
+        zmax = st.session_state.mesh.bounds[1,2]
+        st.caption(f"Paths Debug: z_min={zmin:.3f}, z_max={zmax:.3f}, first_slice={zmin+z_int:.3f}")
+    else:
+        st.info("슬라이싱을 실행하세요.")
+
+with tab_gcode:
+    if st.session_state.get("gcode_text"):
+        st.code(st.session_state.gcode_text, language="gcode")
+    else:
+        st.info("G-code를 생성하세요.")
+
+# 키가 없거나 만료 시 안내
+if not KEY_OK:
+    st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
