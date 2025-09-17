@@ -44,7 +44,7 @@ def trim_segment_end(segment, trim_distance=30.0):
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
-    XY 기준 Ramer–Douglas–Pe커 간소화.
+    XY 기준 Ramer–Douglas–Peucker 간소화.
     - 직선 구간은 양 끝점만 유지 (중간 포인트 제거)
     - 곡선/꺾임이 있는 부분만 점 유지
     - min_dist(=epsilon 규모)를 키울수록 더 과감히 단순화
@@ -70,7 +70,6 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
             return points
         a = points[0]
         b = points[-1]
-        # 가장 멀리 벗어나는 점 탐색
         dmax = -1.0
         idx = -1
         for i in range(1, len(points) - 1):
@@ -79,12 +78,10 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
                 dmax = d
                 idx = i
         if dmax <= eps_val:
-            # 충분히 직선으로 근사 가능 → 끝점만
-            return np.vstack([a, b])
-        # 곡률 존재 → 분할
+            return np.vstack([a, b])  # 직선 근사 OK → 끝점만
         left = _rdp_xy(points[: idx + 1], eps_val)
         right = _rdp_xy(points[idx:], eps_val)
-        return np.vstack([left[:-1], right])  # 분기점 중복 제거
+        return np.vstack([left[:-1], right])  # 중복 제거
 
     return _rdp_xy(pts, eps)
 
@@ -402,6 +399,15 @@ st.sidebar.number_input("Rotate Z (deg)", step=1.0, key="rot_z_deg", help="Z축 
 st.sidebar.number_input("Shift X (mm)", step=1.0, key="shift_x")
 st.sidebar.number_input("Shift Y (mm)", step=1.0, key="shift_y")
 st.sidebar.number_input("Shift Z (mm)", step=1.0, key="shift_z")
+
+# ✅ 피벗 선택: 모델 중심 / 월드 원점
+pivot_choice = st.sidebar.selectbox(
+    "Transform Pivot",
+    ["Model center (recommended)", "World origin (0,0,0)"],
+    index=0,
+    help="회전/확대의 기준점. 모델 중심 권장"
+)
+
 apply_transform_clicked = st.sidebar.button("Apply Transform", use_container_width=True, disabled=not KEY_OK)
 
 b1 = st.sidebar.container()
@@ -434,7 +440,7 @@ if uploaded is not None:
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
-# Apply Transform (scale -> rotateX -> rotateY -> rotateZ -> translate)
+# Apply Transform (Pivot-aware: center/origin)
 # =========================
 def _rot_x(theta_rad: float) -> np.ndarray:
     c, s = np.cos(theta_rad), np.sin(theta_rad)
@@ -461,34 +467,42 @@ if apply_transform_clicked:
     if st.session_state.orig_mesh is None:
         st.warning("먼저 STL을 업로드하세요.")
     else:
-        # 항상 원본 기준으로 변환(누적오차 방지)
+        # 항상 '원본' 기준으로 변환(누적오차 방지)
         m = st.session_state.orig_mesh.copy()
 
-        # 1) 스케일(원점 기준)
-        s = float(st.session_state.scale_percent) / 100.0
-        scale_mx = np.eye(4)
-        scale_mx[0, 0] = s
-        scale_mx[1, 1] = s
-        scale_mx[2, 2] = s
-        m.apply_transform(scale_mx)
+        # === 피벗 계산 ===
+        use_center_pivot = (pivot_choice.startswith("Model center"))
+        if use_center_pivot:
+            (minx, miny, minz), (maxx, maxy, maxz) = m.bounds
+            cx, cy, cz = ((minx + maxx) / 2.0, (miny + maxy) / 2.0, (minz + maxz) / 2.0)
+        else:
+            cx, cy, cz = (0.0, 0.0, 0.0)
 
-        # 2) 회전 (X -> Y -> Z, 도 → 라디안)
+        # 헬퍼: 4x4 변환 행렬들
+        def _T(tx, ty, tz):
+            T = np.eye(4); T[:3, 3] = [tx, ty, tz]; return T
+        def _S(s):
+            M = np.eye(4); M[0,0]=M[1,1]=M[2,2]=s; return M
+
+        # 입력 값
+        s  = float(st.session_state.scale_percent) / 100.0
         rx = np.deg2rad(st.session_state.rot_x_deg)
         ry = np.deg2rad(st.session_state.rot_y_deg)
         rz = np.deg2rad(st.session_state.rot_z_deg)
-        m.apply_transform(_rot_x(rx))
-        m.apply_transform(_rot_y(ry))
-        m.apply_transform(_rot_z(rz))
 
-        # 3) 평행이동
-        trans_mx = np.eye(4)
-        trans_mx[:3, 3] = [st.session_state.shift_x, st.session_state.shift_y, st.session_state.shift_z]
-        m.apply_transform(trans_mx)
+        # 순서: (센터로 이동) → 스케일 → 회전X → 회전Y → 회전Z → (센터 복귀)
+        M_total = (
+            _T(cx, cy, cz) @ _rot_z(rz) @ _rot_y(ry) @ _rot_x(rx) @ _S(s) @ _T(-cx, -cy, -cz)
+        )
+        m.apply_transform(M_total)
 
-        st.session_state.mesh = m  # 뷰어/슬라이서가 이 메시 사용
+        # 마지막: 사용자 시프트
+        m.apply_transform(_T(st.session_state.shift_x, st.session_state.shift_y, st.session_state.shift_z))
+
+        st.session_state.mesh = m  # 뷰어/슬라이서 대상 메시 갱신
         st.session_state.paths_items = None  # 이전 슬라이스 무효화
         st.session_state.gcode_text = None   # 이전 G-code 무효화
-        st.success("변환 적용 완료: 뷰어에 반영되었고, 이 상태로 슬라이싱/생성 가능합니다.")
+        st.success("변환 적용 완료: 선택한 Pivot 기준으로 회전/확대가 적용되었고, 이 상태로 슬라이싱/생성됩니다.")
 
 # =========================
 # Actions
@@ -710,7 +724,7 @@ with tab_stl:
         )
 
         # === Size & Coordinate Range 표시 (변환 적용 후 현재 메시 기준) ===
-        bounds = mesh.bounds  # shape (2, 3) → [[xmin, ymin, zmin], [xmax, ymax, zmax]]
+        bounds = mesh.bounds  # [[xmin, ymin, zmin], [xmax, ymax, zmax]]
         (xmin, ymin, zmin), (xmax, ymax, zmax) = bounds
         size_x = xmax - xmin
         size_y = ymax - ymin
