@@ -254,6 +254,18 @@ if "paths_items" not in st.session_state:
 if "gcode_text" not in st.session_state:
     st.session_state.gcode_text = None
 
+# ==== Rapid session keys (추가 기능용) ====
+if "show_rapid_panel" not in st.session_state:
+    st.session_state.show_rapid_panel = False
+if "rapid_rx" not in st.session_state:
+    st.session_state.rapid_rx = 0.0
+if "rapid_ry" not in st.session_state:
+    st.session_state.rapid_ry = 0.0
+if "rapid_rz" not in st.session_state:
+    st.session_state.rapid_rz = 0.0
+if "rapid_text" not in st.session_state:
+    st.session_state.rapid_text = None
+
 # =========================
 # Sidebar (Access Key + 만료일)
 # =========================
@@ -387,12 +399,136 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
 
 if st.session_state.get("gcode_text"):
     st.sidebar.download_button(
-        "Save G-Code",
+        "G-code 저장",
         st.session_state.gcode_text,
         file_name="output.gcode",
         mime="text/plain",
         use_container_width=True
     )
+
+# =========================
+# >>> Rapid(MODX) 추가 기능 <<<
+# =========================
+
+# --- 포맷 유틸 (요구 형식)
+def _fmt_pos(v: float) -> str:
+    # +0000.0
+    s = f"{v:+.1f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(4)
+    return f"{sign}{intpart}.{dec}"
+
+def _fmt_ang(v: float) -> str:
+    # +000.00
+    s = f"{v:+.2f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(3)
+    return f"{sign}{intpart}.{dec}"
+
+PAD_LINE = "+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0"
+
+def gcode_to_modx_lines(gcode_text: str, rx: float, ry: float, rz: float, max_lines: int = 64000):
+    """
+    G-code를 MODX 10필드 행으로 변환.
+    X/Y/Z가 포함된 G0/G1 라인만 추출하여 좌표 업데이트.
+    결과 전체 줄 수가 max_lines가 되도록 PAD_LINE으로 패딩.
+    """
+    lines_out = []
+    cur_x = 0.0
+    cur_y = 0.0
+    cur_z = 0.0
+
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not t:
+            continue
+        # G0/G1 라인만 처리
+        if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+            continue
+
+        # 토큰 파싱
+        parts = t.split()
+        has_xyz = False
+        for p in parts:
+            if p.startswith("X"):
+                try:
+                    cur_x = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+            elif p.startswith("Y"):
+                try:
+                    cur_y = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+            elif p.startswith("Z"):
+                try:
+                    cur_z = float(p[1:])
+                    has_xyz = True
+                except:
+                    pass
+
+        if not has_xyz:
+            # 좌표 지정이 없는 이동은 MODX에 좌표 행을 추가하지 않음(요청: 나머지는 패딩으로 채움)
+            continue
+
+        fx = _fmt_pos(cur_x)
+        fy = _fmt_pos(cur_y)
+        fz = _fmt_pos(cur_z)
+        frx = _fmt_ang(rx)
+        fry = _fmt_ang(ry)
+        frz = _fmt_ang(rz)
+        # 나머지 4필드는 0 패딩
+        tail = "+0000.0,+0000.0,+0000.0,+0000.0"
+        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{tail}")
+
+        if len(lines_out) >= max_lines:
+            break
+
+    # 패딩 채우기
+    while len(lines_out) < max_lines:
+        lines_out.append(PAD_LINE)
+
+    return "\n".join(lines_out)
+
+# 사이드바: Generate Rapid 버튼 (G-code 저장 버튼 아래)
+st.sidebar.markdown("---")
+if KEY_OK:
+    if st.sidebar.button("Generate Rapid", use_container_width=True):
+        st.session_state.show_rapid_panel = True
+
+    # 패널 표시
+    if st.session_state.show_rapid_panel:
+        with st.sidebar.expander("Rapid Settings", expanded=True):
+            st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
+            st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
+            st.session_state.rapid_rz = st.number_input("Rz (deg)", value=float(st.session_state.rapid_rz), step=0.1, format="%.2f")
+
+            save_rapid_clicked = st.button("Save Rapid", use_container_width=True, disabled=st.session_state.get("gcode_text") is None)
+            if st.session_state.get("gcode_text") is None:
+                st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+            if save_rapid_clicked and st.session_state.get("gcode_text"):
+                # 변환 실행 (64,000줄 고정)
+                st.session_state.rapid_text = gcode_to_modx_lines(
+                    st.session_state.gcode_text,
+                    rx=st.session_state.rapid_rx,
+                    ry=st.session_state.rapid_ry,
+                    rz=st.session_state.rapid_rz,
+                    max_lines=64000
+                )
+                st.success("Rapid(MODX) 변환 완료")
+
+            if st.session_state.get("rapid_text"):
+                st.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name="output.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
 # =========================
 # Right: Viewers (크게)
