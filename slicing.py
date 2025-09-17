@@ -310,7 +310,6 @@ if access_key:
         if EXP_DATE is None:
             st.sidebar.success(STATUS_TXT)
         else:
-            # D-표기와 함께 안내
             d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
             st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
     else:
@@ -339,7 +338,6 @@ min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0
 auto_start   = st.sidebar.checkbox("Start next layer near previous start")
 m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
-
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 
@@ -357,7 +355,6 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # Z 축 미세 확장 (기존 로직)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
@@ -407,12 +404,11 @@ if st.session_state.get("gcode_text"):
     )
 
 # =========================
-# >>> Rapid(MODX) 추가 기능 <<<
+# >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
 # =========================
 
 # --- 포맷 유틸 (요구 형식)
 def _fmt_pos(v: float) -> str:
-    # +0000.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -420,106 +416,136 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    # +000.00
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
     intpart = intpart.zfill(3)
     return f"{sign}{intpart}.{dec}"
 
-PAD_LINE = "+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0"
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+MAX_LINES = 64000
 
-def gcode_to_modx_lines(gcode_text: str, rx: float, ry: float, rz: float, max_lines: int = 64000):
+def _extract_xyz_lines_count(gcode_text: str) -> int:
+    """G-code에서 X/Y/Z 좌표 지정이 포함된 G0/G1 라인의 개수만 카운트"""
+    cnt = 0
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+            continue
+        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
+        if has_xyz:
+            cnt += 1
+    return cnt
+
+def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
     """
-    G-code를 MODX 10필드 행으로 변환.
-    X/Y/Z가 포함된 G0/G1 라인만 추출하여 좌표 업데이트.
-    결과 전체 줄 수가 max_lines가 되도록 PAD_LINE으로 패딩.
+    cone1500.modx 형식의 전체 MODULE 텍스트 생성:
+      - MODULE Converted
+      - 헤더 주석
+      - VAR string sFileCount := "64000";
+      - VAR string d3dpDynLoad{64000} := [ "....", ... ];
+      - ENDMODULE
+    64,000 라인 미만이면 PAD_LINE으로 채움.
     """
+    # 좌표 라인 생성
     lines_out = []
     cur_x = 0.0
     cur_y = 0.0
     cur_z = 0.0
+    frx = _fmt_ang(rx)
+    fry = _fmt_ang(ry)
+    frz = _fmt_ang(rz)
+    tail = "+0000.0,+0000.0,+0000.0,+0000.0"
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t:
-            continue
-        # G0/G1 라인만 처리
-        if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+        if not t or not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
             continue
 
-        # 토큰 파싱
         parts = t.split()
         has_xyz = False
         for p in parts:
             if p.startswith("X"):
-                try:
-                    cur_x = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
+                try: cur_x = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Y"):
-                try:
-                    cur_y = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
+                try: cur_y = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Z"):
-                try:
-                    cur_z = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
+                try: cur_z = float(p[1:]); has_xyz = True
+                except: pass
 
         if not has_xyz:
-            # 좌표 지정이 없는 이동은 MODX에 좌표 행을 추가하지 않음(요청: 나머지는 패딩으로 채움)
             continue
 
         fx = _fmt_pos(cur_x)
         fy = _fmt_pos(cur_y)
         fz = _fmt_pos(cur_z)
-        frx = _fmt_ang(rx)
-        fry = _fmt_ang(ry)
-        frz = _fmt_ang(rz)
-        # 나머지 4필드는 0 패딩
-        tail = "+0000.0,+0000.0,+0000.0,+0000.0"
-        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{tail}")
-
-        if len(lines_out) >= max_lines:
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
+        if len(lines_out) >= MAX_LINES:
             break
 
-    # 패딩 채우기
-    while len(lines_out) < max_lines:
+    # 패딩
+    while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
-    return "\n".join(lines_out)
+    # MODULE 래핑 (cone1500 스타일)
+    ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
+    header = (
+        "MODULE Converted\n"
+        "!***************************************************************...****************************************************************\n"
+        "!*\n"
+        f"!*** Generated {ts} by Gcode→RAPID converter.\n"
+        "!\n"
+        "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+        "!\n"
+        "!***************************************************************...****************************************************************\n"
+    )
+    cnt_str = str(MAX_LINES)
+    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
+    # 각 라인은 따옴표로 감싸고 마지막 라인에는 콤마 없음
+    body = ""
+    for i, ln in enumerate(lines_out):
+        q = f'"{ln}"'
+        if i < len(lines_out) - 1:
+            body += q + ",\n"
+        else:
+            body += q + "\n"
+    close_decl = "];\nENDMODULE\n"
+    return header + open_decl + body + close_decl
 
-# 사이드바: Generate Rapid 버튼 (G-code 저장 버튼 아래)
+# 사이드바: Generate Rapid 버튼
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
         st.session_state.show_rapid_panel = True
 
-    # 패널 표시
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
             st.session_state.rapid_rz = st.number_input("Rz (deg)", value=float(st.session_state.rapid_rz), step=0.1, format="%.2f")
 
-            save_rapid_clicked = st.button("Save Rapid", use_container_width=True, disabled=st.session_state.get("gcode_text") is None)
-            if st.session_state.get("gcode_text") is None:
+            # 사전 검사: G-code 필요 & 라인 수 초과 체크
+            gtxt = st.session_state.get("gcode_text")
+            over = None
+            if gtxt is not None:
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
+
+            save_rapid_clicked = st.button("Save Rapid", use_container_width=True, disabled=(gtxt is None))
+            if gtxt is None:
                 st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-            if save_rapid_clicked and st.session_state.get("gcode_text"):
-                # 변환 실행 (64,000줄 고정)
-                st.session_state.rapid_text = gcode_to_modx_lines(
-                    st.session_state.gcode_text,
+            elif over:
+                st.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+            elif save_rapid_clicked:
+                st.session_state.rapid_text = gcode_to_cone1500_module(
+                    gtxt,
                     rx=st.session_state.rapid_rx,
                     ry=st.session_state.rapid_ry,
                     rz=st.session_state.rapid_rz,
-                    max_lines=64000
                 )
-                st.success("Rapid(MODX) 변환 완료")
+                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 st.download_button(
