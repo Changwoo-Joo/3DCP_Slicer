@@ -4,6 +4,7 @@ import trimesh
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional
+from datetime import date, datetime
 
 # =========================
 # App basics
@@ -254,12 +255,57 @@ if "gcode_text" not in st.session_state:
     st.session_state.gcode_text = None
 
 # =========================
-# Sidebar (스크롤 자동)
+# Sidebar (Access Key + 만료일)
 # =========================
-# --- Access Key (추가) ---
 st.sidebar.header("Access")
+
+# ▶ 키 목록과 만료일(YYYY-MM-DD) 지정: None이면 만료 없음(상시 사용)
+ALLOWED_WITH_EXPIRY = {
+    "alpha123": "2025-12-31",
+    "beta456":  "2025-09-30",
+    "darobotics": None,   # 만료 없음
+    "guest2025": "2025-10-31",
+}
+
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
-KEY_OK = bool(access_key.strip())
+
+def check_key_valid(k: str):
+    """키 유효성/만료여부 확인.
+    Returns: (is_valid: bool, expiry_date: Optional[date], remaining_days: Optional[int], status_txt: str)
+    """
+    if not k or k not in ALLOWED_WITH_EXPIRY:
+        return False, None, None, "유효하지 않은 키입니다."
+    exp = ALLOWED_WITH_EXPIRY[k]
+    if exp is None:
+        return True, None, None, "만료일 없음 (상시 사용 가능)"
+    try:
+        exp_date = date.fromisoformat(exp)
+    except Exception:
+        return False, None, None, "키 만료일 형식 오류(YYYY-MM-DD)."
+    today = date.today()
+    remaining = (exp_date - today).days
+    if remaining < 0:
+        return False, exp_date, remaining, f"만료일 경과: {exp_date.isoformat()}"
+    elif remaining == 0:
+        return True, exp_date, remaining, f"오늘 만료 ({exp_date.isoformat()})"
+    else:
+        return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
+
+KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
+
+# 상태 표시
+if access_key:
+    if KEY_OK:
+        if EXP_DATE is None:
+            st.sidebar.success(STATUS_TXT)
+        else:
+            # D-표기와 함께 안내
+            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
+            st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
+    else:
+        st.sidebar.error(STATUS_TXT)
+else:
+    st.sidebar.warning("Access Key를 입력하세요.")
 
 # 업로드는 키 없으면 비활성화
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
@@ -376,6 +422,6 @@ with tab_gcode:
     else:
         st.info("G-code를 생성하세요.")
 
-# 키가 없을 때 안내 메시지 (비동작 안내, 본문 UI는 그대로 유지)
+# 키가 없거나 만료 시 안내
 if not KEY_OK:
-    st.warning("Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+    st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
