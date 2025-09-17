@@ -276,7 +276,7 @@ def check_key_valid(k: str):
         return False, None, None, "유효하지 않은 키입니다."
     exp = ALLOWED_WITH_EXPIRY[k]
     if exp is None:
-        return True, None, None, "만료일 없음 (상시 사용 가능)"
+        return True, None, None, "만료일 없음"
     try:
         exp_date = date.fromisoformat(exp)
     except Exception:
