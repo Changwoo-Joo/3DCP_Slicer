@@ -5,6 +5,7 @@ import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from datetime import date, datetime
+from pathlib import Path  # ★ 파일명 추출용
 
 # =========================
 # App basics
@@ -253,6 +254,8 @@ if "paths_items" not in st.session_state:
     st.session_state.paths_items = None
 if "gcode_text" not in st.session_state:
     st.session_state.gcode_text = None
+if "base_name" not in st.session_state:
+    st.session_state.base_name = "output"  # ★ 기본 파일명
 
 # ==== Rapid session keys (추가 기능용) ====
 if "show_rapid_panel" not in st.session_state:
@@ -338,6 +341,7 @@ min_spacing  = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0
 auto_start   = st.sidebar.checkbox("Start next layer near previous start")
 m30_on       = st.sidebar.checkbox("Append M30 at end", value=False)
 
+
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 
@@ -355,10 +359,14 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
+    # Z 축 미세 확장 (기존 로직)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
+
+    # ★ 업로드 원본 파일명 저장 (확장자 제외)
+    st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
 # Actions
@@ -395,10 +403,11 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     st.success("G-code ready")
 
 if st.session_state.get("gcode_text"):
+    base = st.session_state.get("base_name", "output")  # ★ 파일명 반영
     st.sidebar.download_button(
         "G-code 저장",
         st.session_state.gcode_text,
-        file_name="output.gcode",
+        file_name=f"{base}.gcode",
         mime="text/plain",
         use_container_width=True
     )
@@ -407,8 +416,8 @@ if st.session_state.get("gcode_text"):
 # >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
 # =========================
 
-# --- 포맷 유틸 (요구 형식)
 def _fmt_pos(v: float) -> str:
+    # +0000.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -416,6 +425,7 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
+    # +000.00
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -447,7 +457,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
       - ENDMODULE
     64,000 라인 미만이면 PAD_LINE으로 채움.
     """
-    # 좌표 라인 생성
     lines_out = []
     cur_x = 0.0
     cur_y = 0.0
@@ -503,7 +512,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     )
     cnt_str = str(MAX_LINES)
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-    # 각 라인은 따옴표로 감싸고 마지막 라인에는 콤마 없음
     body = ""
     for i, ln in enumerate(lines_out):
         q = f'"{ln}"'
@@ -526,7 +534,6 @@ if KEY_OK:
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
             st.session_state.rapid_rz = st.number_input("Rz (deg)", value=float(st.session_state.rapid_rz), step=0.1, format="%.2f")
 
-            # 사전 검사: G-code 필요 & 라인 수 초과 체크
             gtxt = st.session_state.get("gcode_text")
             over = None
             if gtxt is not None:
@@ -548,10 +555,11 @@ if KEY_OK:
                 st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
+                base = st.session_state.get("base_name", "output")  # ★ 파일명 반영
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
-                    file_name="output.modx",
+                    file_name=f"{base}.modx",
                     mime="text/plain",
                     use_container_width=True
                 )
