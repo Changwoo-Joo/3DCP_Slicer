@@ -220,7 +220,7 @@ def compute_slice_paths_with_travel(
 
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
-            # 레이어 간 이동 (점선)
+            # 레이어 간 이동 (점선으로 보일 travel)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
@@ -240,12 +240,13 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
-# === items -> segments (전체 사용) ===
+# === items -> segments ===
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     """
     반환: [(p1, p2, is_travel, is_extruding), ...]
+    - travel 은 항상 is_extruding=False 처리해서 점선으로 고정
     """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
@@ -259,7 +260,8 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
             for p1, p2 in zip(poly[:-1], poly[1:]):
-                segs.append((p1, p2, is_travel, True))  # E off여도 travel은 is_travel=True로 점선 처리됨
+                is_extruding = (not is_travel)  # travel 은 False 로 고정
+                segs.append((p1, p2, is_travel, is_extruding))
     return segs
 
 # === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
@@ -334,9 +336,7 @@ def compute_offsets_into_buffers(segments, upto, half_width):
 def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
     """
     전체 경로에서 '첫 압출 세그먼트의 시작점'과 '마지막 압출 세그먼트의 끝점'에만
-    반원(지름=Layer Width=2*half_width)을 추가해서 좌/우 오프셋을 연결.
-    반원은 시작점에서는 진행방향 '뒤쪽(-t)'으로, 끝점에서는 '앞쪽(+t)'으로 둔다.
-    반원은 off_l 트레이스에만 추가(연한 빨간색)해도 시각적으로 연결이 완성됨.
+    반원(지름=2*half_width)을 추가 (off_l에 그려 연결성 개선).
     """
     if half_width <= 0 or upto <= 0 or len(segments) == 0:
         return
@@ -362,13 +362,11 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
 
     buf = st.session_state.paths_anim_buf
     def _append_arc(center, t_unit, n_unit, z, sign_t, steps):
-        # sign_t = -1 (start cap), +1 (end cap)
         s = sign_t * t_unit
         thetas = np.linspace(0.0, np.pi, int(max(8, steps)))
         xs = center[0] + half_width*(n_unit[0]*np.cos(thetas) + s[0]*np.sin(thetas))
         ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
         zs = np.full_like(xs, float(z))
-        # 한 트레이스 안에서 분리된 폴리라인을 만들기 위해 None 삽입
         if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
             buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
         buf["off_l"]["x"].extend(xs.tolist() + [None])
@@ -381,7 +379,7 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
     nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
         t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
-        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)  # 좌법선
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         center = (float(p1[0]), float(p1[1]))
         _append_arc(center, t_unit, n_unit, float(p1[2]), sign_t=-1.0, steps=samples)
 
@@ -391,7 +389,7 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
     nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
         t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
-        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)  # 좌법선
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         center = (float(p2[0]), float(p2[1]))
         _append_arc(center, t_unit, n_unit, float(p2[2]), sign_t=+1.0, steps=samples)
 
@@ -401,11 +399,11 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
-    # 1: dot
+    # 1: dot (travel 등)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
-    # 2: offset left (연빨)
+    # 2: offset left (연빨 + 캡)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                name="Offset / Caps", showlegend=False))
@@ -461,20 +459,33 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
-# =========================
-# Plotly: STL (정적)
-# =========================
-def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
-    v = mesh.vertices
-    f = mesh.faces
-    fig = go.Figure(data=[go.Mesh3d(
-        x=v[:, 0], y=v[:, 1], z=v[:, 2],
-        i=f[:, 0], j=f[:, 1], k=f[:, 2],
-        color="#888888", opacity=0.6, flatshading=True
-    )])
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      height=height, margin=dict(l=0, r=0, t=10, b=0))
-    return fig
+# ======= 치수 계산 유틸 =======
+def _bbox_from_buffer(buf_dict):
+    # buf_dict: {"x":[...], "y":[...], "z":[...]} with None separators
+    try:
+        xs = [float(v) for v in buf_dict["x"] if v is not None]
+        ys = [float(v) for v in buf_dict["y"] if v is not None]
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        return {
+            "x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
+            "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min,
+        }
+    except Exception:
+        return None
+
+def _fmt_dims(title, bbox):
+    if bbox is None:
+        return f"**{title}**\n\n데이터 없음"
+    xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
+    ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
+    return (
+        f"**{title}**\n\n"
+        f"X: [{xm:.3f} → {xM:.3f}]  (Δ={xl:.3f})\n\n"
+        f"Y: [{ym:.3f} → {yM:.3f}]  (Δ={yl:.3f})"
+    )
 
 # =========================
 # Session init
@@ -739,14 +750,17 @@ with tab_paths:
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        # 옵션: Layer width offsets 적용
-        apply_offsets = st.checkbox(
-            "Apply layer width offsets (± W/2) & global endcaps",
-            value=False,
-            help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로(연빨)를 표시하고, 전체 경로의 처음/마지막 포인트에만 지름 W의 반원을 추가해 좌/우 오프셋을 연결합니다."
-        )
+        # 옵션 + 치수 패널(우측)
+        row1_left, row1_right = st.columns([3, 2])
+        with row1_left:
+            apply_offsets = st.checkbox(
+                "Apply layer width offsets (± W/2) & global endcaps",
+                value=False,
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋(연빨)을 그리고 전체 시작/끝에만 반원 캡을 추가합니다."
+            )
+        dims_placeholder = row1_right.empty()
 
-        # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
+        # 진행(segments) 슬라이더 + 숫자 입력
         col1, col2 = st.columns([6, 2])
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
         with col1:
@@ -783,13 +797,25 @@ with tab_paths:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
 
-        # 차트 렌더 (오프셋 트레이스가 항상 존재하도록 보장)
+        # 차트 렌더
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets)
 
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # ===== 치수 패널 채우기 (apply_offsets가 켜져 있을 때) =====
+        if apply_offsets:
+            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])  # 오른쪽 = 외부치수
+            bbox_l = _bbox_from_buffer(st.session_state.paths_anim_buf["off_l"])  # 왼쪽 = 내부치수
+            dims_md = (
+                _fmt_dims("외부치수 (Right offset)", bbox_r) + "\n\n---\n\n" +
+                _fmt_dims("내부치수 (Left offset)",  bbox_l)
+            )
+            dims_placeholder.markdown(dims_md)
+        else:
+            dims_placeholder.markdown("_Offsets OFF_")
 
         st.caption(
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
