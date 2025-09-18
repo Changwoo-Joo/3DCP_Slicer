@@ -12,6 +12,18 @@ from pathlib import Path
 # App basics
 # =========================
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
+
+# ── 아래 CSS를 추가하면 우측 하단 "Made with Streamlit" 푸터가 숨겨집니다 ──
+st.markdown(
+    """
+    <style>
+    footer {visibility: hidden;}
+    [data-testid="stFooter"] {visibility: hidden;}
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
