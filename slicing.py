@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import math
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -15,7 +16,7 @@ st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"
-OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색
+OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색(오프셋 표시)
 
 def clamp(v, lo, hi):
     try:
@@ -26,29 +27,69 @@ def clamp(v, lo, hi):
 # =========================
 # Helpers
 # =========================
-def trim_segment_end(segment, trim_distance=30.0):
-    segment = np.array(segment, dtype=float)
-    if len(segment) < 2:
-        return segment
-    total_len = np.sum(np.linalg.norm(np.diff(segment, axis=0)[:, :2], axis=1))
-    if total_len <= trim_distance:
-        return segment
-    trimmed = [segment[0]]
+def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+    """
+    닫힌 루프에서 첫점과 끝점이 같은 경우(또는 매우 근접) 시각화/계산 안정성을 위해 끝점 제거.
+    (표시는 open polyline로 함)
+    """
+    seg = np.asarray(segment, dtype=float)
+    if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
+        return seg[:-1]
+    return seg
+
+def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
+    """
+    폐루프 전체(마지막→첫점 포함)를 기준으로, '꼬리에서' trim_distance만큼 잘라
+    시작점 주변에 정확한 심(간격)을 남김.
+    - 입력 segment는 닫힌 루프일 수도/아닐 수도 있음. 여기서 닫힘을 강제 고려.
+    - 결과는 open polyline(첫점~새로운 끝점)로 반환.
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or trim_distance <= 0:
+        return ensure_open_ring(pts)
+
+    # ring: 중복 끝점 제거(있다면)
+    ring = ensure_open_ring(pts)
+    n = len(ring)
+    if n < 2:
+        return ring
+
+    # 각 변 길이(마지막→첫점 포함)
+    lens = []
+    for i in range(n):
+        p = ring[i]
+        q = ring[(i + 1) % n]
+        lens.append(float(np.linalg.norm((q - p)[:2])))
+    total = float(sum(lens))
+    if total <= trim_distance:
+        # 너무 짧으면 트림하지 않음
+        return ring
+
+    target = total - trim_distance  # 시작점에서 target까지 유지
     acc = 0.0
-    for i in range(1, len(segment)):
-        p1, p2 = segment[i - 1], segment[i]
-        d = np.linalg.norm((p2 - p1)[:2])
-        if d == 0:
-            continue
-        if acc + d >= total_len - trim_distance:
-            r = (total_len - trim_distance - acc) / d
-            trimmed.append(p1 + (p2 - p1) * r)
-            break
-        trimmed.append(p2)
-        acc += d
-    return np.array(trimmed)
+    out = [ring[0].copy()]
+    i = 0
+    # target 지점이 위치한 변 찾기
+    while i < n and acc + lens[i] < target:
+        acc += lens[i]
+        out.append(ring[(i + 1) % n].copy())
+        i += 1
+
+    # i번째 변에서 비율로 절단
+    p = ring[i]
+    q = ring[(i + 1) % n]
+    d = lens[i]
+    if d > 0:
+        t = (target - acc) / d
+        cut = p + t * (q - p)
+    else:
+        cut = p.copy()
+    out.append(cut)
+
+    return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+    """XY 기준 RDP 간소화(끝점 보존)."""
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
@@ -82,8 +123,24 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     return _rdp_xy(pts, eps)
 
 def shift_to_nearest_start(segment, ref_point):
+    """시작점을 ref_point(XY)에서 가장 가까운 정점으로 돌려 배치."""
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
+
+# =========================
+# Plotly: STL (정적)
+# =========================
+def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
+    v = mesh.vertices
+    f = mesh.faces
+    fig = go.Figure(data=[go.Mesh3d(
+        x=v[:, 0], y=v[:, 1], z=v[:, 2],
+        i=f[:, 0], j=f[:, 1], k=f[:, 2],
+        color="#888888", opacity=0.6, flatshading=True
+    )])
+    fig.update_layout(scene=dict(aspectmode="data"),
+                      height=height, margin=dict(l=0, r=0, t=10, b=0))
+    return fig
 
 # =========================
 # G-code generator
@@ -121,20 +178,31 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
+        # 레이어 기준 시작점(레이어마다 고정)
         if auto_start and prev_start_xy is not None:
-            dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
-            first_idx = int(np.argmin(dists))
-            segments = segments[first_idx:] + segments[:first_idx]
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
+        # 같은 레이어 모든 폐구간은 동일 ref_pt_layer 기준으로 시작
+        layer_starts = []
+        layer_ends = []
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
-            trimmed = trim_segment_end(shifted, trim_dist)
+            # 1) 루프 닫힘 고려 + 시작점 맞추기
+            seg3d_no_dup = ensure_open_ring(seg3d)
+            shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+            # 2) 폐루프 전체 길이 기준으로 꼬리에서 정확히 trim
+            trimmed = trim_closed_ring_tail(shifted, trim_dist)
+            # 3) 단순화(끝점 보존)
             simplified = simplify_segment(trimmed, min_spacing)
-            start = simplified[0]
 
+            # 이동: 이전 폐구간 끝 → 현재 시작 (G-code에서도 비압출 이동)
+            if i_seg > 0:
+                s = simplified[0]
+                g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
+
+            # 압출 경로
+            start = simplified[0]
             g.append(f"G01 F{feed}")
             if start_e_on:
                 g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
@@ -151,8 +219,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             if e0_on:
                 g.append("G01 E0")
 
+            layer_starts.append(simplified[0])
+            layer_ends.append(simplified[-1])
+
             if i_seg == 0:
-                prev_start_xy = start[:2]
+                prev_start_xy = start[:2]  # auto_start 기준
+
+        # 같은 레이어 내 폐구간 간 이동은 위에서 이미 G01(비압출)로 넣어줌
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -160,7 +233,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (미리보기용)
+# Slice path computation (preview)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -198,18 +271,18 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
+        # 레이어 기준 시작점 결정
         if auto_start and prev_start_xy is not None:
-            dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
-            first_idx = int(np.argmin(dists))
-            segments = segments[first_idx:] + segments[:first_idx]
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
+
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
-            trimmed = trim_segment_end(shifted, trim_dist)
+            seg3d_no_dup = ensure_open_ring(seg3d)
+            shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+            trimmed = trim_closed_ring_tail(shifted, trim_dist)  # 폐루프 기준 정확 트림
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
@@ -218,12 +291,16 @@ def compute_slice_paths_with_travel(
         if not layer_polys:
             continue
 
+        # 레이어 간 travel
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
-        for poly in layer_polys:
+        # 같은 레이어 내 폐구간 간 travel도 추가
+        for i_seg in range(len(layer_polys)):
+            poly = layer_polys[i_seg]
+            # 압출 경로
             if e_on:
                 e_vals = [0.0]
                 total = 0.0
@@ -235,17 +312,20 @@ def compute_slice_paths_with_travel(
             else:
                 all_items.append((poly, None, False))
 
+            # 다음 폐구간 시작점으로 이동(비압출)
+            if i_seg < len(layer_polys) - 1:
+                nxt = layer_polys[i_seg + 1]
+                travel_intra = np.vstack([poly[-1], nxt[0]])
+                all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
+
         prev_layer_last_end = layer_polys[-1][-1]
 
     return all_items
 
-# === items -> segments (전체 사용) ===
+# === items -> segments ===
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-    """
-    반환: [(p1, p2, is_travel, is_extruding), ...]
-    """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
@@ -258,103 +338,142 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
             for p1, p2 in zip(poly[:-1], poly[1:]):
-                segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
+                # e_on=False인 경우 travel도 실선으로 그리기 위해 is_extruding=True/False는 시각화에 영향 없지만,
+                # travel 여부만 유지한다.
+                is_extruding = (not is_travel)
+                segs.append((p1, p2, is_travel, is_extruding))
     return segs
 
 # === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 압출
-        "dot":   {"x": [], "y": [], "z": []},  # 트래블/비압출
+        "solid": {"x": [], "y": [], "z": []},  # 검은 실선
+        "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(Insert E ON일 때 travel)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
+        "stride": 1,
     }
 
 def ensure_anim_buffers():
     if "paths_anim_buf" not in st.session_state or not isinstance(st.session_state.paths_anim_buf, dict):
         reset_anim_buffers()
 
-def append_segments_to_buffers(segments, start_idx, end_idx):
+def append_segments_to_buffers(segments, start_idx, end_idx, stride=1):
     buf = st.session_state.paths_anim_buf
-    for i in range(start_idx, end_idx):
-        p1, p2, is_travel, is_extruding = segments[i]
-        key = "solid" if (not is_travel and is_extruding) else "dot"
-        buf[key]["x"].extend([float(p1[0]), float(p2[0]), None])
-        buf[key]["y"].extend([float(p1[1]), float(p2[1]), None])
-        buf[key]["z"].extend([float(p1[2]), float(p2[2]), None])
+    show_travel_dots = st.session_state.get("show_travel_dots", True)
+    for i in range(start_idx, end_idx, max(1, int(stride))):
+        p1, p2, is_travel, _ = segments[i]
+        if is_travel and show_travel_dots:
+            # Insert E ON → travel은 점선
+            buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
+            buf["dot"]["y"].extend([float(p1[1]), float(p2[1]), None])
+            buf["dot"]["z"].extend([float(p1[2]), float(p2[2]), None])
+        else:
+            # Insert E OFF → travel도 실선 (show_travel_dots=False)
+            buf["solid"]["x"].extend([float(p1[0]), float(p2[0]), None])
+            buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
+            buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
     buf["built_upto"] = end_idx
+    buf["stride"] = max(1, int(stride))
 
-def rebuild_buffers_to(segments, upto):
+def rebuild_buffers_to(segments, upto, stride=1):
     reset_anim_buffers()
     if upto > 0:
-        append_segments_to_buffers(segments, 0, upto)
+        append_segments_to_buffers(segments, 0, upto, stride=stride)
 
 def compute_offsets_into_buffers(segments, upto, half_width):
-    """
-    segments[0:upto] 중 '압출 세그먼트'만 대상으로
-    진행 방향의 ±90°(좌/우)로 half_width 만큼 평행 이동한 선분을
-    off_l, off_r 버퍼에 기록.
-    """
     buf = st.session_state.paths_anim_buf
-    # 초기화
     buf["off_l"] = {"x": [], "y": [], "z": []}
     buf["off_r"] = {"x": [], "y": [], "z": []}
     if half_width <= 0 or upto <= 0:
         return
-
     for i in range(0, min(upto, len(segments))):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_travel or not is_extruding:
             continue
-        dx = float(p2[0] - p1[0])
-        dy = float(p2[1] - p1[1])
+        dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1])
         nrm = (dx*dx + dy*dy) ** 0.5
         if nrm < 1e-12:
             continue
-        # 좌측 법선(반시계 +90°) = (-dy, dx), 우측은 부호 반대
         nx = -dy / nrm
         ny =  dx / nrm
-
         l1 = (float(p1[0] + nx*half_width), float(p1[1] + ny*half_width), float(p1[2]))
         l2 = (float(p2[0] + nx*half_width), float(p2[1] + ny*half_width), float(p2[2]))
         r1 = (float(p1[0] - nx*half_width), float(p1[1] - ny*half_width), float(p1[2]))
         r2 = (float(p2[0] - nx*half_width), float(p2[1] - ny*half_width), float(p2[2]))
+        buf["off_l"]["x"].extend([l1[0], l2[0], None]); buf["off_l"]["y"].extend([l1[1], l2[1], None]); buf["off_l"]["z"].extend([l1[2], l2[2], None])
+        buf["off_r"]["x"].extend([r1[0], r2[0], None]); buf["off_r"]["y"].extend([r1[1], r2[1], None]); buf["off_r"]["z"].extend([r1[2], r2[2], None])
 
-        # 좌
-        buf["off_l"]["x"].extend([l1[0], l2[0], None])
-        buf["off_l"]["y"].extend([l1[1], l2[1], None])
-        buf["off_l"]["z"].extend([l1[2], l2[2], None])
-        # 우
-        buf["off_r"]["x"].extend([r1[0], r2[0], None])
-        buf["off_r"]["y"].extend([r1[1], r2[1], None])
-        buf["off_r"]["z"].extend([r1[2], r2[2], None])
+def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
+    if half_width <= 0 or upto <= 0 or len(segments) == 0:
+        return
+    first_idx = None
+    last_idx = None
+    N = min(upto, len(segments))
+    for i in range(N):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if (not is_travel) and is_extruding:
+            first_idx = i
+            break
+    for i in range(N - 1, -1, -1):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if (not is_travel) and is_extruding:
+            last_idx = i
+            break
+    if first_idx is None or last_idx is None:
+        return
+    buf = st.session_state.paths_anim_buf
+    def _append_arc(center, t_unit, n_unit, z, sign_t, steps):
+        s = sign_t * t_unit
+        thetas = np.linspace(0.0, np.pi, int(max(8, steps)))
+        xs = center[0] + half_width*(n_unit[0]*np.cos(thetas) + s[0]*np.sin(thetas))
+        ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
+        zs = np.full_like(xs, float(z))
+        if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
+            buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
+        buf["off_l"]["x"].extend(xs.tolist() + [None])
+        buf["off_l"]["y"].extend(ys.tolist() + [None])
+        buf["off_l"]["z"].extend(zs.tolist() + [None])
+    # start cap
+    p1, p2, _, _ = segments[first_idx]
+    dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
+    if nrm > 1e-12:
+        t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
+        _append_arc((float(p1[0]), float(p1[1])), t_unit, n_unit, float(p1[2]), sign_t=-1.0, steps=samples)
+    # end cap
+    p1, p2, _, _ = segments[last_idx]
+    dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
+    if nrm > 1e-12:
+        t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
+        _append_arc((float(p2[0]), float(p2[1])), t_unit, n_unit, float(p2[2]), sign_t=+1.0, steps=samples)
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
-    # 0: solid
+    # 0: solid (검은 실선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
-    # 1: dot
+    # 1: dot (검은 점선; Insert E ON일 때 travel)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
-    # 2: offset left (연빨)
+    # 2: offset left (연빨 + 캡)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                               name="Offset - Left", showlegend=False))
+                               showlegend=False))
     # 3: offset right (연빨)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                               name="Offset - Right", showlegend=False))
+                               showlegend=False))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0),
                       uirevision="keep", transition={'duration': 0})
     return fig
 
 def ensure_paths_fig(height=820):
-    """세션의 paths_base_fig가 없거나 트레이스가 4개 미만이면 새로 만든다."""
     fig = st.session_state.get("paths_base_fig")
     ok = False
     try:
@@ -365,7 +484,6 @@ def ensure_paths_fig(height=820):
         st.session_state.paths_base_fig = make_base_fig(height)
 
 def ensure_four_traces(fig: go.Figure):
-    """현재 fig의 트레이스 수를 확인해 4개가 되도록 부족한 만큼 추가."""
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=3, dash="solid", color=PATH_COLOR),
@@ -378,25 +496,17 @@ def ensure_four_traces(fig: go.Figure):
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                    showlegend=False))
-
     while len(fig.data) < 4:
         n = len(fig.data)
-        if n == 0:
-            add_solid()
-        elif n == 1:
-            add_dot()
-        else:
-            add_off()
+        if n == 0: add_solid()
+        elif n == 1: add_dot()
+        else: add_off()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
-    # 항상 4트레이스 존재 보장
     ensure_four_traces(fig)
-
     buf = st.session_state.paths_anim_buf
-    # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
-    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
@@ -404,20 +514,46 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
-# =========================
-# Plotly: STL (정적)
-# =========================
-def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
-    v = mesh.vertices
-    f = mesh.faces
-    fig = go.Figure(data=[go.Mesh3d(
-        x=v[:, 0], y=v[:, 1], z=v[:, 2],
-        i=f[:, 0], j=f[:, 1], k=f[:, 2],
-        color="#888888", opacity=0.6, flatshading=True
-    )])
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      height=height, margin=dict(l=0, r=0, t=10, b=0))
-    return fig
+# ======= 치수 계산 유틸 =======
+def _bbox_from_buffer(buf_dict):
+    try:
+        xs = [float(v) for v in buf_dict["x"] if v is not None]
+        ys = [float(v) for v in buf_dict["y"] if v is not None]
+        if len(xs) == 0 or len(ys) == 0:
+            return None
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        return {
+            "x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
+            "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min,
+        }
+    except Exception:
+        return None
+
+def _last_z_from_buffer(buf_dict):
+    try:
+        for v in reversed(buf_dict.get("z", [])):
+            if v is not None:
+                return float(v)
+    except Exception:
+        pass
+    return None
+
+def _fmt_dims_inline(title, bbox, z_single: Optional[float]):
+    if bbox is None:
+        base = f"**{title}**  X=(-) · Y=(-)"
+    else:
+        xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
+        ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
+        base = (
+            f"**{title}**  "
+            f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f}) · "
+            f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f})"
+        )
+    if z_single is None:
+        return base + " · Z=(-)"
+    else:
+        return base + f" · Z=({z_single:.3f})"
 
 # =========================
 # Session init
@@ -442,14 +578,13 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
-# 진행(segments) 현재 위치 상태
 if "paths_scrub" not in st.session_state:
-    st.session_state.paths_scrub = 0  # 현재 표시 중인 세그먼트 개수
+    st.session_state.paths_scrub = 0
 
 ensure_anim_buffers()
 
 # =========================
-# Sidebar
+# Sidebar (Access)
 # =========================
 st.sidebar.header("Access")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kmou*": "2026-12-31"}
@@ -489,6 +624,9 @@ else:
 
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
+# =========================
+# Sidebar (Parameters)
+# =========================
 st.sidebar.header("Parameters")
 z_int = st.sidebar.number_input("Z interval (mm)", 1.0, 1000.0, 15.0)
 feed = st.sidebar.number_input("Feedrate (F)", 1, 100000, 2000)
@@ -523,6 +661,7 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
+    # Z 축 미세 확장 (최대 Z 절단면 인식 보정)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
@@ -591,7 +730,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        # 🔧 여기 괄호 수정됨 (불필요한 닫는 괄호 제거)
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
         parts = t.split(); has_xyz = False
@@ -660,37 +798,38 @@ if KEY_OK:
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
-                st.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text,
-                                   file_name=f"{base}.modx", mime="text/plain",
-                                   use_container_width=True)
+                st.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
 # =========================
-# Right: Viewers
+# Right: Viewers  (Sliced Paths 먼저)
 # =========================
-tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-code Viewer"])
-
-with tab_stl:
-    if st.session_state.get("mesh") is not None:
-        st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820),
-                        use_container_width=True, key="stl_chart",
-                        config={"displayModeBar": False})
-    else:
-        st.info("STL을 업로드하세요.")
+tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
-        # 세그먼트 준비
+        # Insert E 상태에 따라 travel 점선/실선 규칙
+        st.session_state.show_travel_dots = bool(e_on)
+
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        # 옵션: Layer width offsets 적용
-        apply_offsets = st.checkbox(
-            "Apply layer width offsets (± W/2)",
-            value=False,
-            help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로를 연한 빨간색으로 표시합니다."
-        )
+        # 옵션 + (우측) 치수 패널
+        row1_left, row1_right = st.columns([3, 2])
+        with row1_left:
+            apply_offsets = st.checkbox(
+                "Apply layer width",
+                value=False,
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전체 시작/끝 반원 캡을 표시합니다."
+            )
+        dims_placeholder = row1_right.empty()
 
-        # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
+        # 진행(segments) 슬라이더 + 숫자 입력
         col1, col2 = st.columns([6, 2])
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
         with col1:
@@ -710,23 +849,27 @@ with tab_paths:
             target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
 
-        # 버퍼 재구축/증분 반영
-        built = st.session_state.paths_anim_buf["built_upto"]
-        if target < built:
-            rebuild_buffers_to(segments, target)
-        elif target > built:
-            append_segments_to_buffers(segments, built, target)
-        st.session_state.paths_scrub = target  # 현재 위치 저장
+        # 메시지 스트림 안정화: 가시화 stride
+        DRAW_LIMIT = 15000
+        draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
 
-        # 오프셋 버퍼 생성/지우기
+        built = st.session_state.paths_anim_buf["built_upto"]
+        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+        if (draw_stride != prev_stride) or (target < built):
+            rebuild_buffers_to(segments, target, stride=draw_stride)
+        elif target > built:
+            append_segments_to_buffers(segments, built, target, stride=draw_stride)
+        st.session_state.paths_scrub = target
+
+        # 오프셋 + 전역 캡
         if apply_offsets:
-            half_w = float(trim_dist) * 0.5  # Trim/Layer Width 의 절반
+            half_w = float(trim_dist) * 0.5
             compute_offsets_into_buffers(segments, target, half_w)
+            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32)
         else:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
 
-        # 차트 렌더 (오프셋 트레이스가 항상 존재하도록 보장)
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets)
@@ -734,13 +877,34 @@ with tab_paths:
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+        # 외부치수(오른쪽 only)
+        if apply_offsets:
+            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            dims_md = _fmt_dims_inline("외부치수 (Right offset)", bbox_r, z_r)
+            dims_placeholder.markdown(dims_md)
+        else:
+            dims_placeholder.markdown("_Offsets OFF_")
+
         st.caption(
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-            + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + (f" | Offsets+Caps: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + ("" if st.session_state.show_travel_dots else " | Travel 표시: 실선(Insert E values 꺼짐)")
+            + (f" | Viz stride: ×{draw_stride}" if draw_stride > 1 else "")
         )
-
     else:
         st.info("슬라이싱을 실행하세요.")
+
+with tab_stl:
+    if st.session_state.get("mesh") is not None:
+        st.plotly_chart(
+            plot_trimesh(st.session_state.mesh, height=820),
+            use_container_width=True,
+            key="stl_chart",
+            config={"displayModeBar": False}
+        )
+    else:
+        st.info("STL을 업로드하세요.")
 
 with tab_gcode:
     if st.session_state.get("gcode_text"):
@@ -748,5 +912,6 @@ with tab_gcode:
     else:
         st.info("G-code를 생성하세요.")
 
+# 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
