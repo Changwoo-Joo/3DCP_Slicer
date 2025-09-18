@@ -751,9 +751,17 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    st.session_state.paths_scrub = 0
+
+    # ★ 세그먼트 총 개수로 초기화해서 최초에 '최대'로 보이게
+    segs = items_to_segments(items, e_on=e_on)
+    max_seg = len(segs)
+    st.session_state.paths_scrub = max_seg
+
     reset_anim_buffers()
+    # ★ 버퍼도 바로 최대까지 채워서 첫 화면부터 꽉 찬 그림 표시
+    rebuild_buffers_to(segs, max_seg)
     st.success("Slicing complete")
+
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
@@ -863,7 +871,7 @@ if KEY_OK:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
                     gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
                 )
-                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
+                st.success("Rapid(*.modx) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
