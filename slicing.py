@@ -136,20 +136,24 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
+        # 레이어 시작 기준점
         if auto_start and prev_start_xy is not None:
             dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
             first_idx = int(np.argmin(dists))
             segments = segments[first_idx:] + segments[:first_idx]
-            ref_pt_layer = prev_start_xy
+            layer_ref = prev_start_xy
         else:
-            ref_pt_layer = np.array(ref_pt_user, dtype=float)
+            layer_ref = np.array(ref_pt_user, dtype=float)
+
+        # 같은 레이어 내부: 이전 폐구간의 끝점을 다음 폐구간 시작 기준으로 사용
+        current_ref = layer_ref
 
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
+            shifted, _ = shift_to_nearest_start(seg3d, ref_point=current_ref)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            start = simplified[0]
 
+            start = simplified[0]
             g.append(f"G01 F{feed}")
             if start_e_on:
                 g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
@@ -165,6 +169,9 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             if e0_on:
                 g.append("G01 E0")
+
+            # 다음 폐구간을 위한 ref = 이번 폐구간의 끝점
+            current_ref = simplified[-1][:2]
 
             if i_seg == 0:
                 prev_start_xy = start[:2]
@@ -213,32 +220,40 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
+        # 레이어 시작 기준점
         if auto_start and prev_start_xy is not None:
             dists = [np.linalg.norm(s[0][:2] - prev_start_xy) for s in segments]
             first_idx = int(np.argmin(dists))
             segments = segments[first_idx:] + segments[:first_idx]
-            ref_pt_layer = prev_start_xy
+            layer_ref = prev_start_xy
         else:
-            ref_pt_layer = np.array(ref_pt_user, dtype=float)
+            layer_ref = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
+        current_ref = layer_ref  # 같은 레이어 내부 연결 기준
+
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
+            shifted, _ = shift_to_nearest_start(seg3d, ref_point=current_ref)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
+
+            # 다음 폐구간 시작 기준을 이번 폐구간 '끝점'으로 갱신
+            current_ref = simplified[-1][:2]
+
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
 
         if not layer_polys:
             continue
 
+        # 레이어 간 travel (점선 후보)
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
-            # 레이어 간 이동 travel (점선으로 표시할 후보)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
+        # 본 경로
         for poly in layer_polys:
             if e_on:
                 e_vals = [0.0]
@@ -259,11 +274,6 @@ def compute_slice_paths_with_travel(
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-    """
-    반환: [(p1, p2, is_travel, is_extruding), ...]
-    - is_travel: 레이어 간 이동 여부 (시각화에서 점선 처리 여부는 별도 플래그로 제어)
-    - is_extruding: 오프셋/치수 산출에 사용할 '압출' 구간 플래그
-    """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
@@ -275,7 +285,6 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
-            # e_on=False: travel은 is_extruding=False, 나머지는 True (오프셋 대상 유지)
             for p1, p2 in zip(poly[:-1], poly[1:]):
                 is_extruding = (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
@@ -284,7 +293,7 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
 # === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 검은 실선(압출 or e_off 모드 전부)
+        "solid": {"x": [], "y": [], "z": []},  # 검은 실선
         "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(여기서는 e_on일 때만 사용)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
@@ -296,9 +305,6 @@ def ensure_anim_buffers():
         reset_anim_buffers()
 
 def append_segments_to_buffers(segments, start_idx, end_idx):
-    """
-    show_travel_dots=False(=e_on False)면 travel도 실선 버퍼에 쌓는다.
-    """
     buf = st.session_state.paths_anim_buf
     show_travel_dots = st.session_state.get("show_travel_dots", True)
     for i in range(start_idx, end_idx):
@@ -319,11 +325,6 @@ def rebuild_buffers_to(segments, upto):
         append_segments_to_buffers(segments, 0, upto)
 
 def compute_offsets_into_buffers(segments, upto, half_width):
-    """
-    segments[0:upto] 중 '압출 세그먼트'만 대상으로
-    진행 방향의 ±90°(좌/우)로 half_width 만큼 평행 이동한 선분을
-    off_l, off_r 버퍼에 기록.
-    """
     buf = st.session_state.paths_anim_buf
     buf["off_l"] = {"x": [], "y": [], "z": []}
     buf["off_r"] = {"x": [], "y": [], "z": []}
@@ -354,10 +355,6 @@ def compute_offsets_into_buffers(segments, upto, half_width):
         buf["off_r"]["z"].extend([r1[2], r2[2], None])
 
 def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
-    """
-    전체 경로의 '첫 압출 세그먼트 시작점'과 '마지막 압출 세그먼트 끝점'에만
-    반원(지름=2*half_width)을 추가 (off_l에 추가).
-    """
     if half_width <= 0 or upto <= 0 or len(segments) == 0:
         return
 
@@ -494,7 +491,7 @@ def _bbox_from_buffer(buf_dict):
         return None
 
 def _last_z_from_buffer(buf_dict):
-    """표시 중인 버퍼에서 마지막(최신) Z 값을 반환"""
+    """표시 중인 버퍼에서 마지막(최신) Z 값을 단일값으로 반환"""
     try:
         for v in reversed(buf_dict.get("z", [])):
             if v is not None:
@@ -783,7 +780,7 @@ with tab_paths:
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        # 옵션 + 치수 패널(우측)
+        # 옵션 + (우측) 치수 패널
         row1_left, row1_right = st.columns([3, 2])
         with row1_left:
             apply_offsets = st.checkbox(
@@ -799,7 +796,7 @@ with tab_paths:
         with col1:
             scrub = st.slider("진행(segments)", min_value=0, max_value=int(total_segments),
                               value=int(default_val), step=1,
-                              help="해당 세그먼트까지 누적 표시")
+                              help="해당 세그먼트까지 누积 표시")
         with col2:
             scrub_num = st.number_input("행 번호", min_value=0, max_value=int(total_segments),
                                         value=int(default_val), step=1,
@@ -838,16 +835,11 @@ with tab_paths:
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # ===== 치수 패널 =====
+        # ===== 외부치수(오른쪽 only) =====
         if apply_offsets:
-            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])  # 외부치수(오른쪽)
-            bbox_l = _bbox_from_buffer(st.session_state.paths_anim_buf["off_l"])  # 내부치수(왼쪽)
+            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])  # 외부치수 only
             z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-            z_l = _last_z_from_buffer(st.session_state.paths_anim_buf["off_l"])
-            dims_md = (
-                _fmt_dims_inline("외부치수 (Right offset)", bbox_r, z_r) + "\n\n" +
-                _fmt_dims_inline("내부치수 (Left offset)",  bbox_l, z_l)
-            )
+            dims_md = _fmt_dims_inline("외부치수 (Right offset)", bbox_r, z_r)
             dims_placeholder.markdown(dims_md)
         else:
             dims_placeholder.markdown("_Offsets OFF_")
