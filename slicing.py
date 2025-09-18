@@ -15,9 +15,12 @@ st.set_page_config(page_title="3DCP Slicer", layout="wide")
 st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
-PATH_COLOR = "#222222"
-OFFSET_COLOR = "rgba(255,0,0,0.35)"   # 연한 빨강(오프셋)
-CAP_COLOR    = "rgba(220,0,0,0.95)"   # 진한 빨강(캡 강조)
+
+# 색상 팔레트
+PATH_COLOR_DEFAULT = "#222222"     # 기본 중심 경로(짙은 회색)
+PATH_COLOR_LIGHT   = "#D0D0D0"     # Apply layer width ON일 때 중심 경로(아주 연한 회색)
+OFFSET_DARK_GRAY   = "#444444"     # 오프셋(좌/우) 진한 회색
+CAP_COLOR          = "rgba(220,0,0,0.95)"  # Caps 강조(빨강)
 
 def clamp(v, lo, hi):
     try:
@@ -36,9 +39,7 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     """
-    폐루프 전체(마지막→첫점 포함)를 기준으로 꼬리에서 trim_distance만큼 제거.
-    → 시작점 인근에 정확히 노즐직경(=trim_distance) 간격의 심을 남김.
-    반환은 open polyline.
+    폐루프 전체 길이를 기준으로 꼬리에서 trim_distance 만큼 제거 (open polyline 반환).
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
@@ -311,11 +312,11 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
 # === 누적 렌더 버퍼 ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 검은 실선
-        "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(Insert E ON + toggle ON일 때 travel)
-        "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
-        "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
-        "caps":  {"x": [], "y": [], "z": []},  # 캡 강조(진한 빨강)
+        "solid": {"x": [], "y": [], "z": []},  # 중심 경로(실선)
+        "dot":   {"x": [], "y": [], "z": []},  # 여정(점선)
+        "off_l": {"x": [], "y": [], "z": []},  # 좌측 오프셋
+        "off_r": {"x": [], "y": [], "z": []},  # 우측 오프셋
+        "caps":  {"x": [], "y": [], "z": []},  # 캡 강조(빨강)
         "built_upto": 0,
         "stride": 1,
     }
@@ -378,8 +379,8 @@ def compute_offsets_into_buffers(segments, upto, half_width):
 def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, store_caps=False):
     """
     전체 경로의 첫 압출 시작점/마지막 압출 끝점에 반원 캡(지름=2*half_width) 추가.
-    - 항상 off_l에 캡을 그려주되,
-    - store_caps=True면 진하게 강조할 수 있도록 별도 'caps' 버퍼에도 동일 좌표 저장.
+    - 기본은 off_l에 그림
+    - store_caps=True면 caps에도 별도 저장(빨강 굵게)
     """
     if half_width <= 0 or upto <= 0 or len(segments) == 0:
         return
@@ -410,14 +411,14 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
         ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
         zs = np.full_like(xs, float(z))
 
-        # 기본(연빨) trace: off_l
+        # 오프셋 기본 트레이스(좌측)에 추가 (진한 회색은 스타일에서 적용)
         if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
             buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
         buf["off_l"]["x"].extend(xs.tolist() + [None])
         buf["off_l"]["y"].extend(ys.tolist() + [None])
         buf["off_l"]["z"].extend(zs.tolist() + [None])
 
-        # 강조 trace: caps (진한 빨강, 굵게)
+        # 강조용 별도 트레이스(빨강, 굵게)
         if store_caps:
             if len(buf["caps"]["x"]) > 0 and buf["caps"]["x"][-1] is not None:
                 buf["caps"]["x"].append(None); buf["caps"]["y"].append(None); buf["caps"]["z"].append(None)
@@ -443,23 +444,23 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
-    # 0: solid (검은 실선)
+    # 0: solid (중심 경로 실선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=PATH_COLOR),
+                               line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
-    # 1: dot (검은 점선; Insert E ON + toggle ON일 때 travel)
+    # 1: dot (여정 점선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="dot", color=PATH_COLOR),
+                               line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
-    # 2: offset left (연빨 + 캡 기본)
+    # 2: offset left (좌)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
-    # 3: offset right (연빨)
+    # 3: offset right (우)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
-    # 4: caps emphasized (진한 빨강, 굵게)
+    # 4: caps emphasized (빨강)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
@@ -481,15 +482,15 @@ def ensure_paths_fig(height=820):
 def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=3, dash="solid", color=PATH_COLOR),
+                                   line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT),
                                    showlegend=False))
     def add_dot():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=3, dash="dot", color=PATH_COLOR),
+                                   line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT),
                                    showlegend=False))
     def add_off():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
                                    showlegend=False))
     def add_caps():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
@@ -503,11 +504,30 @@ def ensure_traces(fig: go.Figure, want=5):
         else: add_caps()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
+    """
+    - show_offsets: 오프셋 좌/우 표시 여부
+    - show_caps:    caps 강조(빨강) 표시 여부
+    - 중심 경로 색상은 st.session_state.apply_offsets_flag 에 따라 동적으로 변경
+    """
     ensure_traces(fig, want=5)
     buf = st.session_state.paths_anim_buf
-    # main traces
+
+    # 중심 경로 컬러/굵기 동적 설정
+    apply_on = bool(st.session_state.get("apply_offsets_flag", False))
+    center_color = PATH_COLOR_LIGHT if apply_on else PATH_COLOR_DEFAULT
+    fig.data[0].line.color = center_color
+    fig.data[1].line.color = center_color
+
+    # 오프셋 트레이스(진한 회색 + 굵기 3) 스타일 유지
+    fig.data[2].line.color = OFFSET_DARK_GRAY
+    fig.data[2].line.width = 3
+    fig.data[3].line.color = OFFSET_DARK_GRAY
+    fig.data[3].line.width = 3
+
+    # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
+
     # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
@@ -515,7 +535,8 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     else:
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
-    # caps emphasized
+
+    # caps 강조(빨강)
     if show_caps:
         fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
     else:
@@ -803,7 +824,7 @@ if KEY_OK:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
                     gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
                 )
-                st.success("Rapid(MODX형식) 변환 완료")
+                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
@@ -831,17 +852,19 @@ with tab_paths:
             apply_offsets = st.checkbox(
                 "Apply layer width",
                 value=False,
-                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전체 시작/끝 반원 캡을 표시합니다."
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋을 진한 회색으로, 중심 경로는 연한 회색으로 표시합니다."
             )
+            st.session_state.apply_offsets_flag = bool(apply_offsets)
+
             emphasize_caps = False
             if apply_offsets:
                 emphasize_caps = st.checkbox(
                     "Emphasize caps (start/end)",
                     value=False,
-                    help="시작·끝 반원 캡을 진한 빨강/굵은 선으로 강조 표시"
+                    help="시작·끝 반원 캡을 빨강/굵은 선으로 강조 표시"
                 )
 
-            # NEW: dotted travel toggle (영문)
+            # dotted travel toggle (영문)
             if e_on:
                 show_dotted = st.checkbox(
                     "Show dotted travel lines",
