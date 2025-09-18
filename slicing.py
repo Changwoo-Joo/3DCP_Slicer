@@ -487,13 +487,15 @@ st.session_state.paths_anim_batch = clamp(st.session_state.paths_anim_batch, 50,
 st.session_state.paths_anim_speed = clamp(st.session_state.paths_anim_speed, 1, 120)
 
 batch_val = st.sidebar.number_input(
-    "Batch size (segments/frame)", 1, 10000, int(st.session_state.paths_anim_batch), step=50
+    "Batch size (segments/frame)", 1, 10000, 
+    value=1, step=1
 )
 fps_val = st.sidebar.number_input(
-    "Target FPS", 1, 120, int(st.session_state.paths_anim_speed), step=1
+    "Target FPS", 1, 120,
+    value=int(st.session_state.paths_anim_speed), step=1
 )
 # 저장
-st.session_state.paths_anim_batch = int(clamp(batch_val, 50, 10000))
+st.session_state.paths_anim_batch = 1   # ← 무조건 1행씩
 st.session_state.paths_anim_speed = int(clamp(fps_val, 1, 120))
 
 b1 = st.sidebar.container()
