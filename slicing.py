@@ -16,7 +16,8 @@ st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"
-OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색(오프셋 표시)
+OFFSET_COLOR = "rgba(255,0,0,0.35)"   # 연한 빨강(오프셋)
+CAP_COLOR    = "rgba(220,0,0,0.95)"   # 진한 빨강(캡 강조)
 
 def clamp(v, lo, hi):
     try:
@@ -28,10 +29,6 @@ def clamp(v, lo, hi):
 # Helpers
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
-    """
-    닫힌 루프에서 첫점과 끝점이 같은 경우(또는 매우 근접) 시각화/계산 안정성을 위해 끝점 제거.
-    (표시는 open polyline로 함)
-    """
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
         return seg[:-1]
@@ -39,22 +36,19 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     """
-    폐루프 전체(마지막→첫점 포함)를 기준으로, '꼬리에서' trim_distance만큼 잘라
-    시작점 주변에 정확한 심(간격)을 남김.
-    - 입력 segment는 닫힌 루프일 수도/아닐 수도 있음. 여기서 닫힘을 강제 고려.
-    - 결과는 open polyline(첫점~새로운 끝점)로 반환.
+    폐루프 전체(마지막→첫점 포함)를 기준으로 꼬리에서 trim_distance만큼 제거.
+    → 시작점 인근에 정확히 노즐직경(=trim_distance) 간격의 심을 남김.
+    반환은 open polyline.
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
         return ensure_open_ring(pts)
 
-    # ring: 중복 끝점 제거(있다면)
     ring = ensure_open_ring(pts)
     n = len(ring)
     if n < 2:
         return ring
 
-    # 각 변 길이(마지막→첫점 포함)
     lens = []
     for i in range(n):
         p = ring[i]
@@ -62,30 +56,20 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
         lens.append(float(np.linalg.norm((q - p)[:2])))
     total = float(sum(lens))
     if total <= trim_distance:
-        # 너무 짧으면 트림하지 않음
         return ring
 
-    target = total - trim_distance  # 시작점에서 target까지 유지
+    target = total - trim_distance
     acc = 0.0
     out = [ring[0].copy()]
     i = 0
-    # target 지점이 위치한 변 찾기
     while i < n and acc + lens[i] < target:
         acc += lens[i]
         out.append(ring[(i + 1) % n].copy())
         i += 1
 
-    # i번째 변에서 비율로 절단
-    p = ring[i]
-    q = ring[(i + 1) % n]
-    d = lens[i]
-    if d > 0:
-        t = (target - acc) / d
-        cut = p + t * (q - p)
-    else:
-        cut = p.copy()
+    p = ring[i]; q = ring[(i + 1) % n]; d = lens[i]
+    cut = p + ((target - acc) / d) * (q - p) if d > 0 else p.copy()
     out.append(cut)
-
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
@@ -123,7 +107,6 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     return _rdp_xy(pts, eps)
 
 def shift_to_nearest_start(segment, ref_point):
-    """시작점을 ref_point(XY)에서 가장 가까운 정점으로 돌려 배치."""
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
@@ -156,7 +139,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    z_values.append(z_max + 0.01)  # 최상단 캡쳐
+    z_values.append(z_max + 0.01)
 
     prev_start_xy = None
     for z in z_values:
@@ -178,30 +161,21 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
-        # 레이어 기준 시작점(레이어마다 고정)
         if auto_start and prev_start_xy is not None:
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
-        # 같은 레이어 모든 폐구간은 동일 ref_pt_layer 기준으로 시작
-        layer_starts = []
-        layer_ends = []
         for i_seg, seg3d in enumerate(segments):
-            # 1) 루프 닫힘 고려 + 시작점 맞추기
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-            # 2) 폐루프 전체 길이 기준으로 꼬리에서 정확히 trim
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
-            # 3) 단순화(끝점 보존)
             simplified = simplify_segment(trimmed, min_spacing)
 
-            # 이동: 이전 폐구간 끝 → 현재 시작 (G-code에서도 비압출 이동)
             if i_seg > 0:
                 s = simplified[0]
                 g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
 
-            # 압출 경로
             start = simplified[0]
             g.append(f"G01 F{feed}")
             if start_e_on:
@@ -219,13 +193,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             if e0_on:
                 g.append("G01 E0")
 
-            layer_starts.append(simplified[0])
-            layer_ends.append(simplified[-1])
-
             if i_seg == 0:
                 prev_start_xy = start[:2]  # auto_start 기준
-
-        # 같은 레이어 내 폐구간 간 이동은 위에서 이미 G01(비압출)로 넣어줌
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -271,18 +240,17 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
-        # 레이어 기준 시작점 결정
+        # 레이어 기준 시작점
         if auto_start and prev_start_xy is not None:
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
-
         for i_seg, seg3d in enumerate(segments):
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-            trimmed = trim_closed_ring_tail(shifted, trim_dist)  # 폐루프 기준 정확 트림
+            trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
@@ -297,10 +265,9 @@ def compute_slice_paths_with_travel(
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
-        # 같은 레이어 내 폐구간 간 travel도 추가
+        # 같은 레이어 내: 경로 + 다음 폐구간으로 이동
         for i_seg in range(len(layer_polys)):
             poly = layer_polys[i_seg]
-            # 압출 경로
             if e_on:
                 e_vals = [0.0]
                 total = 0.0
@@ -312,7 +279,6 @@ def compute_slice_paths_with_travel(
             else:
                 all_items.append((poly, None, False))
 
-            # 다음 폐구간 시작점으로 이동(비압출)
             if i_seg < len(layer_polys) - 1:
                 nxt = layer_polys[i_seg + 1]
                 travel_intra = np.vstack([poly[-1], nxt[0]])
@@ -338,19 +304,18 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
             for p1, p2 in zip(poly[:-1], poly[1:]):
-                # e_on=False인 경우 travel도 실선으로 그리기 위해 is_extruding=True/False는 시각화에 영향 없지만,
-                # travel 여부만 유지한다.
                 is_extruding = (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
     return segs
 
-# === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
+# === 누적 렌더 버퍼 ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
         "solid": {"x": [], "y": [], "z": []},  # 검은 실선
-        "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(Insert E ON일 때 travel)
+        "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(Insert E ON + toggle ON일 때 travel)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
+        "caps":  {"x": [], "y": [], "z": []},  # 캡 강조(진한 빨강)
         "built_upto": 0,
         "stride": 1,
     }
@@ -361,16 +326,21 @@ def ensure_anim_buffers():
 
 def append_segments_to_buffers(segments, start_idx, end_idx, stride=1):
     buf = st.session_state.paths_anim_buf
-    show_travel_dots = st.session_state.get("show_travel_dots", True)
+    travel_mode = st.session_state.get("paths_travel_mode", "solid")  # 'solid' | 'dotted' | 'hidden'
     for i in range(start_idx, end_idx, max(1, int(stride))):
         p1, p2, is_travel, _ = segments[i]
-        if is_travel and show_travel_dots:
-            # Insert E ON → travel은 점선
-            buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
-            buf["dot"]["y"].extend([float(p1[1]), float(p2[1]), None])
-            buf["dot"]["z"].extend([float(p1[2]), float(p2[2]), None])
+        if is_travel:
+            if travel_mode == "hidden":
+                continue
+            elif travel_mode == "dotted":
+                buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
+                buf["dot"]["y"].extend([float(p1[1]), float(p2[1]), None])
+                buf["dot"]["z"].extend([float(p1[2]), float(p2[2]), None])
+            else:  # 'solid'
+                buf["solid"]["x"].extend([float(p1[0]), float(p2[0]), None])
+                buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
+                buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
         else:
-            # Insert E OFF → travel도 실선 (show_travel_dots=False)
             buf["solid"]["x"].extend([float(p1[0]), float(p2[0]), None])
             buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
             buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
@@ -405,12 +375,19 @@ def compute_offsets_into_buffers(segments, upto, half_width):
         buf["off_l"]["x"].extend([l1[0], l2[0], None]); buf["off_l"]["y"].extend([l1[1], l2[1], None]); buf["off_l"]["z"].extend([l1[2], l2[2], None])
         buf["off_r"]["x"].extend([r1[0], r2[0], None]); buf["off_r"]["y"].extend([r1[1], r2[1], None]); buf["off_r"]["z"].extend([r1[2], r2[2], None])
 
-def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
+def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, store_caps=False):
+    """
+    전체 경로의 첫 압출 시작점/마지막 압출 끝점에 반원 캡(지름=2*half_width) 추가.
+    - 항상 off_l에 캡을 그려주되,
+    - store_caps=True면 진하게 강조할 수 있도록 별도 'caps' 버퍼에도 동일 좌표 저장.
+    """
     if half_width <= 0 or upto <= 0 or len(segments) == 0:
         return
+
     first_idx = None
     last_idx = None
     N = min(upto, len(segments))
+
     for i in range(N):
         p1, p2, is_travel, is_extruding = segments[i]
         if (not is_travel) and is_extruding:
@@ -423,26 +400,40 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
             break
     if first_idx is None or last_idx is None:
         return
+
     buf = st.session_state.paths_anim_buf
+
     def _append_arc(center, t_unit, n_unit, z, sign_t, steps):
         s = sign_t * t_unit
         thetas = np.linspace(0.0, np.pi, int(max(8, steps)))
         xs = center[0] + half_width*(n_unit[0]*np.cos(thetas) + s[0]*np.sin(thetas))
         ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
         zs = np.full_like(xs, float(z))
+
+        # 기본(연빨) trace: off_l
         if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
             buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
         buf["off_l"]["x"].extend(xs.tolist() + [None])
         buf["off_l"]["y"].extend(ys.tolist() + [None])
         buf["off_l"]["z"].extend(zs.tolist() + [None])
-    # start cap
+
+        # 강조 trace: caps (진한 빨강, 굵게)
+        if store_caps:
+            if len(buf["caps"]["x"]) > 0 and buf["caps"]["x"][-1] is not None:
+                buf["caps"]["x"].append(None); buf["caps"]["y"].append(None); buf["caps"]["z"].append(None)
+            buf["caps"]["x"].extend(xs.tolist() + [None])
+            buf["caps"]["y"].extend(ys.tolist() + [None])
+            buf["caps"]["z"].extend(zs.tolist() + [None])
+
+    # Start cap
     p1, p2, _, _ = segments[first_idx]
     dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
         t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
         n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         _append_arc((float(p1[0]), float(p1[1])), t_unit, n_unit, float(p1[2]), sign_t=-1.0, steps=samples)
-    # end cap
+
+    # End cap
     p1, p2, _, _ = segments[last_idx]
     dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
@@ -456,11 +447,11 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
-    # 1: dot (검은 점선; Insert E ON일 때 travel)
+    # 1: dot (검은 점선; Insert E ON + toggle ON일 때 travel)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
-    # 2: offset left (연빨 + 캡)
+    # 2: offset left (연빨 + 캡 기본)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                showlegend=False))
@@ -468,6 +459,10 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                showlegend=False))
+    # 4: caps emphasized (진한 빨강, 굵게)
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=6, dash="solid", color=CAP_COLOR),
+                               name="Caps Emphasis", showlegend=False))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0),
                       uirevision="keep", transition={'duration': 0})
@@ -477,13 +472,13 @@ def ensure_paths_fig(height=820):
     fig = st.session_state.get("paths_base_fig")
     ok = False
     try:
-        ok = isinstance(fig, go.Figure) and (len(fig.data) >= 4)
+        ok = isinstance(fig, go.Figure) and (len(fig.data) >= 5)
     except Exception:
         ok = False
     if not ok:
         st.session_state.paths_base_fig = make_base_fig(height)
 
-def ensure_four_traces(fig: go.Figure):
+def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=3, dash="solid", color=PATH_COLOR),
@@ -496,23 +491,35 @@ def ensure_four_traces(fig: go.Figure):
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                    showlegend=False))
-    while len(fig.data) < 4:
+    def add_caps():
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=6, dash="solid", color=CAP_COLOR),
+                                   showlegend=False))
+    while len(fig.data) < want:
         n = len(fig.data)
         if n == 0: add_solid()
         elif n == 1: add_dot()
-        else: add_off()
+        elif n in (2, 3): add_off()
+        else: add_caps()
 
-def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
-    ensure_four_traces(fig)
+def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
+    ensure_traces(fig, want=5)
     buf = st.session_state.paths_anim_buf
+    # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
+    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
     else:
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
+    # caps emphasized
+    if show_caps:
+        fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
+    else:
+        fig.data[4].x = []; fig.data[4].y = []; fig.data[4].z = []
 
 # ======= 치수 계산 유틸 =======
 def _bbox_from_buffer(buf_dict):
@@ -580,6 +587,8 @@ if "rapid_text" not in st.session_state:
 
 if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
+if "paths_travel_mode" not in st.session_state:
+    st.session_state.paths_travel_mode = "solid"  # 'solid' | 'dotted' | 'hidden'
 
 ensure_anim_buffers()
 
@@ -813,9 +822,6 @@ tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
-        # Insert E 상태에 따라 travel 점선/실선 규칙
-        st.session_state.show_travel_dots = bool(e_on)
-
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
@@ -827,6 +833,33 @@ with tab_paths:
                 value=False,
                 help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전체 시작/끝 반원 캡을 표시합니다."
             )
+            emphasize_caps = False
+            if apply_offsets:
+                emphasize_caps = st.checkbox(
+                    "Emphasize caps (start/end)",
+                    value=False,
+                    help="시작·끝 반원 캡을 진한 빨강/굵은 선으로 강조 표시"
+                )
+
+            # NEW: dotted travel toggle (영문)
+            if e_on:
+                show_dotted = st.checkbox(
+                    "Show dotted travel lines",
+                    value=True,
+                    help="Show non-extruding travel as dotted; uncheck to hide travel moves."
+                )
+                travel_mode = "dotted" if show_dotted else "hidden"
+            else:
+                show_dotted = st.checkbox(
+                    "Show dotted travel lines",
+                    value=False, disabled=True,
+                    help="Insert E values is OFF: travel is shown as solid lines."
+                )
+                travel_mode = "solid"
+
+            prev_mode = st.session_state.get("paths_travel_mode", "solid")
+            st.session_state.paths_travel_mode = travel_mode
+
         dims_placeholder = row1_right.empty()
 
         # 진행(segments) 슬라이더 + 숫자 입력
@@ -855,24 +888,32 @@ with tab_paths:
 
         built = st.session_state.paths_anim_buf["built_upto"]
         prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-        if (draw_stride != prev_stride) or (target < built):
+        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+
+        if mode_changed or (draw_stride != prev_stride) or (target < built):
             rebuild_buffers_to(segments, target, stride=draw_stride)
         elif target > built:
             append_segments_to_buffers(segments, built, target, stride=draw_stride)
+
         st.session_state.paths_scrub = target
 
         # 오프셋 + 전역 캡
         if apply_offsets:
             half_w = float(trim_dist) * 0.5
             compute_offsets_into_buffers(segments, target, half_w)
-            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32)
+            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+            add_global_endcaps_into_buffers(
+                segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps)
+            )
         else:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
+            st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
+            emphasize_caps = False
 
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
-        update_fig_with_buffers(fig, show_offsets=apply_offsets)
+        update_fig_with_buffers(fig, show_offsets=apply_offsets, show_caps=bool(emphasize_caps))
 
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -886,10 +927,17 @@ with tab_paths:
         else:
             dims_placeholder.markdown("_Offsets OFF_")
 
+        # 상태 캡션
+        tm = st.session_state.paths_travel_mode
+        if not e_on:
+            travel_lbl = "Travel: solid (Insert E OFF)"
+        else:
+            travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
         st.caption(
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-            + (f" | Offsets+Caps: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
-            + ("" if st.session_state.show_travel_dots else " | Travel 표시: 실선(Insert E values 꺼짐)")
+            + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + (" | Caps 강조" if (apply_offsets and emphasize_caps) else "")
+            + f" | {travel_lbl}"
             + (f" | Viz stride: ×{draw_stride}" if draw_stride > 1 else "")
         )
     else:
