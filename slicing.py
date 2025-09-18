@@ -592,7 +592,7 @@ with tab_paths:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
         with col1:
             scrub = st.slider("진행(segments)", min_value=0, max_value=total_segments,
-                              value=default_val, help="해당 세그먼트까지 누적 표시")
+                              value=default_val, step=1, help="해당 세그먼트까지 누적 표시")
         with col2:
             scrub_num = st.number_input("행 번호", min_value=0, max_value=total_segments,
                                         value=default_val, step=1, help="표시할 최종 세그먼트(행) 번호")
