@@ -208,7 +208,7 @@ def compute_slice_paths_with_travel(
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg, ), 1)), np.ones((len(seg, ), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
@@ -235,7 +235,7 @@ def compute_slice_paths_with_travel(
 
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
-            # 레이어 간 이동 travel (점선으로 표시할 데이터)
+            # 레이어 간 이동 travel (점선으로 표시)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
@@ -476,13 +476,16 @@ def _bbox_from_buffer(buf_dict):
     try:
         xs = [float(v) for v in buf_dict["x"] if v is not None]
         ys = [float(v) for v in buf_dict["y"] if v is not None]
-        if len(xs) == 0 or len(ys) == 0:
+        zs = [float(v) for v in buf_dict["z"] if v is not None]
+        if len(xs) == 0 or len(ys) == 0 or len(zs) == 0:
             return None
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
+        z_min, z_max = min(zs), max(zs)
         return {
             "x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
             "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min,
+            "z_min": z_min, "z_max": z_max, "z_len": z_max - z_min,
         }
     except Exception:
         return None
@@ -492,10 +495,12 @@ def _fmt_dims_inline(title, bbox):
         return f"**{title}**: 데이터 없음"
     xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
     ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
+    zm, zM, zl = bbox["z_min"], bbox["z_max"], bbox["z_len"]
     return (
         f"**{title}**  "
         f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f}) · "
-        f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f})"
+        f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f}) · "
+        f"Z=({zm:.3f}→{zM:.3f}, Δ{zl:.3f})"
     )
 
 # =========================
@@ -741,9 +746,13 @@ if KEY_OK:
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
-                st.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text,
-                                   file_name=f"{base}.modx}", mime="text/plain",
-                                   use_container_width=True)
+                st.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",   # <= f-string 여분 '}' 제거
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
 # =========================
 # Right: Viewers  (Sliced Paths 탭을 첫 번째로 배치: 탭 점프 방지)
@@ -761,7 +770,7 @@ with tab_paths:
             apply_offsets = st.checkbox(
                 "Apply layer width",
                 value=False,
-                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전역 시작/끝 반원 캡을 표시합니다."
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전체 시작/끝 반원 캡을 표시합니다."
             )
         dims_placeholder = row1_right.empty()
 
