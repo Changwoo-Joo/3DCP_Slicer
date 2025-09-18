@@ -19,11 +19,11 @@ st.markdown(
     <style>
     footer {visibility: hidden;}
     [data-testid="stFooter"] {visibility: hidden;}
+    [data-testid="stDecoration"] {visibility: hidden;}
     </style>
     """,
     unsafe_allow_html=True
 )
-
 st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
