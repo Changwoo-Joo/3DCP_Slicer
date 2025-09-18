@@ -16,6 +16,7 @@ st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"
+OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색
 
 def clamp(v, lo, hi):
     try:
@@ -239,10 +240,13 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
-# === items -> segments (Z 필터 제거, 전체 사용) ===
+# === items -> segments (전체 사용) ===
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
+    """
+    반환: [(p1, p2, is_travel, is_extruding), ...]
+    """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
@@ -258,11 +262,13 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
     return segs
 
-# === 누적 렌더 버퍼 ===
+# === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},
-        "dot": {"x": [], "y": [], "z": []},
+        "solid": {"x": [], "y": [], "z": []},  # 압출
+        "dot":   {"x": [], "y": [], "z": []},  # 트래블/비압출
+        "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
+        "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
     }
 
@@ -285,27 +291,83 @@ def rebuild_buffers_to(segments, upto):
     if upto > 0:
         append_segments_to_buffers(segments, 0, upto)
 
+def compute_offsets_into_buffers(segments, upto, half_width):
+    """
+    segments[0:upto] 중 '압출 세그먼트'만 대상으로
+    진행 방향의 ±90°(좌/우)로 half_width 만큼 평행 이동한 선분을
+    off_l, off_r 버퍼에 기록.
+    """
+    buf = st.session_state.paths_anim_buf
+    # 초기화
+    buf["off_l"] = {"x": [], "y": [], "z": []}
+    buf["off_r"] = {"x": [], "y": [], "z": []}
+    if half_width <= 0 or upto <= 0:
+        return
+
+    for i in range(0, min(upto, len(segments))):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if is_travel or not is_extruding:
+            # 트래블/비압출은 스킵(원하면 제거)
+            continue
+        dx = float(p2[0] - p1[0])
+        dy = float(p2[1] - p1[1])
+        nrm = (dx*dx + dy*dy) ** 0.5
+        if nrm < 1e-12:
+            continue
+        # 좌측 법선(반시계 +90°) = (-dy, dx), 우측은 부호 반대
+        nx = -dy / nrm
+        ny =  dx / nrm
+
+        l1 = (float(p1[0] + nx*half_width), float(p1[1] + ny*half_width), float(p1[2]))
+        l2 = (float(p2[0] + nx*half_width), float(p2[1] + ny*half_width), float(p2[2]))
+        r1 = (float(p1[0] - nx*half_width), float(p1[1] - ny*half_width), float(p1[2]))
+        r2 = (float(p2[0] - nx*half_width), float(p2[1] - ny*half_width), float(p2[2]))
+
+        # 좌
+        buf["off_l"]["x"].extend([l1[0], l2[0], None])
+        buf["off_l"]["y"].extend([l1[1], l2[1], None])
+        buf["off_l"]["z"].extend([l1[2], l2[2], None])
+        # 우
+        buf["off_r"]["x"].extend([r1[0], r2[0], None])
+        buf["off_r"]["y"].extend([r1[1], r2[1], None])
+        buf["off_r"]["z"].extend([r1[2], r2[2], None])
+
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
+    # 0: solid
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
+    # 1: dot
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
+    # 2: offset left (연빨)
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                               name="Offset - Left", showlegend=False))
+    # 3: offset right (연빨)
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                               name="Offset - Right", showlegend=False))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0),
                       uirevision="keep", transition={'duration': 0})
     return fig
 
-def update_fig_with_buffers(fig: go.Figure):
+def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
     buf = st.session_state.paths_anim_buf
-    fig.data[0].x = buf["solid"]["x"]
-    fig.data[0].y = buf["solid"]["y"]
-    fig.data[0].z = buf["solid"]["z"]
-    fig.data[1].x = buf["dot"]["x"]
-    fig.data[1].y = buf["dot"]["y"]
-    fig.data[1].z = buf["dot"]["z"]
+    # main
+    fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
+    fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
+    # offsets
+    if show_offsets:
+        fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
+        fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
+    else:
+        # 숨김 처리(데이터 비우기)
+        fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
+        fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
 # =========================
 # Plotly: STL (정적)
@@ -446,7 +508,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    # 슬라이스 새로 생성되면 진행 인덱스/버퍼 초기화
+    # 새 슬라이스면 초기화
     st.session_state.paths_scrub = 0
     reset_anim_buffers()
     st.success("Slicing complete")
@@ -586,24 +648,28 @@ with tab_paths:
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
+        # 옵션: Layer width offsets 적용
+        apply_offsets = st.checkbox("Apply layer width offsets (± W/2)", value=False,
+                                    help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로를 연한 빨간색으로 표시합니다.")
+
         # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
         col1, col2 = st.columns([6, 2])
-        # 안전한 기본값(슬라이더/인풋의 value는 범위 내여야 함)
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
         with col1:
-            scrub = st.slider("진행(segments)", min_value=0, max_value=total_segments,
-                              value=default_val, step=1, help="해당 세그먼트까지 누적 표시")
+            scrub = st.slider("진행(segments)", min_value=0, max_value=int(total_segments),
+                              value=int(default_val), step=1,
+                              help="해당 세그먼트까지 누적 표시")
         with col2:
-            scrub_num = st.number_input("행 번호", min_value=0, max_value=total_segments,
-                                        value=default_val, step=1, help="표시할 최종 세그먼트(행) 번호")
+            scrub_num = st.number_input("행 번호", min_value=0, max_value=int(total_segments),
+                                        value=int(default_val), step=1,
+                                        help="표시할 최종 세그먼트(행) 번호")
 
-        # 두 컨트롤 동기화: 변경된 값 우선
+        # 동기화
         target = default_val
         if scrub != default_val:
-            target = scrub
+            target = int(scrub)
         if scrub_num != default_val:
-            target = scrub_num
-
+            target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
 
         # 버퍼 재구축/증분 반영
@@ -614,15 +680,25 @@ with tab_paths:
             append_segments_to_buffers(segments, built, target)
         st.session_state.paths_scrub = target  # 현재 위치 저장
 
+        # 오프셋 버퍼 생성/지우기
+        if apply_offsets:
+            half_w = float(trim_dist) * 0.5  # Trim/Layer Width 의 절반
+            compute_offsets_into_buffers(segments, target, half_w)
+        else:
+            st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
+            st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
+
         # 차트 렌더
         if "paths_base_fig" not in st.session_state:
             st.session_state.paths_base_fig = make_base_fig(height=820)
         fig = st.session_state.paths_base_fig
-        update_fig_with_buffers(fig)
+        update_fig_with_buffers(fig, show_offsets=apply_offsets)
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        st.caption(f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}")
+        st.caption(f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
+                   + (" | Offsets: ON (W/2 = %.2f mm)" % (float(trim_dist)*0.5) if apply_offsets else ""))
+
     else:
         st.info("슬라이싱을 실행하세요.")
 
