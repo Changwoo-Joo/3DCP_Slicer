@@ -17,6 +17,12 @@ st.title("3DCP Slicer")
 EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"  # 단색 유지
 
+def clamp(v, lo, hi):
+    try:
+        return lo if v < lo else hi if v > hi else v
+    except Exception:
+        return lo
+
 # =========================
 # Helpers
 # =========================
@@ -133,7 +139,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
+            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             start = simplified[0]
@@ -211,7 +217,7 @@ def compute_slice_paths_with_travel(
 
         layer_polys: List[np.ndarray] = []
         for i_seg, seg3d in enumerate(segments):
-            shifted, _ = shift_to_nearest_start(seg3d, ref_pt_layer)
+            shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
             trimmed = trim_segment_end(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
@@ -402,9 +408,9 @@ if "paths_anim_play" not in st.session_state:
 if "paths_anim_index" not in st.session_state:
     st.session_state.paths_anim_index = 0
 if "paths_anim_speed" not in st.session_state:
-    st.session_state.paths_anim_speed = 60  # 목표 FPS와 배치로 실제 그려지는 속도 조절
+    st.session_state.paths_anim_speed = 60  # FPS (표시용/페이싱용)
 if "paths_anim_batch" not in st.session_state:
-    st.session_state.paths_anim_batch = 500  # 프레임당 추가 세그먼트(깜빡임 줄이려면 크게)
+    st.session_state.paths_anim_batch = 500  # 프레임당 추가 세그먼트
 
 ensure_anim_buffers()
 
@@ -474,11 +480,21 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ▶ 부드러운 재생을 위한 설정
+# ▶ 부드러운 재생을 위한 설정 (값 클램프로 오류 방지)
 st.sidebar.subheader("Playback")
-st.session_state.paths_anim_batch = st.sidebar.number_input("Batch size (segments/frame)", 50, 10000, st.session_state.paths_anim_batch, step=50)
-target_fps = st.sidebar.number_input("Target FPS", 1, 120, st.session_state.paths_anim_speed, step=1)
-st.session_state.paths_anim_speed = target_fps
+# Clamp 기존 상태값
+st.session_state.paths_anim_batch = clamp(st.session_state.paths_anim_batch, 50, 10000)
+st.session_state.paths_anim_speed = clamp(st.session_state.paths_anim_speed, 1, 120)
+
+batch_val = st.sidebar.number_input(
+    "Batch size (segments/frame)", 50, 10000, int(st.session_state.paths_anim_batch), step=50
+)
+fps_val = st.sidebar.number_input(
+    "Target FPS", 1, 120, int(st.session_state.paths_anim_speed), step=1
+)
+# 저장
+st.session_state.paths_anim_batch = int(clamp(batch_val, 50, 10000))
+st.session_state.paths_anim_speed = int(clamp(fps_val, 1, 120))
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
@@ -722,16 +738,18 @@ with tab_paths:
             z_filter_enable = st.checkbox("Z 필터 사용", value=(st.session_state.paths_z_filter is not None))
         with colB:
             if z_filter_enable:
+                # 현재 저장된 값이 max보다 크면 자동 클램프
+                current_z = st.session_state.paths_z_filter if st.session_state.paths_z_filter is not None else mesh_zmax
+                current_z = clamp(float(current_z), 0.0, max(0.1, mesh_zmax))
                 st.session_state.paths_z_filter = st.slider(
                     "Z ≤", min_value=0.0, max_value=max(0.1, mesh_zmax),
-                    value=float(st.session_state.paths_z_filter or mesh_zmax),
+                    value=float(current_z),
                     step=max(0.01, min(1.0, mesh_zmax/200.0))
                 )
             else:
                 st.session_state.paths_z_filter = None
 
         with colC:
-            # FPS 표시는 사이드바에서, 여기선 안내만
             st.write(f"FPS: **{st.session_state.paths_anim_speed}**")
             st.write(f"Batch: **{st.session_state.paths_anim_batch} seg/frame**")
 
@@ -771,7 +789,6 @@ with tab_paths:
             target = scrub
             built = st.session_state.paths_anim_buf["built_upto"]
             if target < built:
-                # 뒤로 갔으면 리빌드
                 rebuild_buffers_to(segments, target)
             elif target > built:
                 append_segments_to_buffers(segments, built, target)
@@ -797,7 +814,6 @@ with tab_paths:
                 append_segments_to_buffers(segments, built, target)
                 st.session_state.paths_anim_index = target
 
-                # 버퍼 내용만 갱신하여 동일 fig 재표시 (트레이스 수 고정)
                 update_fig_with_buffers(fig)
                 placeholder.plotly_chart(fig, use_container_width=True)
 
@@ -808,7 +824,6 @@ with tab_paths:
                     time.sleep(sleep_t)
                 start_time = time.perf_counter()
 
-            # 끝나면 정지
             if st.session_state.paths_anim_index >= total_segments:
                 st.session_state.paths_anim_play = False
 
