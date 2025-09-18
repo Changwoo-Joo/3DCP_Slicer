@@ -6,7 +6,6 @@ import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from datetime import date, datetime
 from pathlib import Path
-import time
 
 # =========================
 # App basics
@@ -365,12 +364,48 @@ def ensure_paths_fig(height=820):
     if not ok:
         st.session_state.paths_base_fig = make_base_fig(height)
 
+def ensure_four_traces(fig: go.Figure):
+    """현재 fig의 트레이스 개수에 맞춰 부족한 트레이스를 추가해 4개를 보장."""
+    n = len(fig.data)
+    if n == 0:
+        # 0,1(base), 2(off_l), 3(off_r)
+        base = make_base_fig(height=fig.layout.height or 820)
+        fig.data = base.data
+        return
+    if n == 1:
+        # dot, off_l, off_r 추가
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=3, dash="dot", color=PATH_COLOR),
+                                   showlegend=False))
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   showlegend=False))
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   showlegend=False))
+    elif n == 2:
+        # off_l, off_r 추가
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   showlegend=False))
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   showlegend=False))
+    elif n == 3:
+        # off_r 추가
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
+                                   showlegend=False))
+
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
+    # 항상 4트레이스 존재 보장
+    ensure_four_traces(fig)
+
     buf = st.session_state.paths_anim_buf
     # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
-    # offsets (trace 존재 보장 필요: ensure_paths_fig로 이미 보장)
+    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
@@ -703,6 +738,7 @@ with tab_paths:
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets)
+
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
