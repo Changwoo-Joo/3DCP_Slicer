@@ -307,7 +307,6 @@ def compute_offsets_into_buffers(segments, upto, half_width):
     for i in range(0, min(upto, len(segments))):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_travel or not is_extruding:
-            # 트래블/비압출은 스킵(원하면 제거)
             continue
         dx = float(p2[0] - p1[0])
         dy = float(p2[1] - p1[1])
@@ -355,17 +354,27 @@ def make_base_fig(height=820) -> go.Figure:
                       uirevision="keep", transition={'duration': 0})
     return fig
 
+def ensure_paths_fig(height=820):
+    """세션의 paths_base_fig가 없거나 트레이스가 4개 미만이면 새로 만든다."""
+    fig = st.session_state.get("paths_base_fig")
+    ok = False
+    try:
+        ok = isinstance(fig, go.Figure) and (len(fig.data) >= 4)
+    except Exception:
+        ok = False
+    if not ok:
+        st.session_state.paths_base_fig = make_base_fig(height)
+
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
     buf = st.session_state.paths_anim_buf
-    # main
+    # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
-    # offsets
+    # offsets (trace 존재 보장 필요: ensure_paths_fig로 이미 보장)
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
     else:
-        # 숨김 처리(데이터 비우기)
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
@@ -508,7 +517,6 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    # 새 슬라이스면 초기화
     st.session_state.paths_scrub = 0
     reset_anim_buffers()
     st.success("Slicing complete")
@@ -557,7 +565,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01")):
+        if not t or not t.startswith(("G0","G00","G1","G01"))):
             continue
         parts = t.split(); has_xyz = False
         for p in parts:
@@ -649,8 +657,11 @@ with tab_paths:
         total_segments = len(segments)
 
         # 옵션: Layer width offsets 적용
-        apply_offsets = st.checkbox("Apply layer width offsets (± W/2)", value=False,
-                                    help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로를 연한 빨간색으로 표시합니다.")
+        apply_offsets = st.checkbox(
+            "Apply layer width offsets (± W/2)",
+            value=False,
+            help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로를 연한 빨간색으로 표시합니다."
+        )
 
         # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
         col1, col2 = st.columns([6, 2])
@@ -688,16 +699,17 @@ with tab_paths:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
 
-        # 차트 렌더
-        if "paths_base_fig" not in st.session_state:
-            st.session_state.paths_base_fig = make_base_fig(height=820)
+        # 차트 렌더 (오프셋 트레이스가 항상 존재하도록 보장)
+        ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets)
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        st.caption(f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-                   + (" | Offsets: ON (W/2 = %.2f mm)" % (float(trim_dist)*0.5) if apply_offsets else ""))
+        st.caption(
+            f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
+            + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+        )
 
     else:
         st.info("슬라이싱을 실행하세요.")
