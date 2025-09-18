@@ -487,7 +487,7 @@ st.session_state.paths_anim_batch = clamp(st.session_state.paths_anim_batch, 50,
 st.session_state.paths_anim_speed = clamp(st.session_state.paths_anim_speed, 1, 120)
 
 batch_val = st.sidebar.number_input(
-    "Batch size (segments/frame)", 50, 10000, int(st.session_state.paths_anim_batch), step=50
+    "Batch size (segments/frame)", 1, 10000, int(st.session_state.paths_anim_batch), step=50
 )
 fps_val = st.sidebar.number_input(
     "Target FPS", 1, 120, int(st.session_state.paths_anim_speed), step=1
