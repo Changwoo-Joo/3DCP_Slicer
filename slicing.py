@@ -752,16 +752,14 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     )
     st.session_state.paths_items = items
 
-    # ★ 세그먼트 총 개수로 초기화해서 최초에 '최대'로 보이게
+    # ★ 첫 화면에서 '최대'로 보이게
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
 
     reset_anim_buffers()
-    # ★ 버퍼도 바로 최대까지 채워서 첫 화면부터 꽉 찬 그림 표시
     rebuild_buffers_to(segs, max_seg)
     st.success("Slicing complete")
-
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
@@ -871,7 +869,7 @@ if KEY_OK:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
                     gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
                 )
-                st.success("Rapid(*.modx) 변환 완료")
+                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
@@ -899,17 +897,26 @@ with tab_paths:
             apply_offsets = st.checkbox(
                 "Apply layer width",
                 value=False,
-                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(진한 회색)과 중심 경로(연한 회색)를 표시합니다. 층간 이동(Z 변화)에도 오프셋을 덧그립니다."
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(진한 회색)과 중심 경로(연한 회색)를 표시합니다."
             )
             st.session_state.apply_offsets_flag = bool(apply_offsets)
 
             emphasize_caps = False
             if apply_offsets:
+                # ★ NEW: 층간 이동(Z-climb)에도 오프셋 포함 옵션 — 기본 ON
+                include_z_climb = st.checkbox(
+                    "Include Z-climb offsets (travel)",
+                    value=True,   # 기본값 선택(ON)
+                    help="ON: Z가 변하는 travel 구간에도 좌/우 오프셋(진한 회색)을 그립니다. OFF: 압출 구간에서만 오프셋."
+                )
+
                 emphasize_caps = st.checkbox(
                     "Emphasize caps (start/end)",
                     value=False,
                     help="시작·끝 반원 캡을 빨강/굵은 선으로 강조 표시"
                 )
+            else:
+                include_z_climb = False
 
             # dotted travel toggle (영문)
             if e_on:
@@ -970,10 +977,10 @@ with tab_paths:
         # 오프셋 + 전역 캡
         if apply_offsets:
             half_w = float(trim_dist) * 0.5
-            # include_travel_climb=True → 층간 이동(Z 변화)에도 오프셋 표시
+            # □ include_travel_climb를 체크박스 값으로 전달 (기본 ON)
             compute_offsets_into_buffers(
                 segments, target, half_w,
-                include_travel_climb=True, climb_z_thresh=1e-9
+                include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9
             )
             st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
             add_global_endcaps_into_buffers(
@@ -1011,6 +1018,7 @@ with tab_paths:
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
             + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
             + (" | Caps 강조" if (apply_offsets and emphasize_caps) else "")
+            + (f" | Z-climb offsets: ON" if (apply_offsets and include_z_climb) else (" | Z-climb offsets: OFF" if apply_offsets else ""))
             + f" | {travel_lbl}"
             + (f" | Viz stride: ×{draw_stride}" if draw_stride > 1 else "")
         )
