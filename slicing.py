@@ -1,5 +1,6 @@
 import streamlit as st
 import numpy as np
+import math
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -15,7 +16,7 @@ st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
 PATH_COLOR = "#222222"
-OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색(오프셋표시)
+OFFSET_COLOR = "rgba(255,0,0,0.35)"  # 연한 빨간색(오프셋 표시)
 
 def clamp(v, lo, hi):
     try:
@@ -26,31 +27,56 @@ def clamp(v, lo, hi):
 # =========================
 # Helpers
 # =========================
-def trim_segment_end(segment, trim_distance=30.0):
-    """XY 누적 길이 기준으로 마지막 trim_distance만큼 잘라냄."""
+def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+    """
+    닫힌 루프에서 첫점과 끝점이 같은 경우(또는 매우 근접) 시각화/트림 안정성을 위해 끝점 제거.
+    """
+    seg = np.asarray(segment, dtype=float)
+    if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
+        return seg[:-1]
+    return seg
+
+def trim_segment_tail(segment, trim_distance=30.0):
+    """
+    XY 누적 길이 기준으로 '마지막' trim_distance만큼을 잘라냄.
+    (심 위치는 시작점 근처에 남도록 tail 쪽에서만 트림)
+    """
     segment = np.array(segment, dtype=float)
-    if len(segment) < 2:
+    segment = ensure_open_ring(segment)  # 닫힌 루프 중복 끝점 제거
+    if len(segment) < 2 or trim_distance <= 0:
         return segment
-    total_len = np.sum(np.linalg.norm(np.diff(segment, axis=0)[:, :2], axis=1))
+
+    # 총 길이(마지막->처음으로 돌아가는 구간은 없음)에서 tail만큼 제거
+    xy = segment[:, :2]
+    diffs = np.diff(xy, axis=0)
+    seglens = np.linalg.norm(diffs, axis=1)
+    total_len = float(np.sum(seglens))
     if total_len <= trim_distance:
+        # 너무 짧으면 트림하지 않음
         return segment
-    trimmed = [segment[0]]
+
+    keep_len = total_len - trim_distance
     acc = 0.0
+    out_pts = [segment[0]]
     for i in range(1, len(segment)):
-        p1, p2 = segment[i - 1], segment[i]
-        d = np.linalg.norm((p2 - p1)[:2])
-        if d == 0:
-            continue
-        if acc + d >= total_len - trim_distance:
-            r = (total_len - trim_distance - acc) / d
-            trimmed.append(p1 + (p2 - p1) * r)
+        p1, p2 = segment[i-1], segment[i]
+        d = float(np.linalg.norm((p2 - p1)[:2]))
+        if acc + d >= keep_len:
+            # p1에서 p2 사이에서 필요한 만큼만 남기고 종료
+            if d > 0:
+                r = (keep_len - acc) / d
+                out_pts.append(p1 + r * (p2 - p1))
+            else:
+                out_pts.append(p1.copy())
             break
-        trimmed.append(p2)
-        acc += d
-    return np.array(trimmed)
+        else:
+            out_pts.append(p2)
+            acc += d
+
+    return np.array(out_pts, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
-    """XY 기준 RDP 간소화."""
+    """XY 기준 RDP 간소화(끝점 보존)."""
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
@@ -81,6 +107,7 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
         right = _rdp_xy(points[idx:], eps_val)
         return np.vstack([left[:-1], right])
 
+    # 끝점 보존됨
     return _rdp_xy(pts, eps)
 
 def shift_to_nearest_start(segment, ref_point):
@@ -132,24 +159,24 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg, ), 1)), np.ones((len(seg, ), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
-        # 레이어 기준 시작점 결정 (레이어마다 고정)
+        # 레이어 기준 시작점(레이어마다 고정)
         if auto_start and prev_start_xy is not None:
-            # 직전 레이어의 첫 시작점 근처에서 시작
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
-        # 같은 레이어의 모든 폐구간은 ref_pt_layer만 사용 → 심 위치 일정
+        # 같은 레이어 모든 폐구간은 동일한 ref_pt_layer 기준으로 시작 → seam 위치 일정
         for i_seg, seg3d in enumerate(segments):
+            seg3d = ensure_open_ring(seg3d)             # 닫힌 루프 중복 끝점 제거
             shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
-            trimmed = trim_segment_end(shifted, trim_dist)
+            trimmed = trim_segment_tail(shifted, trim_dist)   # tail에서 정확히 trim_dist만큼만 제거
             simplified = simplify_segment(trimmed, min_spacing)
 
             start = simplified[0]
@@ -170,8 +197,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 g.append("G01 E0")
 
             if i_seg == 0:
-                # 다음 레이어 auto_start를 위한 기준점
-                prev_start_xy = start[:2]
+                prev_start_xy = start[:2]  # auto_start 기준
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -179,7 +205,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (미리보기)
+# Slice path computation (preview)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -212,22 +238,22 @@ def compute_slice_paths_with_travel(
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg, ), 1)), np.ones((len(seg, ), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
 
-        # 레이어 기준 시작점 결정 (레이어마다 고정)
+        # 레이어 시작 기준
         if auto_start and prev_start_xy is not None:
             ref_pt_layer = prev_start_xy
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
-        # 같은 레이어의 모든 폐구간은 ref_pt_layer만 사용 → 심 위치 일정
         for i_seg, seg3d in enumerate(segments):
+            seg3d = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d, ref_point=ref_pt_layer)
-            trimmed = trim_segment_end(shifted, trim_dist)
+            trimmed = trim_segment_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
@@ -236,13 +262,13 @@ def compute_slice_paths_with_travel(
         if not layer_polys:
             continue
 
-        # 레이어 간 이동 travel만 추가(점선 표현 대상)
+        # 레이어 간 travel(점선 후보)
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
-        # 본 경로(압출/비압출 플래그)
+        # 본 경로
         for poly in layer_polys:
             if e_on:
                 e_vals = [0.0]
@@ -263,11 +289,6 @@ def compute_slice_paths_with_travel(
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-    """
-    반환: [(p1, p2, is_travel, is_extruding), ...]
-    - is_travel: 레이어 간 이동 여부
-    - is_extruding: 오프셋/치수 산출에 사용할 '압출' 구간 플래그
-    """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
@@ -292,16 +313,17 @@ def reset_anim_buffers():
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
+        "stride": 1,  # 가시화용 다운샘플 stride
     }
 
 def ensure_anim_buffers():
     if "paths_anim_buf" not in st.session_state or not isinstance(st.session_state.paths_anim_buf, dict):
         reset_anim_buffers()
 
-def append_segments_to_buffers(segments, start_idx, end_idx):
+def append_segments_to_buffers(segments, start_idx, end_idx, stride=1):
     buf = st.session_state.paths_anim_buf
     show_travel_dots = st.session_state.get("show_travel_dots", True)
-    for i in range(start_idx, end_idx):
+    for i in range(start_idx, end_idx, max(1, int(stride))):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_travel and show_travel_dots:
             buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
@@ -312,11 +334,12 @@ def append_segments_to_buffers(segments, start_idx, end_idx):
             buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
             buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
     buf["built_upto"] = end_idx
+    buf["stride"] = max(1, int(stride))
 
-def rebuild_buffers_to(segments, upto):
+def rebuild_buffers_to(segments, upto, stride=1):
     reset_anim_buffers()
     if upto > 0:
-        append_segments_to_buffers(segments, 0, upto)
+        append_segments_to_buffers(segments, 0, upto, stride=stride)
 
 def compute_offsets_into_buffers(segments, upto, half_width):
     buf = st.session_state.paths_anim_buf
@@ -325,6 +348,7 @@ def compute_offsets_into_buffers(segments, upto, half_width):
     if half_width <= 0 or upto <= 0:
         return
 
+    # offsets는 시각화 다운샘플과 무관(치수 정확성을 위해 모든 extruding 세그먼트 사용)
     for i in range(0, min(upto, len(segments))):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_travel or not is_extruding:
@@ -486,7 +510,6 @@ def _bbox_from_buffer(buf_dict):
         return None
 
 def _last_z_from_buffer(buf_dict):
-    """표시 중인 버퍼에서 마지막(최신) Z 값을 단일값으로 반환"""
     try:
         for v in reversed(buf_dict.get("z", [])):
             if v is not None:
@@ -659,7 +682,7 @@ if st.session_state.get("gcode_text"):
                                use_container_width=True)
 
 # =========================
-# Rapid(MODX) 추가 기능
+# Rapid(MODX)
 # =========================
 def _fmt_pos(v: float) -> str:
     s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
@@ -764,7 +787,7 @@ if KEY_OK:
                 )
 
 # =========================
-# Right: Viewers (Sliced Paths 탭을 첫 번째)
+# Right: Viewers  (Sliced Paths 먼저: 탭 점프 방지)
 # =========================
 tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
@@ -806,12 +829,23 @@ with tab_paths:
             target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
 
-        # 버퍼 재구축/증분 반영
+        # === 메시지 스트림 안정화용: 가시화 다운샘플 stride 자동 계산 ===
+        # 너무 많은 세그먼트를 한 번에 전송하면 WebSocket/프론트 메시지 스트림이 터질 수 있어
+        # 화면 출력 전용으로만 stride를 적용(Export/G-code에는 영향 없음)
+        DRAW_LIMIT = 15000  # 프론트로 보내는 최대 세그먼트(표시용)
+        draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+
+        # 버퍼 재구축/증분 반영 (stride 반영)
         built = st.session_state.paths_anim_buf["built_upto"]
-        if target < built:
-            rebuild_buffers_to(segments, target)
+        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+
+        if (draw_stride != prev_stride) or (target < built):
+            # stride 바뀌거나 뒤로 이동하면 전체 재구축
+            rebuild_buffers_to(segments, target, stride=draw_stride)
         elif target > built:
-            append_segments_to_buffers(segments, built, target)
+            # 앞쪽으로 증가한 만큼만 증분 추가
+            append_segments_to_buffers(segments, built, target, stride=draw_stride)
+
         st.session_state.paths_scrub = target
 
         # 오프셋 + 전역 캡
@@ -824,16 +858,6 @@ with tab_paths:
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
 
         # 차트 렌더
-        def ensure_paths_fig(height=820):
-            fig = st.session_state.get("paths_base_fig")
-            ok = False
-            try:
-                ok = isinstance(fig, go.Figure) and (len(fig.data) >= 4)
-            except Exception:
-                ok = False
-            if not ok:
-                st.session_state.paths_base_fig = make_base_fig(height)
-
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets)
@@ -854,6 +878,7 @@ with tab_paths:
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
             + (f" | Offsets+Caps: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
             + ("" if st.session_state.show_travel_dots else " | Travel 표시: 실선(Insert E values 꺼짐)")
+            + (f" | Viz stride: ×{draw_stride}" if draw_stride > 1 else "")
         )
     else:
         st.info("슬라이싱을 실행하세요.")
