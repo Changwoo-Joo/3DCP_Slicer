@@ -99,7 +99,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    z_values.append(z_max + 0.01)
+    z_values.append(z_max + 0.01)  # 최상단 캡쳐
 
     prev_start_xy = None
     for z in z_values:
@@ -239,9 +239,9 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
-# === items -> segments + Z 필터 ===
+# === items -> segments (Z 필터 제거, 전체 사용) ===
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
-                      e_on: bool, z_filter: Optional[float]
+                      e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
@@ -251,15 +251,11 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
             continue
         if e_on and e_vals is not None:
             for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
-                if z_filter is not None and max(p1[2], p2[2]) > z_filter + 1e-9:
-                    continue
                 is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
             for p1, p2 in zip(poly[:-1], poly[1:]):
-                if z_filter is not None and max(p1[2], p2[2]) > z_filter + 1e-9:
-                    continue
-                segs.append((p1, p2, is_travel, True))
+                segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
     return segs
 
 # === 누적 렌더 버퍼 ===
@@ -349,14 +345,9 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
-if "paths_z_filter" not in st.session_state:
-    st.session_state.paths_z_filter = None
-if "paths_anim_play" not in st.session_state:
-    st.session_state.paths_anim_play = False
-if "paths_anim_index" not in st.session_state:
-    st.session_state.paths_anim_index = 0
-if "paths_anim_speed" not in st.session_state:
-    st.session_state.paths_anim_speed = 15
+# 진행(segments) 현재 위치 상태
+if "paths_scrub" not in st.session_state:
+    st.session_state.paths_scrub = 0  # 현재 표시 중인 세그먼트 개수
 
 ensure_anim_buffers()
 
@@ -419,14 +410,6 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ▶ Playback (FPS 클램프)
-st.sidebar.subheader("Playback")
-FPS_MIN, FPS_MAX = 1, 60
-default_fps = int(st.session_state.get("paths_anim_speed", 15))
-default_fps = max(FPS_MIN, min(default_fps, FPS_MAX))
-fps_val = st.sidebar.number_input("Target FPS", min_value=FPS_MIN, max_value=FPS_MAX, value=default_fps, step=1)
-st.session_state.paths_anim_speed = int(fps_val)
-
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 slice_clicked = b1.button("Slice Model", use_container_width=True)
@@ -463,9 +446,8 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    st.session_state.paths_anim_index = 0
-    st.session_state.paths_anim_play = False
-    st.session_state.paths_z_filter = None
+    # 슬라이스 새로 생성되면 진행 인덱스/버퍼 초기화
+    st.session_state.paths_scrub = 0
     reset_anim_buffers()
     st.success("Slicing complete")
 
@@ -490,7 +472,7 @@ if st.session_state.get("gcode_text"):
 def _fmt_pos(v: float) -> str:
     s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
 def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
+    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1: ].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
@@ -499,9 +481,9 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     cnt = 0
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+        if not (t.startswith(("G0","G00","G1","G01"))):
             continue
-        has_xyz = any(p.startswith(("X", "Y", "Z")) for p in t.split())
+        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
         if has_xyz:
             cnt += 1
     return cnt
@@ -511,10 +493,9 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
-
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not (t.startswith(("G0","G00","G1","G01"))):
+        if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
         parts = t.split(); has_xyz = False
         for p in parts:
@@ -533,10 +514,8 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
         if len(lines_out) >= MAX_LINES:
             break
-
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
-
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!***************************************************************...****************************************************************\n"
@@ -603,85 +582,47 @@ with tab_stl:
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
-        mesh_zmax = float(st.session_state.mesh.bounds[1, 2]) if st.session_state.mesh is not None else 0.0
-        colA, colB, colC, colD = st.columns([3, 3, 2, 4])
-        with colA:
-            z_filter_enable = st.checkbox("Z 필터 사용", value=(st.session_state.paths_z_filter is not None))
-        with colB:
-            if z_filter_enable:
-                current_z = st.session_state.paths_z_filter if st.session_state.paths_z_filter is not None else mesh_zmax
-                current_z = clamp(float(current_z), 0.0, max(0.1, mesh_zmax))
-                st.session_state.paths_z_filter = st.slider("Z ≤", min_value=0.0, max_value=max(0.1, mesh_zmax),
-                                                            value=float(current_z),
-                                                            step=max(0.01, min(1.0, mesh_zmax/200.0)))
-            else:
-                st.session_state.paths_z_filter = None
-        with colC:
-            st.write(f"FPS: **{st.session_state.paths_anim_speed}**")
-            st.write("Batch: **1 seg/frame**")
-        with colD:
-            c1, c2, c3 = st.columns(3)
-            play_clicked = c1.button("▶ Play" if not st.session_state.paths_anim_play else "⏸ Pause", use_container_width=True)
-            if play_clicked:
-                st.session_state.paths_anim_play = not st.session_state.paths_anim_play
-            if c2.button("⏮ Reset", use_container_width=True):
-                st.session_state.paths_anim_index = 0
-                st.session_state.paths_anim_play = False
-                rebuild_buffers_to([], 0)
-                reset_anim_buffers()
-            end_clicked = c3.button("⏭ End", use_container_width=True)
-
-        segments = items_to_segments(st.session_state.paths_items, e_on=e_on, z_filter=st.session_state.paths_z_filter)
+        # 세그먼트 준비
+        segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        if end_clicked:
-            st.session_state.paths_anim_index = total_segments
-            st.session_state.paths_anim_play = False
-            rebuild_buffers_to(segments, total_segments)
+        # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
+        col1, col2 = st.columns([6, 2])
+        # 안전한 기본값(슬라이더/인풋의 value는 범위 내여야 함)
+        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        with col1:
+            scrub = st.slider("진행(segments)", min_value=0, max_value=total_segments,
+                              value=default_val, help="해당 세그먼트까지 누적 표시")
+        with col2:
+            scrub_num = st.number_input("행 번호", min_value=0, max_value=total_segments,
+                                        value=default_val, step=1, help="표시할 최종 세그먼트(행) 번호")
 
-        scrub = st.slider("진행(segments)", 0, max(1, total_segments),
-                          value=min(st.session_state.paths_anim_index, total_segments),
-                          help="좌우로 드래그해 해당 세그먼트까지의 경로를 표시")
-        if scrub != st.session_state.paths_anim_index:
+        # 두 컨트롤 동기화: 변경된 값 우선
+        target = default_val
+        if scrub != default_val:
             target = scrub
-            built = st.session_state.paths_anim_buf["built_upto"]
-            if target < built:
-                rebuild_buffers_to(segments, target)
-            elif target > built:
-                append_segments_to_buffers(segments, built, target)
-            st.session_state.paths_anim_index = target
+        if scrub_num != default_val:
+            target = scrub_num
 
+        target = int(clamp(target, 0, total_segments))
+
+        # 버퍼 재구축/증분 반영
+        built = st.session_state.paths_anim_buf["built_upto"]
+        if target < built:
+            rebuild_buffers_to(segments, target)
+        elif target > built:
+            append_segments_to_buffers(segments, built, target)
+        st.session_state.paths_scrub = target  # 현재 위치 저장
+
+        # 차트 렌더
         if "paths_base_fig" not in st.session_state:
             st.session_state.paths_base_fig = make_base_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig)
         placeholder = st.empty()
-        # ▼▼ key 제거 (중복 방지). placeholder 자체가 위치 키 역할을 함.
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        if st.session_state.paths_anim_play and total_segments > 0:
-            frame_interval = 1.0 / float(max(1, st.session_state.paths_anim_speed))
-            next_draw_time = time.perf_counter()
-            while st.session_state.paths_anim_play and st.session_state.paths_anim_index < total_segments:
-                built = st.session_state.paths_anim_buf["built_upto"]
-                target = min(total_segments, built + 1)
-                append_segments_to_buffers(segments, built, target)
-                st.session_state.paths_anim_index = target
-
-                now = time.perf_counter()
-                if now >= next_draw_time:
-                    update_fig_with_buffers(fig)
-                    # ▼▼ key 없이 동일 placeholder에 재렌더
-                    placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                    next_draw_time = now + frame_interval
-                time.sleep(0.001)
-
-            update_fig_with_buffers(fig)
-            placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            if st.session_state.paths_anim_index >= total_segments:
-                st.session_state.paths_anim_play = False
-
-        st.caption(f"세그먼트: {total_segments:,}  |  현재: {st.session_state.paths_anim_index:,}")
+        st.caption(f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}")
     else:
         st.info("슬라이싱을 실행하세요.")
 
