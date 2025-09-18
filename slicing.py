@@ -235,7 +235,7 @@ def compute_slice_paths_with_travel(
 
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
-            # NOTE: travel poly를 items에는 넣지만, 렌더에서는 제외할 예정
+            # 레이어 간 이동 travel (점선으로 표시할 데이터)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
@@ -278,11 +278,11 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
     return segs
 
-# === 누적 렌더 버퍼 (solid + offset L/R) ===
+# === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 압출
-        "dot":   {"x": [], "y": [], "z": []},  # (유지하되 사용 안함)
+        "solid": {"x": [], "y": [], "z": []},  # 압출 = 실선(검은색)
+        "dot":   {"x": [], "y": [], "z": []},  # travel = 점선(검은색)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
@@ -296,13 +296,15 @@ def append_segments_to_buffers(segments, start_idx, end_idx):
     buf = st.session_state.paths_anim_buf
     for i in range(start_idx, end_idx):
         p1, p2, is_travel, is_extruding = segments[i]
-        # === Travel(레이어 간 이동) 완전 제거 ===
+        # travel 은 점선, 그 외는 실선
         if is_travel:
-            continue
-        # 압출만 그림
-        buf["solid"]["x"].extend([float(p1[0]), float(p2[0]), None])
-        buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
-        buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
+            buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
+            buf["dot"]["y"].extend([float(p1[1]), float(p2[1]), None])
+            buf["dot"]["z"].extend([float(p1[2]), float(p2[2]), None])
+        else:
+            buf["solid"]["x"].extend([float(p1[0]), float(p2[0]), None])
+            buf["solid"]["y"].extend([float(p1[1]), float(p2[1]), None])
+            buf["solid"]["z"].extend([float(p1[2]), float(p2[2]), None])
     buf["built_upto"] = end_idx
 
 def rebuild_buffers_to(segments, upto):
@@ -409,7 +411,7 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
-    # 1: dot (남겨두긴 하지만 사용 안 함)
+    # 1: dot (travel = 점선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
@@ -460,7 +462,7 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
     buf = st.session_state.paths_anim_buf
     # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
-    fig.data[1].x = []; fig.data[1].y = []; fig.data[1].z = []  # travel 제거
+    fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
     # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
@@ -740,11 +742,11 @@ if KEY_OK:
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
                 st.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text,
-                                   file_name=f"{base}.modx", mime="text/plain",
+                                   file_name=f"{base}.modx}", mime="text/plain",
                                    use_container_width=True)
 
 # =========================
-# Right: Viewers  (Sliced Paths 탭을 첫 번째로 배치)
+# Right: Viewers  (Sliced Paths 탭을 첫 번째로 배치: 탭 점프 방지)
 # =========================
 tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
@@ -757,9 +759,9 @@ with tab_paths:
         row1_left, row1_right = st.columns([3, 2])
         with row1_left:
             apply_offsets = st.checkbox(
-                "Apply layer width offsets (± W/2) & global endcaps",
+                "Apply layer width",
                 value=False,
-                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 W/2 평행 오프셋(연빨) + 전체 시작/끝 반원 캡."
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(연빨)과 전역 시작/끝 반원 캡을 표시합니다."
             )
         dims_placeholder = row1_right.empty()
 
