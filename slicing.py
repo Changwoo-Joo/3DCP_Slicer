@@ -365,37 +365,28 @@ def ensure_paths_fig(height=820):
         st.session_state.paths_base_fig = make_base_fig(height)
 
 def ensure_four_traces(fig: go.Figure):
-    """현재 fig의 트레이스 개수에 맞춰 부족한 트레이스를 추가해 4개를 보장."""
-    n = len(fig.data)
-    if n == 0:
-        # 0,1(base), 2(off_l), 3(off_r)
-        base = make_base_fig(height=fig.layout.height or 820)
-        fig.data = base.data
-        return
-    if n == 1:
-        # dot, off_l, off_r 추가
+    """현재 fig의 트레이스 수를 확인해 4개가 되도록 부족한 만큼 추가."""
+    def add_solid():
+        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                                   line=dict(width=3, dash="solid", color=PATH_COLOR),
+                                   showlegend=False))
+    def add_dot():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=3, dash="dot", color=PATH_COLOR),
                                    showlegend=False))
+    def add_off():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                    showlegend=False))
-        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                                   showlegend=False))
-    elif n == 2:
-        # off_l, off_r 추가
-        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                                   showlegend=False))
-        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                                   showlegend=False))
-    elif n == 3:
-        # off_r 추가
-        fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                                   showlegend=False))
+
+    while len(fig.data) < 4:
+        n = len(fig.data)
+        if n == 0:
+            add_solid()
+        elif n == 1:
+            add_dot()
+        else:
+            add_off()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
     # 항상 4트레이스 존재 보장
@@ -600,7 +591,8 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01"))):
+        # 🔧 여기 괄호 수정됨 (불필요한 닫는 괄호 제거)
+        if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
         parts = t.split(); has_xyz = False
         for p in parts:
