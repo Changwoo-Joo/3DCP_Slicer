@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from typing import List, Tuple, Optional
 from datetime import date, datetime
 from pathlib import Path  # 파일명 추출용
+import time  # ▶ 재생용
 
 # =========================
 # App basics
@@ -247,6 +248,51 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
+# === NEW: 경로 → 세그먼트 변환 & Z 필터 ===
+def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool,
+                      z_filter: Optional[float]) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
+    """
+    items -> segment 리스트로 변환
+    반환: [(p1, p2, is_travel, is_extruding), ...]
+    Z 필터가 주어지면 max(z1,z2) <= z_filter 인 세그먼트만 남김
+    """
+    segs = []
+    for poly, e_vals, is_travel in items or []:
+        if poly is None or len(poly) < 2:
+            continue
+        if e_on and e_vals is not None:
+            for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
+                is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
+                if z_filter is not None:
+                    if max(p1[2], p2[2]) > z_filter + 1e-9:
+                        continue
+                segs.append((p1, p2, is_travel, is_extruding))
+        else:
+            for p1, p2 in zip(poly[:-1], poly[1:]):
+                if z_filter is not None:
+                    if max(p1[2], p2[2]) > z_filter + 1e-9:
+                        continue
+                segs.append((p1, p2, is_travel, True))  # e_off인 경우 전부 실선 처리
+    return segs
+
+# === NEW: 세그먼트 일부만 그려 Plotly 그림 생성 ===
+def plot_segments_partial(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
+                          upto_count: int, height=820) -> go.Figure:
+    upto = max(0, min(upto_count, len(segments)))
+    fig = go.Figure()
+    for i in range(upto):
+        p1, p2, is_travel, is_extruding = segments[i]
+        dash_style = "dot" if (is_travel or not is_extruding) else "solid"
+        fig.add_trace(go.Scatter3d(
+            x=[p1[0], p2[0]], y=[p1[1], p2[1]], z=[p1[2], p2[2]],
+            mode="lines",
+            line=dict(width=3, dash=dash_style, color=PATH_COLOR),
+            showlegend=False
+        ))
+    fig.update_layout(scene=dict(aspectmode="data"),
+                      height=height, margin=dict(l=0, r=0, t=10, b=0))
+    return fig
+
 # =========================
 # Plotly: STL & Paths
 # =========================
@@ -309,6 +355,16 @@ if "rapid_rz" not in st.session_state:
     st.session_state.rapid_rz = 0.0
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
+
+# ==== NEW: 애니메이션/필터 상태 ====
+if "paths_z_filter" not in st.session_state:
+    st.session_state.paths_z_filter = None  # float | None
+if "paths_anim_play" not in st.session_state:
+    st.session_state.paths_anim_play = False
+if "paths_anim_index" not in st.session_state:
+    st.session_state.paths_anim_index = 0
+if "paths_anim_speed" not in st.session_state:
+    st.session_state.paths_anim_speed = 120  # segments per second (기본 120)
 
 # =========================
 # Sidebar (Access Key + 만료일)
@@ -416,6 +472,10 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
+    # 슬라이스 새로 만들면 애니메이션 상태 초기화
+    st.session_state.paths_anim_index = 0
+    st.session_state.paths_anim_play = False
+    st.session_state.paths_z_filter = None
     st.success("Slicing complete")
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
@@ -624,10 +684,85 @@ with tab_stl:
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
-        st.plotly_chart(
-            plot_paths(st.session_state.paths_items, e_on=e_on, height=820),
-            use_container_width=True
+        # --- NEW: Z 필터 슬라이더 & 재생 컨트롤 ---
+        mesh_zmax = float(st.session_state.mesh.bounds[1, 2]) if st.session_state.mesh is not None else 0.0
+        colA, colB, colC, colD = st.columns([3, 2, 2, 3])
+
+        with colA:
+            z_filter_enable = st.checkbox("Z 필터 사용", value=(st.session_state.paths_z_filter is not None))
+        with colB:
+            if z_filter_enable:
+                st.session_state.paths_z_filter = st.slider(
+                    "Z ≤", min_value=0.0, max_value=max(0.1, mesh_zmax), value=float(st.session_state.paths_z_filter or mesh_zmax),
+                    step=max(0.01, min(1.0, mesh_zmax/200.0))
+                )
+            else:
+                st.session_state.paths_z_filter = None
+
+        with colC:
+            st.session_state.paths_anim_speed = st.number_input(
+                "속도 (segments/s)", min_value=1, max_value=2000, value=int(st.session_state.paths_anim_speed), step=10
+            )
+
+        with colD:
+            c1, c2, c3 = st.columns(3)
+            # ▶/⏸ 토글
+            if c1.button("▶ Play" if not st.session_state.paths_anim_play else "⏸ Pause", use_container_width=True):
+                st.session_state.paths_anim_play = not st.session_state.paths_anim_play
+            # ⏮ Reset
+            if c2.button("⏮ Reset", use_container_width=True):
+                st.session_state.paths_anim_index = 0
+                st.session_state.paths_anim_play = False
+            # ⏭ End
+            if c3.button("⏭ End", use_container_width=True):
+                # 끝까지 채우고 일시정지
+                # (세그먼트 수는 아래에서 계산)
+                st.session_state.paths_anim_play = False
+                # anim_index는 아래에서 segments 수로 맞춤
+
+        # 세그먼트 생성(필터 적용)
+        segments = items_to_segments(
+            st.session_state.paths_items,
+            e_on=e_on,
+            z_filter=st.session_state.paths_z_filter
         )
+        total_segments = len(segments)
+
+        # End 버튼이 눌린 경우 인덱스 정렬
+        if not st.session_state.paths_anim_play and st.session_state.paths_anim_index > total_segments:
+            st.session_state.paths_anim_index = total_segments
+
+        # 스크럽바(수동 탐색)
+        scrub = st.slider(
+            "진행(segments)", 0, max(1, total_segments), value=min(st.session_state.paths_anim_index, total_segments),
+            help="좌우로 드래그해 해당 세그먼트까지의 경로를 표시"
+        )
+        st.session_state.paths_anim_index = scrub
+
+        placeholder = st.empty()
+
+        # 재생 중이면 순차적으로 증가
+        if st.session_state.paths_anim_play and total_segments > 0:
+            start_i = st.session_state.paths_anim_index
+            speed = max(1, int(st.session_state.paths_anim_speed))
+            delay = 1.0 / float(speed)
+
+            for i in range(start_i, total_segments + 1):
+                st.session_state.paths_anim_index = i
+                fig = plot_segments_partial(segments, upto_count=i, height=820)
+                placeholder.plotly_chart(fig, use_container_width=True)
+                time.sleep(delay)
+                # 중간에 Pause 눌린 경우 탈출
+                if not st.session_state.paths_anim_play:
+                    break
+            # 끝까지 재생되면 자동 정지
+            if st.session_state.paths_anim_index >= total_segments:
+                st.session_state.paths_anim_play = False
+        else:
+            # 재생 중이 아니면 현재 인덱스까지만 그림
+            fig = plot_segments_partial(segments, upto_count=st.session_state.paths_anim_index, height=820)
+            placeholder.plotly_chart(fig, use_container_width=True)
+
     else:
         st.info("슬라이싱을 실행하세요.")
 
