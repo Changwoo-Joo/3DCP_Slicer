@@ -3,10 +3,10 @@ import numpy as np
 import trimesh
 import tempfile
 import plotly.graph_objects as go
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path  # 파일명 추출용
-import time  # ▶ 재생용 (추가)
+import time
 
 # =========================
 # App basics
@@ -46,15 +46,12 @@ def trim_segment_end(segment, trim_distance=30.0):
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
     XY 기준 Ramer–Douglas–Peucker 간소화.
-    - 직선 구간은 양 끝점만 유지 (중간 포인트 제거)
-    - 곡선/꺾임이 있는 부분만 점 유지
-    - min_dist(=epsilon 규모)를 키울수록 더 과감히 단순화
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
 
-    eps = float(min_dist) / 2.0  # 권장: 최소 간격의 절반 정도 허용 오차
+    eps = float(min_dist) / 2.0
 
     def _perp_dist_xy(p, a, b) -> float:
         ab = b[:2] - a[:2]
@@ -245,7 +242,7 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
-# === (추가) items -> segments + Z 필터 ===
+# === items -> segments + Z 필터 ===
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool, z_filter: Optional[float]
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
@@ -272,26 +269,70 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
     return segs
 
-# === (추가) 세그먼트 앞부분만 그려서 Plotly 생성 ===
-def plot_segments_partial(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
-                          upto_count: int, height=820) -> go.Figure:
-    upto = max(0, min(upto_count, len(segments)))
-    fig = go.Figure()
-    for i in range(upto):
+# === 누적 렌더 버퍼(2트레이스만 유지: solid/dot) ===
+def reset_anim_buffers():
+    st.session_state.paths_anim_buf = {
+        "solid": {"x": [], "y": [], "z": []},
+        "dot": {"x": [], "y": [], "z": []},
+        "built_upto": 0,
+    }
+
+def ensure_anim_buffers():
+    if "paths_anim_buf" not in st.session_state or not isinstance(st.session_state.paths_anim_buf, dict):
+        reset_anim_buffers()
+
+def append_segments_to_buffers(segments, start_idx, end_idx):
+    """
+    segments[start_idx:end_idx] 구간을 누적 버퍼에 추가.
+    solid=실선(압출), dot=점선(트래블/비압출)
+    각 세그먼트 끝마다 None을 넣어 폴리라인 끊김 표시.
+    """
+    buf = st.session_state.paths_anim_buf
+    for i in range(start_idx, end_idx):
         p1, p2, is_travel, is_extruding = segments[i]
-        dash_style = "dot" if (is_travel or not is_extruding) else "solid"
-        fig.add_trace(go.Scatter3d(
-            x=[p1[0], p2[0]], y=[p1[1], p2[1]], z=[p1[2], p2[2]],
-            mode="lines",
-            line=dict(width=3, dash=dash_style, color=PATH_COLOR),
-            showlegend=False
-        ))
+        key = "solid" if (not is_travel and is_extruding) else "dot"
+        buf[key]["x"].extend([float(p1[0]), float(p2[0]), None])
+        buf[key]["y"].extend([float(p1[1]), float(p2[1]), None])
+        buf[key]["z"].extend([float(p1[2]), float(p2[2]), None])
+    buf["built_upto"] = end_idx
+
+def rebuild_buffers_to(segments, upto):
+    """버퍼를 초기화하고 0..upto까지 다시 구성."""
+    reset_anim_buffers()
+    if upto > 0:
+        append_segments_to_buffers(segments, 0, upto)
+
+def make_base_fig(height=820) -> go.Figure:
+    """빈 2트레이스(실선/점선)만 가진 기본 도표."""
+    fig = go.Figure()
+    # solid
+    fig.add_trace(go.Scatter3d(
+        x=[], y=[], z=[], mode="lines",
+        line=dict(width=3, dash="solid", color=PATH_COLOR),
+        showlegend=False
+    ))
+    # dot
+    fig.add_trace(go.Scatter3d(
+        x=[], y=[], z=[], mode="lines",
+        line=dict(width=3, dash="dot", color=PATH_COLOR),
+        showlegend=False
+    ))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0))
     return fig
 
+def update_fig_with_buffers(fig: go.Figure):
+    """현재 버퍼 내용을 fig.data[0](solid), fig.data[1](dot)에 반영."""
+    buf = st.session_state.paths_anim_buf
+    fig.data[0].x = buf["solid"]["x"]
+    fig.data[0].y = buf["solid"]["y"]
+    fig.data[0].z = buf["solid"]["z"]
+    fig.data[1].x = buf["dot"]["x"]
+    fig.data[1].y = buf["dot"]["y"]
+    fig.data[1].z = buf["dot"]["z"]
+
 # =========================
-# Plotly: STL & Paths
+# Plotly: STL & (정적) Paths
 # =========================
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
@@ -341,7 +382,7 @@ if "gcode_text" not in st.session_state:
 if "base_name" not in st.session_state:
     st.session_state.base_name = "output"
 
-# ==== Rapid session keys (추가 기능용) ====
+# Rapid panel state
 if "show_rapid_panel" not in st.session_state:
     st.session_state.show_rapid_panel = False
 if "rapid_rx" not in st.session_state:
@@ -353,7 +394,7 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
-# ==== (추가) 애니메이션/필터 상태 ====
+# Animation / filter state
 if "paths_z_filter" not in st.session_state:
     st.session_state.paths_z_filter = None  # float | None
 if "paths_anim_play" not in st.session_state:
@@ -361,7 +402,11 @@ if "paths_anim_play" not in st.session_state:
 if "paths_anim_index" not in st.session_state:
     st.session_state.paths_anim_index = 0
 if "paths_anim_speed" not in st.session_state:
-    st.session_state.paths_anim_speed = 120  # segments per second
+    st.session_state.paths_anim_speed = 60  # 목표 FPS와 배치로 실제 그려지는 속도 조절
+if "paths_anim_batch" not in st.session_state:
+    st.session_state.paths_anim_batch = 500  # 프레임당 추가 세그먼트(깜빡임 줄이려면 크게)
+
+ensure_anim_buffers()
 
 # =========================
 # Sidebar (Access Key + 만료일)
@@ -429,6 +474,12 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
+# ▶ 부드러운 재생을 위한 설정
+st.sidebar.subheader("Playback")
+st.session_state.paths_anim_batch = st.sidebar.number_input("Batch size (segments/frame)", 50, 10000, st.session_state.paths_anim_batch, step=50)
+target_fps = st.sidebar.number_input("Target FPS", 1, 120, st.session_state.paths_anim_speed, step=1)
+st.session_state.paths_anim_speed = target_fps
+
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 
@@ -451,8 +502,6 @@ if uploaded is not None:
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
-
-    # 업로드 원본 파일명 저장 (확장자 제외)
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
@@ -469,10 +518,11 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    # 슬라이스 새로 만들면 애니메이션 상태 초기화 (추가)
+    # 새 슬라이스 → 애니메이션 상태 초기화
     st.session_state.paths_anim_index = 0
     st.session_state.paths_anim_play = False
     st.session_state.paths_z_filter = None
+    reset_anim_buffers()
     st.success("Slicing complete")
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
@@ -507,7 +557,6 @@ if st.session_state.get("gcode_text"):
 # >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
 # =========================
 def _fmt_pos(v: float) -> str:
-    # +0000.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -515,7 +564,6 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    # +000.00
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -526,7 +574,6 @@ PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+000
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
-    """G-code에서 X/Y/Z 좌표 지정이 포함된 G0/G1 라인의 개수만 카운트"""
     cnt = 0
     for raw in gcode_text.splitlines():
         t = raw.strip()
@@ -538,17 +585,6 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
-    """
-    cone1500.modx 스타일 MODULE 생성:
-      MODULE Converted
-      VAR string sFileCount := "64000";
-      VAR string d3dpDynLoad{64000} := [
-        "X,Y,Z,Rx,Ry,Rz,A1,A2,A3,A4",
-        ...
-      ];
-      ENDMODULE
-    좌표 라인이 부족하면 PAD_LINE으로 채움(정확히 64,000줄).
-    """
     lines_out = []
     cur_x = 0.0
     cur_y = 0.0
@@ -595,11 +631,9 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         if len(lines_out) >= MAX_LINES:
             break
 
-    # 패딩
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
-    # MODULE 래핑
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = (
         "MODULE Converted\n"
@@ -681,7 +715,6 @@ with tab_stl:
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
-        # --- Z 필터 + 재생 컨트롤 ---
         mesh_zmax = float(st.session_state.mesh.bounds[1, 2]) if st.session_state.mesh is not None else 0.0
         colA, colB, colC, colD = st.columns([3, 3, 2, 4])
 
@@ -698,25 +731,23 @@ with tab_paths:
                 st.session_state.paths_z_filter = None
 
         with colC:
-            st.session_state.paths_anim_speed = st.number_input(
-                "속도(segments/s)", min_value=1, max_value=2000,
-                value=int(st.session_state.paths_anim_speed), step=10
-            )
+            # FPS 표시는 사이드바에서, 여기선 안내만
+            st.write(f"FPS: **{st.session_state.paths_anim_speed}**")
+            st.write(f"Batch: **{st.session_state.paths_anim_batch} seg/frame**")
 
         with colD:
             c1, c2, c3 = st.columns(3)
-            # ▶/⏸ 토글
             play_clicked = c1.button("▶ Play" if not st.session_state.paths_anim_play else "⏸ Pause", use_container_width=True)
             if play_clicked:
                 st.session_state.paths_anim_play = not st.session_state.paths_anim_play
-            # ⏮ Reset
             if c2.button("⏮ Reset", use_container_width=True):
                 st.session_state.paths_anim_index = 0
                 st.session_state.paths_anim_play = False
-            # ⏭ End (즉시 끝으로)
+                rebuild_buffers_to([], 0)  # 안전 초기화
+                reset_anim_buffers()
             end_clicked = c3.button("⏭ End", use_container_width=True)
 
-        # 세그먼트 생성(필터 적용)
+        # 세그먼트(필터 적용)
         segments = items_to_segments(
             st.session_state.paths_items,
             e_on=e_on,
@@ -727,39 +758,60 @@ with tab_paths:
         if end_clicked:
             st.session_state.paths_anim_index = total_segments
             st.session_state.paths_anim_play = False
+            rebuild_buffers_to(segments, total_segments)
 
-        # 스크럽바(수동 탐색)
+        # 스크럽(수동 탐색)
         scrub = st.slider(
             "진행(segments)", 0, max(1, total_segments),
             value=min(st.session_state.paths_anim_index, total_segments),
             help="좌우로 드래그해 해당 세그먼트까지의 경로를 표시"
         )
-        st.session_state.paths_anim_index = scrub
+        # 스크럽 값 변경 시 버퍼 싱크
+        if scrub != st.session_state.paths_anim_index:
+            target = scrub
+            built = st.session_state.paths_anim_buf["built_upto"]
+            if target < built:
+                # 뒤로 갔으면 리빌드
+                rebuild_buffers_to(segments, target)
+            elif target > built:
+                append_segments_to_buffers(segments, built, target)
+            st.session_state.paths_anim_index = target
 
+        # 그림 준비 (한 번 만든 fig 객체를 재사용)
+        if "paths_base_fig" not in st.session_state:
+            st.session_state.paths_base_fig = make_base_fig(height=820)
+        fig = st.session_state.paths_base_fig
+        update_fig_with_buffers(fig)
         placeholder = st.empty()
+        placeholder.plotly_chart(fig, use_container_width=True)
 
-        # 재생 중이면 순차적으로 증가
+        # 재생 루프
         if st.session_state.paths_anim_play and total_segments > 0:
-            start_i = st.session_state.paths_anim_index
-            speed = max(1, int(st.session_state.paths_anim_speed))
-            delay = 1.0 / float(speed)
-            for i in range(start_i, total_segments + 1):
-                if not st.session_state.paths_anim_play:
-                    break  # 중간에 Pause 눌리면 탈출
-                st.session_state.paths_anim_index = i
-                fig = plot_segments_partial(segments, upto_count=i, height=820)
+            start_time = time.perf_counter()
+            frame_interval = 1.0 / float(max(1, st.session_state.paths_anim_speed))
+            batch = int(st.session_state.paths_anim_batch)
+
+            while st.session_state.paths_anim_play and st.session_state.paths_anim_index < total_segments:
+                built = st.session_state.paths_anim_buf["built_upto"]
+                target = min(total_segments, built + batch)
+                append_segments_to_buffers(segments, built, target)
+                st.session_state.paths_anim_index = target
+
+                # 버퍼 내용만 갱신하여 동일 fig 재표시 (트레이스 수 고정)
+                update_fig_with_buffers(fig)
                 placeholder.plotly_chart(fig, use_container_width=True)
-                # CPU 과점유 방지
-                time.sleep(delay)
-            # 끝나면 자동 정지
+
+                # FPS 페이싱
+                elapsed = time.perf_counter() - start_time
+                sleep_t = frame_interval - elapsed
+                if sleep_t > 0:
+                    time.sleep(sleep_t)
+                start_time = time.perf_counter()
+
+            # 끝나면 정지
             if st.session_state.paths_anim_index >= total_segments:
                 st.session_state.paths_anim_play = False
-        else:
-            # 재생 중이 아니면 현재 인덱스까지만 그림
-            fig = plot_segments_partial(segments, upto_count=st.session_state.paths_anim_index, height=820)
-            placeholder.plotly_chart(fig, use_container_width=True)
 
-        # 세그먼트/레이어 요약
         st.caption(f"세그먼트: {total_segments:,}  |  현재: {st.session_state.paths_anim_index:,}")
 
     else:
