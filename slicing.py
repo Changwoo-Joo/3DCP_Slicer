@@ -3,9 +3,9 @@ import numpy as np
 import trimesh
 import tempfile
 import plotly.graph_objects as go
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional
 from datetime import date, datetime
-from pathlib import Path  # 파일명 추출용
+from pathlib import Path
 import time
 
 # =========================
@@ -15,7 +15,7 @@ st.set_page_config(page_title="3DCP Slicer", layout="wide")
 st.title("3DCP Slicer")
 
 EXTRUSION_K = 0.05
-PATH_COLOR = "#222222"  # 단색 유지
+PATH_COLOR = "#222222"
 
 def clamp(v, lo, hi):
     try:
@@ -27,7 +27,6 @@ def clamp(v, lo, hi):
 # Helpers
 # =========================
 def trim_segment_end(segment, trim_distance=30.0):
-    """XY 누적 길이 기준으로 마지막 trim_distance만큼 잘라냄."""
     segment = np.array(segment, dtype=float)
     if len(segment) < 2:
         return segment
@@ -50,13 +49,9 @@ def trim_segment_end(segment, trim_distance=30.0):
     return np.array(trimmed)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
-    """
-    XY 기준 Ramer–Douglas–Peucker 간소화.
-    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
-
     eps = float(min_dist) / 2.0
 
     def _perp_dist_xy(p, a, b) -> float:
@@ -72,15 +67,12 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     def _rdp_xy(points: np.ndarray, eps_val: float) -> np.ndarray:
         if len(points) <= 2:
             return points
-        a = points[0]
-        b = points[-1]
-        dmax = -1.0
-        idx = -1
+        a, b = points[0], points[-1]
+        dmax, idx = -1.0, -1
         for i in range(1, len(points) - 1):
             d = _perp_dist_xy(points[i], a, b)
             if d > dmax:
-                dmax = d
-                idx = i
+                dmax, idx = d, i
         if dmax <= eps_val:
             return np.vstack([a, b])
         left = _rdp_xy(points[: idx + 1], eps_val)
@@ -90,7 +82,6 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     return _rdp_xy(pts, eps)
 
 def shift_to_nearest_start(segment, ref_point):
-    """시작점을 ref_point(XY)에서 가장 가까운 정점으로 돌려 배치."""
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
@@ -108,7 +99,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
     if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    z_values.append(z_max + 0.01)  # 최상단 캡쳐
+    z_values.append(z_max + 0.01)
 
     prev_start_xy = None
     for z in z_values:
@@ -252,10 +243,6 @@ def compute_slice_paths_with_travel(
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
                       e_on: bool, z_filter: Optional[float]
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-    """
-    반환: [(p1, p2, is_travel, is_extruding), ...]
-    Z 필터 주어지면 max(z1,z2) <= z_filter 인 세그먼트만 유지
-    """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
@@ -272,10 +259,10 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
             for p1, p2 in zip(poly[:-1], poly[1:]):
                 if z_filter is not None and max(p1[2], p2[2]) > z_filter + 1e-9:
                     continue
-                segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
+                segs.append((p1, p2, is_travel, True))
     return segs
 
-# === 누적 렌더 버퍼(2트레이스만 유지: solid/dot) ===
+# === 누적 렌더 버퍼 ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
         "solid": {"x": [], "y": [], "z": []},
@@ -288,11 +275,6 @@ def ensure_anim_buffers():
         reset_anim_buffers()
 
 def append_segments_to_buffers(segments, start_idx, end_idx):
-    """
-    segments[start_idx:end_idx] 구간을 누적 버퍼에 추가.
-    solid=실선(압출), dot=점선(트래블/비압출)
-    각 세그먼트 끝마다 None을 넣어 폴리라인 끊김 표시.
-    """
     buf = st.session_state.paths_anim_buf
     for i in range(start_idx, end_idx):
         p1, p2, is_travel, is_extruding = segments[i]
@@ -303,36 +285,24 @@ def append_segments_to_buffers(segments, start_idx, end_idx):
     buf["built_upto"] = end_idx
 
 def rebuild_buffers_to(segments, upto):
-    """버퍼를 초기화하고 0..upto까지 다시 구성."""
     reset_anim_buffers()
     if upto > 0:
         append_segments_to_buffers(segments, 0, upto)
 
 def make_base_fig(height=820) -> go.Figure:
-    """빈 2트레이스(실선/점선)만 가진 기본 도표."""
     fig = go.Figure()
-    # solid
-    fig.add_trace(go.Scatter3d(
-        x=[], y=[], z=[], mode="lines",
-        line=dict(width=3, dash="solid", color=PATH_COLOR),
-        showlegend=False
-    ))
-    # dot
-    fig.add_trace(go.Scatter3d(
-        x=[], y=[], z=[], mode="lines",
-        line=dict(width=3, dash="dot", color=PATH_COLOR),
-        showlegend=False
-    ))
-    fig.update_layout(
-        scene=dict(aspectmode="data"),
-        height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="keep",          # ← 재렌더 시 상태 유지
-        transition={'duration': 0}  # ← 전환 제거
-    )
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=3, dash="solid", color=PATH_COLOR),
+                               showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=3, dash="dot", color=PATH_COLOR),
+                               showlegend=False))
+    fig.update_layout(scene=dict(aspectmode="data"),
+                      height=height, margin=dict(l=0, r=0, t=10, b=0),
+                      uirevision="keep", transition={'duration': 0})
     return fig
 
 def update_fig_with_buffers(fig: go.Figure):
-    """현재 버퍼 내용을 fig.data[0](solid), fig.data[1](dot)에 반영."""
     buf = st.session_state.paths_anim_buf
     fig.data[0].x = buf["solid"]["x"]
     fig.data[0].y = buf["solid"]["y"]
@@ -342,7 +312,7 @@ def update_fig_with_buffers(fig: go.Figure):
     fig.data[1].z = buf["dot"]["z"]
 
 # =========================
-# Plotly: STL & (정적) Paths
+# Plotly: STL (정적)
 # =========================
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
@@ -350,32 +320,8 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     fig = go.Figure(data=[go.Mesh3d(
         x=v[:, 0], y=v[:, 1], z=v[:, 2],
         i=f[:, 0], j=f[:, 1], k=f[:, 2],
-        color="#888888",
-        opacity=0.6,
-        flatshading=True
+        color="#888888", opacity=0.6, flatshading=True
     )])
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      height=height, margin=dict(l=0, r=0, t=10, b=0))
-    return fig
-
-def plot_paths(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on=False, height=820) -> go.Figure:
-    fig = go.Figure()
-    for poly, e_vals, is_travel in items:
-        if e_on and e_vals is not None:
-            for (p1, p2, e1, e2) in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
-                dash_style = "solid" if (e2 - e1) > 1e-12 else "dot"
-                fig.add_trace(go.Scatter3d(
-                    x=[p1[0], p2[0]], y=[p1[1], p2[1]], z=[p1[2], p2[2]],
-                    mode="lines",
-                    line=dict(width=3, dash=dash_style, color=PATH_COLOR),
-                    showlegend=False
-                ))
-        else:
-            fig.add_trace(go.Scatter3d(
-                x=poly[:, 0], y=poly[:, 1], z=poly[:, 2],
-                mode="lines", line=dict(width=3, color=PATH_COLOR),
-                showlegend=False
-            ))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0))
     return fig
@@ -392,7 +338,6 @@ if "gcode_text" not in st.session_state:
 if "base_name" not in st.session_state:
     st.session_state.base_name = "output"
 
-# Rapid panel state
 if "show_rapid_panel" not in st.session_state:
     st.session_state.show_rapid_panel = False
 if "rapid_rx" not in st.session_state:
@@ -404,27 +349,22 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
-# Animation / filter state
 if "paths_z_filter" not in st.session_state:
-    st.session_state.paths_z_filter = None  # float | None
+    st.session_state.paths_z_filter = None
 if "paths_anim_play" not in st.session_state:
     st.session_state.paths_anim_play = False
 if "paths_anim_index" not in st.session_state:
     st.session_state.paths_anim_index = 0
 if "paths_anim_speed" not in st.session_state:
-    st.session_state.paths_anim_speed = 15  # 권장 10~20FPS
+    st.session_state.paths_anim_speed = 15
 
 ensure_anim_buffers()
 
 # =========================
-# Sidebar (Access Key + 만료일)
+# Sidebar
 # =========================
 st.sidebar.header("Access")
-
-ALLOWED_WITH_EXPIRY = {
-    "robotics5107": None,
-    "kmou*": "2026-12-31",
-}
+ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kmou*": "2026-12-31"}
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
 
 def check_key_valid(k: str):
@@ -447,8 +387,6 @@ def check_key_valid(k: str):
         return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
-
-# 상태 표시
 if access_key:
     if KEY_OK:
         if EXP_DATE is None:
@@ -461,7 +399,6 @@ if access_key:
 else:
     st.sidebar.warning("Access Key를 입력하세요.")
 
-# 업로드는 키 없으면 비활성화
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
 st.sidebar.header("Parameters")
@@ -482,21 +419,16 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ▶ Playback: FPS만 노출(1행씩 재생 고정) — 위젯 호출 전 안전 클램프 적용
+# ▶ Playback (FPS 클램프)
 st.sidebar.subheader("Playback")
 FPS_MIN, FPS_MAX = 1, 60
 default_fps = int(st.session_state.get("paths_anim_speed", 15))
 default_fps = max(FPS_MIN, min(default_fps, FPS_MAX))
-fps_val = st.sidebar.number_input(
-    "Target FPS",
-    min_value=FPS_MIN, max_value=FPS_MAX,
-    value=default_fps, step=1
-)
+fps_val = st.sidebar.number_input("Target FPS", min_value=FPS_MIN, max_value=FPS_MAX, value=default_fps, step=1)
 st.session_state.paths_anim_speed = int(fps_val)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
-
 slice_clicked = b1.button("Slice Model", use_container_width=True)
 gen_clicked = b2.button("Generate G-Code", use_container_width=True)
 
@@ -511,7 +443,6 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # Z 축 미세 확장 (최대 Z 절단면 인식 보정)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
@@ -532,7 +463,6 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-    # 새 슬라이스 → 애니메이션 상태 초기화
     st.session_state.paths_anim_index = 0
     st.session_state.paths_anim_play = False
     st.session_state.paths_z_filter = None
@@ -541,48 +471,26 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh,
-        z_int=z_int,
-        feed=feed,
-        ref_pt_user=(ref_x, ref_y),
-        e_on=e_on,
-        start_e_on=start_e_on,
-        start_e_val=start_e_val,
-        e0_on=e0_on,
-        trim_dist=trim_dist,
-        min_spacing=min_spacing,
-        auto_start=auto_start,
-        m30_on=m30_on
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
+        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
     st.success("G-code ready")
 
 if st.session_state.get("gcode_text"):
     base = st.session_state.get("base_name", "output")
-    st.sidebar.download_button(
-        "G-code 저장",
-        st.session_state.gcode_text,
-        file_name=f"{base}.gcode",
-        mime="text/plain",
-        use_container_width=True
-    )
+    st.sidebar.download_button("G-code 저장", st.session_state.gcode_text,
+                               file_name=f"{base}.gcode", mime="text/plain",
+                               use_container_width=True)
 
 # =========================
-# >>> Rapid(MODX) 추가 기능 (cone1500 형식) <<<
+# Rapid(MODX)
 # =========================
 def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"
-    sign = s[0]
-    intpart, dec = s[1:].split(".")
-    intpart = intpart.zfill(4)
-    return f"{sign}{intpart}.{dec}"
-
+    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
 def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"
-    sign = s[0]
-    intpart, dec = s[1:].split(".")
-    intpart = intpart.zfill(3)
-    return f"{sign}{intpart}.{dec}"
+    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
@@ -600,47 +508,28 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
     lines_out = []
-    cur_x = 0.0
-    cur_y = 0.0
-    cur_z = 0.0
-    frx = _fmt_ang(rx)
-    fry = _fmt_ang(ry)
-    frz = _fmt_ang(rz)
+    cur_x = cur_y = cur_z = 0.0
+    frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not (t.startswith("G0") or t.startswith("G00") or t.startswith("G1") or t.startswith("G01")):
+        if not t or not (t.startswith(("G0","G00","G1","G01"))):
             continue
-
-        parts = t.split()
-        has_xyz = False
+        parts = t.split(); has_xyz = False
         for p in parts:
             if p.startswith("X"):
-                try:
-                    cur_x = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
+                try: cur_x = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Y"):
-                try:
-                    cur_y = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
+                try: cur_y = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Z"):
-                try:
-                    cur_z = float(p[1:])
-                    has_xyz = True
-                except:
-                    pass
-
+                try: cur_z = float(p[1:]); has_xyz = True
+                except: pass
         if not has_xyz:
             continue
-
-        fx = _fmt_pos(cur_x)
-        fy = _fmt_pos(cur_y)
-        fz = _fmt_pos(cur_z)
+        fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
         lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
         if len(lines_out) >= MAX_LINES:
             break
@@ -649,34 +538,27 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         lines_out.append(PAD_LINE)
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-    header = (
-        "MODULE Converted\n"
-        "!***************************************************************...****************************************************************\n"
-        "!*\n"
-        f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-        "!\n"
-        "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-        "!\n"
-        "!***************************************************************...****************************************************************\n"
-    )
+    header = ("MODULE Converted\n"
+              "!***************************************************************...****************************************************************\n"
+              "!*\n"
+              f"!*** Generated {ts} by Gcode→RAPID converter.\n"
+              "!\n"
+              "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+              "!\n"
+              "!***************************************************************...****************************************************************\n")
     cnt_str = str(MAX_LINES)
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
     body = ""
     for i, ln in enumerate(lines_out):
         q = f'"{ln}"'
-        if i < len(lines_out) - 1:
-            body += q + ",\n"
-        else:
-            body += q + "\n"
+        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
 
-# 사이드바: Generate Rapid
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
         st.session_state.show_rapid_panel = True
-
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
@@ -696,36 +578,26 @@ if KEY_OK:
                 st.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
             elif save_rapid_clicked:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
-                    gtxt,
-                    rx=st.session_state.rapid_rx,
-                    ry=st.session_state.rapid_ry,
-                    rz=st.session_state.rapid_rz,
+                    gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
                 )
                 st.success("Rapid(MODX, cone1500 형식) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
-                st.download_button(
-                    "Rapid 저장 (.modx)",
-                    st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+                st.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text,
+                                   file_name=f"{base}.modx", mime="text/plain",
+                                   use_container_width=True)
 
 # =========================
-# Right: Viewers (크게)
+# Right: Viewers
 # =========================
 tab_stl, tab_paths, tab_gcode = st.tabs(["STL Preview", "Sliced Paths (3D)", "G-code Viewer"])
 
 with tab_stl:
     if st.session_state.get("mesh") is not None:
-        st.plotly_chart(
-            plot_trimesh(st.session_state.mesh, height=820),
-            use_container_width=True,
-            key="stl_chart",
-            config={"displayModeBar": False}
-        )
+        st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820),
+                        use_container_width=True, key="stl_chart",
+                        config={"displayModeBar": False})
     else:
         st.info("STL을 업로드하세요.")
 
@@ -733,25 +605,20 @@ with tab_paths:
     if st.session_state.get("paths_items") is not None:
         mesh_zmax = float(st.session_state.mesh.bounds[1, 2]) if st.session_state.mesh is not None else 0.0
         colA, colB, colC, colD = st.columns([3, 3, 2, 4])
-
         with colA:
             z_filter_enable = st.checkbox("Z 필터 사용", value=(st.session_state.paths_z_filter is not None))
         with colB:
             if z_filter_enable:
                 current_z = st.session_state.paths_z_filter if st.session_state.paths_z_filter is not None else mesh_zmax
                 current_z = clamp(float(current_z), 0.0, max(0.1, mesh_zmax))
-                st.session_state.paths_z_filter = st.slider(
-                    "Z ≤", min_value=0.0, max_value=max(0.1, mesh_zmax),
-                    value=float(current_z),
-                    step=max(0.01, min(1.0, mesh_zmax/200.0))
-                )
+                st.session_state.paths_z_filter = st.slider("Z ≤", min_value=0.0, max_value=max(0.1, mesh_zmax),
+                                                            value=float(current_z),
+                                                            step=max(0.01, min(1.0, mesh_zmax/200.0)))
             else:
                 st.session_state.paths_z_filter = None
-
         with colC:
             st.write(f"FPS: **{st.session_state.paths_anim_speed}**")
-            st.write("Batch: **1 seg/frame**")  # 고정
-
+            st.write("Batch: **1 seg/frame**")
         with colD:
             c1, c2, c3 = st.columns(3)
             play_clicked = c1.button("▶ Play" if not st.session_state.paths_anim_play else "⏸ Pause", use_container_width=True)
@@ -760,16 +627,11 @@ with tab_paths:
             if c2.button("⏮ Reset", use_container_width=True):
                 st.session_state.paths_anim_index = 0
                 st.session_state.paths_anim_play = False
-                rebuild_buffers_to([], 0)  # 안전 초기화
+                rebuild_buffers_to([], 0)
                 reset_anim_buffers()
             end_clicked = c3.button("⏭ End", use_container_width=True)
 
-        # 세그먼트(필터 적용)
-        segments = items_to_segments(
-            st.session_state.paths_items,
-            e_on=e_on,
-            z_filter=st.session_state.paths_z_filter
-        )
+        segments = items_to_segments(st.session_state.paths_items, e_on=e_on, z_filter=st.session_state.paths_z_filter)
         total_segments = len(segments)
 
         if end_clicked:
@@ -777,13 +639,9 @@ with tab_paths:
             st.session_state.paths_anim_play = False
             rebuild_buffers_to(segments, total_segments)
 
-        # 스크럽(수동 탐색)
-        scrub = st.slider(
-            "진행(segments)", 0, max(1, total_segments),
-            value=min(st.session_state.paths_anim_index, total_segments),
-            help="좌우로 드래그해 해당 세그먼트까지의 경로를 표시"
-        )
-        # 스크럽 값 변경 시 버퍼 싱크
+        scrub = st.slider("진행(segments)", 0, max(1, total_segments),
+                          value=min(st.session_state.paths_anim_index, total_segments),
+                          help="좌우로 드래그해 해당 세그먼트까지의 경로를 표시")
         if scrub != st.session_state.paths_anim_index:
             target = scrub
             built = st.session_state.paths_anim_buf["built_upto"]
@@ -793,41 +651,37 @@ with tab_paths:
                 append_segments_to_buffers(segments, built, target)
             st.session_state.paths_anim_index = target
 
-        # 그림 준비 (한 번 만든 fig 객체를 재사용)
         if "paths_base_fig" not in st.session_state:
             st.session_state.paths_base_fig = make_base_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig)
         placeholder = st.empty()
-        placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
+        # ▼▼ key 제거 (중복 방지). placeholder 자체가 위치 키 역할을 함.
+        placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # 재생 루프 (1세그먼트씩 추가, 화면 갱신은 FPS로 스로틀)
         if st.session_state.paths_anim_play and total_segments > 0:
             frame_interval = 1.0 / float(max(1, st.session_state.paths_anim_speed))
             next_draw_time = time.perf_counter()
-
             while st.session_state.paths_anim_play and st.session_state.paths_anim_index < total_segments:
                 built = st.session_state.paths_anim_buf["built_upto"]
-                target = min(total_segments, built + 1)  # ★ 1행(=1세그먼트)만 추가
+                target = min(total_segments, built + 1)
                 append_segments_to_buffers(segments, built, target)
                 st.session_state.paths_anim_index = target
 
                 now = time.perf_counter()
                 if now >= next_draw_time:
                     update_fig_with_buffers(fig)
-                    placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
+                    # ▼▼ key 없이 동일 placeholder에 재렌더
+                    placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                     next_draw_time = now + frame_interval
+                time.sleep(0.001)
 
-                time.sleep(0.001)  # 과도한 CPU 점유 방지
-
-            # 종료/완료 시 최종 1회 갱신
             update_fig_with_buffers(fig)
-            placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
+            placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             if st.session_state.paths_anim_index >= total_segments:
                 st.session_state.paths_anim_play = False
 
         st.caption(f"세그먼트: {total_segments:,}  |  현재: {st.session_state.paths_anim_index:,}")
-
     else:
         st.info("슬라이싱을 실행하세요.")
 
@@ -837,6 +691,5 @@ with tab_gcode:
     else:
         st.info("G-code를 생성하세요.")
 
-# 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
