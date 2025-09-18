@@ -312,10 +312,10 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
 # === 누적 렌더 버퍼 ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 중심 경로(실선)
+        "solid": {"x": [], "y": [], "z": []},  # 중심 경로(실선/연한회색)
         "dot":   {"x": [], "y": [], "z": []},  # 여정(점선)
-        "off_l": {"x": [], "y": [], "z": []},  # 좌측 오프셋
-        "off_r": {"x": [], "y": [], "z": []},  # 우측 오프셋
+        "off_l": {"x": [], "y": [], "z": []},  # 좌측 오프셋(진한 회색)
+        "off_r": {"x": [], "y": [], "z": []},  # 우측 오프셋(진한 회색)
         "caps":  {"x": [], "y": [], "z": []},  # 캡 강조(빨강)
         "built_upto": 0,
         "stride": 1,
@@ -353,26 +353,67 @@ def rebuild_buffers_to(segments, upto, stride=1):
     if upto > 0:
         append_segments_to_buffers(segments, 0, upto, stride=stride)
 
-def compute_offsets_into_buffers(segments, upto, half_width):
+def compute_offsets_into_buffers(
+    segments,
+    upto,
+    half_width,
+    include_travel_climb: bool = False,
+    climb_z_thresh: float = 1e-6
+):
+    """
+    좌/우 오프셋을 누적 버퍼에 구성.
+    - 기본: 압출 구간(비여정)에 대해서만 오프셋 선 추가
+    - include_travel_climb=True이면 Z 변화가 있는 여정(레이어 사이 올라타는 구간)도 오프셋 추가
+    """
     buf = st.session_state.paths_anim_buf
     buf["off_l"] = {"x": [], "y": [], "z": []}
     buf["off_r"] = {"x": [], "y": [], "z": []}
     if half_width <= 0 or upto <= 0:
         return
-    for i in range(0, min(upto, len(segments))):
+
+    prev_tan = None  # XY 기준 직전 유효 진행 방향
+
+    N = min(upto, len(segments))
+    for i in range(N):
         p1, p2, is_travel, is_extruding = segments[i]
-        if is_travel or not is_extruding:
+
+        use_this = False
+        if (not is_travel) and is_extruding:
+            use_this = True
+        elif include_travel_climb:
+            dz = float(p2[2] - p1[2])
+            if abs(dz) > climb_z_thresh:
+                use_this = True  # 층간 이동(클라임)도 오프셋 표시
+
+        if not use_this:
+            # 진행 방향 업데이트만 시도(여정이라도 XY 이동이 있으면 기록)
+            dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1])
+            nrm = (dx*dx + dy*dy) ** 0.5
+            if nrm > 1e-12:
+                prev_tan = (dx/nrm, dy/nrm)
             continue
+
+        # 진행 방향 계산 (XY)
         dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1])
         nrm = (dx*dx + dy*dy) ** 0.5
-        if nrm < 1e-12:
-            continue
-        nx = -dy / nrm
-        ny =  dx / nrm
+        if nrm > 1e-12:
+            tx, ty = dx/nrm, dy/nrm
+            prev_tan = (tx, ty)
+        else:
+            # XY 이동이 거의 없는 수직 이동: 직전 방향 사용, 없으면 +X
+            if prev_tan is None:
+                prev_tan = (1.0, 0.0)
+            tx, ty = prev_tan
+
+        # XY에서 좌/우 법선
+        nx, ny = -ty, tx
+
+        # 좌·우 오프셋 좌표
         l1 = (float(p1[0] + nx*half_width), float(p1[1] + ny*half_width), float(p1[2]))
         l2 = (float(p2[0] + nx*half_width), float(p2[1] + ny*half_width), float(p2[2]))
         r1 = (float(p1[0] - nx*half_width), float(p1[1] - ny*half_width), float(p1[2]))
         r2 = (float(p2[0] - nx*half_width), float(p2[1] - ny*half_width), float(p2[2]))
+
         buf["off_l"]["x"].extend([l1[0], l2[0], None]); buf["off_l"]["y"].extend([l1[1], l2[1], None]); buf["off_l"]["z"].extend([l1[2], l2[2], None])
         buf["off_r"]["x"].extend([r1[0], r2[0], None]); buf["off_r"]["y"].extend([r1[1], r2[1], None]); buf["off_r"]["z"].extend([r1[2], r2[2], None])
 
@@ -411,7 +452,7 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
         ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
         zs = np.full_like(xs, float(z))
 
-        # 오프셋 기본 트레이스(좌측)에 추가 (진한 회색은 스타일에서 적용)
+        # 오프셋 기본 트레이스(좌측)에 추가
         if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
             buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
         buf["off_l"]["x"].extend(xs.tolist() + [None])
@@ -518,11 +559,9 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     fig.data[0].line.color = center_color
     fig.data[1].line.color = center_color
 
-    # 오프셋 트레이스(진한 회색 + 굵기 3) 스타일 유지
-    fig.data[2].line.color = OFFSET_DARK_GRAY
-    fig.data[2].line.width = 3
-    fig.data[3].line.color = OFFSET_DARK_GRAY
-    fig.data[3].line.width = 3
+    # 오프셋 트레이스(진한 회색 + 굵기 3)
+    fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
+    fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
 
     # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
@@ -852,7 +891,7 @@ with tab_paths:
             apply_offsets = st.checkbox(
                 "Apply layer width",
                 value=False,
-                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋을 진한 회색으로, 중심 경로는 연한 회색으로 표시합니다."
+                help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(진한 회색)과 중심 경로(연한 회색)를 표시합니다. 층간 이동(Z 변화)에도 오프셋을 덧그립니다."
             )
             st.session_state.apply_offsets_flag = bool(apply_offsets)
 
@@ -923,7 +962,11 @@ with tab_paths:
         # 오프셋 + 전역 캡
         if apply_offsets:
             half_w = float(trim_dist) * 0.5
-            compute_offsets_into_buffers(segments, target, half_w)
+            # include_travel_climb=True → 층간 이동(Z 변화)에도 오프셋 표시
+            compute_offsets_into_buffers(
+                segments, target, half_w,
+                include_travel_climb=True, climb_z_thresh=1e-9
+            )
             st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
             add_global_endcaps_into_buffers(
                 segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps)
@@ -941,7 +984,7 @@ with tab_paths:
         placeholder = st.empty()
         placeholder.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # 외부치수(오른쪽 only)
+        # 외부치수(오른쪽 only) — 우측 오프셋 기준
         if apply_offsets:
             bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
             z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
