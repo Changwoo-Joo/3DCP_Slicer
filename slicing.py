@@ -208,7 +208,7 @@ def compute_slice_paths_with_travel(
         segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg, ), 1)), np.ones((len(seg, ), 1))]).T).T[:, :3]
+            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
             segments.append(seg3d)
         if not segments:
             continue
@@ -235,7 +235,7 @@ def compute_slice_paths_with_travel(
 
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
-            # 레이어 간 이동 travel (점선으로 표시)
+            # 레이어 간 이동 travel (점선으로 표시할 후보)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
@@ -261,6 +261,8 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     """
     반환: [(p1, p2, is_travel, is_extruding), ...]
+    - is_travel: 레이어 간 이동 여부 (시각화에서 점선 처리 여부는 별도 플래그로 제어)
+    - is_extruding: 오프셋/치수 산출에 사용할 '압출' 구간 플래그
     """
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
@@ -273,6 +275,7 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
+            # e_on=False: travel은 is_extruding=False, 나머지는 True (오프셋 대상 유지)
             for p1, p2 in zip(poly[:-1], poly[1:]):
                 is_extruding = (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
@@ -281,8 +284,8 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
 # === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
-        "solid": {"x": [], "y": [], "z": []},  # 압출 = 실선(검은색)
-        "dot":   {"x": [], "y": [], "z": []},  # travel = 점선(검은색)
+        "solid": {"x": [], "y": [], "z": []},  # 검은 실선(압출 or e_off 모드 전부)
+        "dot":   {"x": [], "y": [], "z": []},  # 검은 점선(여기서는 e_on일 때만 사용)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
@@ -293,11 +296,14 @@ def ensure_anim_buffers():
         reset_anim_buffers()
 
 def append_segments_to_buffers(segments, start_idx, end_idx):
+    """
+    show_travel_dots=False(=e_on False)면 travel도 실선 버퍼에 쌓는다.
+    """
     buf = st.session_state.paths_anim_buf
+    show_travel_dots = st.session_state.get("show_travel_dots", True)
     for i in range(start_idx, end_idx):
         p1, p2, is_travel, is_extruding = segments[i]
-        # travel 은 점선, 그 외는 실선
-        if is_travel:
+        if is_travel and show_travel_dots:
             buf["dot"]["x"].extend([float(p1[0]), float(p2[0]), None])
             buf["dot"]["y"].extend([float(p1[1]), float(p2[1]), None])
             buf["dot"]["z"].extend([float(p1[2]), float(p2[2]), None])
@@ -407,11 +413,11 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
-    # 0: solid (압출)
+    # 0: solid (검은 실선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR),
                                showlegend=False))
-    # 1: dot (travel = 점선)
+    # 1: dot (검은 점선; e_on일 때만 사용)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR),
                                showlegend=False))
@@ -476,32 +482,42 @@ def _bbox_from_buffer(buf_dict):
     try:
         xs = [float(v) for v in buf_dict["x"] if v is not None]
         ys = [float(v) for v in buf_dict["y"] if v is not None]
-        zs = [float(v) for v in buf_dict["z"] if v is not None]
-        if len(xs) == 0 or len(ys) == 0 or len(zs) == 0:
+        if len(xs) == 0 or len(ys) == 0:
             return None
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
-        z_min, z_max = min(zs), max(zs)
         return {
             "x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
             "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min,
-            "z_min": z_min, "z_max": z_max, "z_len": z_max - z_min,
         }
     except Exception:
         return None
 
-def _fmt_dims_inline(title, bbox):
+def _last_z_from_buffer(buf_dict):
+    """표시 중인 버퍼에서 마지막(최신) Z 값을 반환"""
+    try:
+        for v in reversed(buf_dict.get("z", [])):
+            if v is not None:
+                return float(v)
+    except Exception:
+        pass
+    return None
+
+def _fmt_dims_inline(title, bbox, z_single: Optional[float]):
     if bbox is None:
-        return f"**{title}**: 데이터 없음"
-    xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
-    ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
-    zm, zM, zl = bbox["z_min"], bbox["z_max"], bbox["z_len"]
-    return (
-        f"**{title}**  "
-        f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f}) · "
-        f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f}) · "
-        f"Z=({zm:.3f}→{zM:.3f}, Δ{zl:.3f})"
-    )
+        base = f"**{title}**  X=(-) · Y=(-)"
+    else:
+        xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
+        ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
+        base = (
+            f"**{title}**  "
+            f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f}) · "
+            f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f})"
+        )
+    if z_single is None:
+        return base + " · Z=(-)"
+    else:
+        return base + f" · Z=({z_single:.3f})"
 
 # =========================
 # Session init
@@ -749,7 +765,7 @@ if KEY_OK:
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
-                    file_name=f"{base}.modx",   # <= f-string 여분 '}' 제거
+                    file_name=f"{base}.modx",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -761,6 +777,9 @@ tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-
 
 with tab_paths:
     if st.session_state.get("paths_items") is not None:
+        # e_on 상태에 따라 travel 점선 표시 여부 결정
+        st.session_state.show_travel_dots = bool(e_on)
+
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
@@ -823,9 +842,11 @@ with tab_paths:
         if apply_offsets:
             bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])  # 외부치수(오른쪽)
             bbox_l = _bbox_from_buffer(st.session_state.paths_anim_buf["off_l"])  # 내부치수(왼쪽)
+            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            z_l = _last_z_from_buffer(st.session_state.paths_anim_buf["off_l"])
             dims_md = (
-                _fmt_dims_inline("외부치수 (Right offset)", bbox_r) + "\n\n" +
-                _fmt_dims_inline("내부치수 (Left offset)",  bbox_l)
+                _fmt_dims_inline("외부치수 (Right offset)", bbox_r, z_r) + "\n\n" +
+                _fmt_dims_inline("내부치수 (Left offset)",  bbox_l, z_l)
             )
             dims_placeholder.markdown(dims_md)
         else:
@@ -834,6 +855,7 @@ with tab_paths:
         st.caption(
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
             + (f" | Offsets+Caps: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + ("" if st.session_state.show_travel_dots else " | Travel 표시: 실선(Insert E values 꺼짐)")
         )
     else:
         st.info("슬라이싱을 실행하세요.")
