@@ -326,9 +326,8 @@ def make_base_fig(height=820) -> go.Figure:
     fig.update_layout(
         scene=dict(aspectmode="data"),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        # ▼ 깜빡임 최소화: 재렌더 시 뷰/상태 보존 + 전환 제거
-        uirevision="keep",
-        transition={'duration': 0}
+        uirevision="keep",          # ← 재렌더 시 상태 유지
+        transition={'duration': 0}  # ← 전환 제거
     )
     return fig
 
@@ -483,10 +482,17 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ▶ Playback: FPS만 노출(1행씩 재생 고정)
+# ▶ Playback: FPS만 노출(1행씩 재생 고정) — 위젯 호출 전 안전 클램프 적용
 st.sidebar.subheader("Playback")
-fps_val = st.sidebar.number_input("Target FPS", 1, 60, int(st.session_state.paths_anim_speed), step=1)
-st.session_state.paths_anim_speed = int(clamp(fps_val, 1, 60))
+FPS_MIN, FPS_MAX = 1, 60
+default_fps = int(st.session_state.get("paths_anim_speed", 15))
+default_fps = max(FPS_MIN, min(default_fps, FPS_MAX))
+fps_val = st.sidebar.number_input(
+    "Target FPS",
+    min_value=FPS_MIN, max_value=FPS_MAX,
+    value=default_fps, step=1
+)
+st.session_state.paths_anim_speed = int(fps_val)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
