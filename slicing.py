@@ -323,8 +323,13 @@ def make_base_fig(height=820) -> go.Figure:
         line=dict(width=3, dash="dot", color=PATH_COLOR),
         showlegend=False
     ))
-    fig.update_layout(scene=dict(aspectmode="data"),
-                      height=height, margin=dict(l=0, r=0, t=10, b=0))
+    fig.update_layout(
+        scene=dict(aspectmode="data"),
+        height=height, margin=dict(l=0, r=0, t=10, b=0),
+        # ▼ 깜빡임 최소화: 재렌더 시 뷰/상태 보존 + 전환 제거
+        uirevision="keep",
+        transition={'duration': 0}
+    )
     return fig
 
 def update_fig_with_buffers(fig: go.Figure):
@@ -408,9 +413,7 @@ if "paths_anim_play" not in st.session_state:
 if "paths_anim_index" not in st.session_state:
     st.session_state.paths_anim_index = 0
 if "paths_anim_speed" not in st.session_state:
-    st.session_state.paths_anim_speed = 60  # FPS (표시용/페이싱용)
-if "paths_anim_batch" not in st.session_state:
-    st.session_state.paths_anim_batch = 500  # 프레임당 추가 세그먼트
+    st.session_state.paths_anim_speed = 15  # 권장 10~20FPS
 
 ensure_anim_buffers()
 
@@ -480,23 +483,10 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ▶ 부드러운 재생을 위한 설정 (값 클램프로 오류 방지)
+# ▶ Playback: FPS만 노출(1행씩 재생 고정)
 st.sidebar.subheader("Playback")
-# Clamp 기존 상태값
-st.session_state.paths_anim_batch = clamp(st.session_state.paths_anim_batch, 50, 10000)
-st.session_state.paths_anim_speed = clamp(st.session_state.paths_anim_speed, 1, 120)
-
-batch_val = st.sidebar.number_input(
-    "Batch size (segments/frame)", 1, 10000, 
-    value=1, step=1
-)
-fps_val = st.sidebar.number_input(
-    "Target FPS", 1, 120,
-    value=int(st.session_state.paths_anim_speed), step=1
-)
-# 저장
-st.session_state.paths_anim_batch = 1   # ← 무조건 1행씩
-st.session_state.paths_anim_speed = int(clamp(fps_val, 1, 120))
+fps_val = st.sidebar.number_input("Target FPS", 1, 60, int(st.session_state.paths_anim_speed), step=1)
+st.session_state.paths_anim_speed = int(clamp(fps_val, 1, 60))
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
@@ -726,7 +716,9 @@ with tab_stl:
     if st.session_state.get("mesh") is not None:
         st.plotly_chart(
             plot_trimesh(st.session_state.mesh, height=820),
-            use_container_width=True
+            use_container_width=True,
+            key="stl_chart",
+            config={"displayModeBar": False}
         )
     else:
         st.info("STL을 업로드하세요.")
@@ -740,7 +732,6 @@ with tab_paths:
             z_filter_enable = st.checkbox("Z 필터 사용", value=(st.session_state.paths_z_filter is not None))
         with colB:
             if z_filter_enable:
-                # 현재 저장된 값이 max보다 크면 자동 클램프
                 current_z = st.session_state.paths_z_filter if st.session_state.paths_z_filter is not None else mesh_zmax
                 current_z = clamp(float(current_z), 0.0, max(0.1, mesh_zmax))
                 st.session_state.paths_z_filter = st.slider(
@@ -753,7 +744,7 @@ with tab_paths:
 
         with colC:
             st.write(f"FPS: **{st.session_state.paths_anim_speed}**")
-            st.write(f"Batch: **{st.session_state.paths_anim_batch} seg/frame**")
+            st.write("Batch: **1 seg/frame**")  # 고정
 
         with colD:
             c1, c2, c3 = st.columns(3)
@@ -802,30 +793,30 @@ with tab_paths:
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig)
         placeholder = st.empty()
-        placeholder.plotly_chart(fig, use_container_width=True)
+        placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
 
-        # 재생 루프
+        # 재생 루프 (1세그먼트씩 추가, 화면 갱신은 FPS로 스로틀)
         if st.session_state.paths_anim_play and total_segments > 0:
-            start_time = time.perf_counter()
             frame_interval = 1.0 / float(max(1, st.session_state.paths_anim_speed))
-            batch = int(st.session_state.paths_anim_batch)
+            next_draw_time = time.perf_counter()
 
             while st.session_state.paths_anim_play and st.session_state.paths_anim_index < total_segments:
                 built = st.session_state.paths_anim_buf["built_upto"]
-                target = min(total_segments, built + batch)
+                target = min(total_segments, built + 1)  # ★ 1행(=1세그먼트)만 추가
                 append_segments_to_buffers(segments, built, target)
                 st.session_state.paths_anim_index = target
 
-                update_fig_with_buffers(fig)
-                placeholder.plotly_chart(fig, use_container_width=True)
+                now = time.perf_counter()
+                if now >= next_draw_time:
+                    update_fig_with_buffers(fig)
+                    placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
+                    next_draw_time = now + frame_interval
 
-                # FPS 페이싱
-                elapsed = time.perf_counter() - start_time
-                sleep_t = frame_interval - elapsed
-                if sleep_t > 0:
-                    time.sleep(sleep_t)
-                start_time = time.perf_counter()
+                time.sleep(0.001)  # 과도한 CPU 점유 방지
 
+            # 종료/완료 시 최종 1회 갱신
+            update_fig_with_buffers(fig)
+            placeholder.plotly_chart(fig, use_container_width=True, key="paths_chart", config={"displayModeBar": False})
             if st.session_state.paths_anim_index >= total_segments:
                 st.session_state.paths_anim_play = False
 
