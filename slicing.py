@@ -160,7 +160,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (미리보기용)
+# Slice path computation (preview)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -220,6 +220,7 @@ def compute_slice_paths_with_travel(
 
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
+            # 레이어 간 이동 (점선)
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
@@ -258,14 +259,14 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
             for p1, p2 in zip(poly[:-1], poly[1:]):
-                segs.append((p1, p2, is_travel, True))  # E off면 전부 실선
+                segs.append((p1, p2, is_travel, True))  # E off여도 travel은 is_travel=True로 점선 처리됨
     return segs
 
 # === 누적 렌더 버퍼 (solid/dot + offset L/R) ===
 def reset_anim_buffers():
     st.session_state.paths_anim_buf = {
         "solid": {"x": [], "y": [], "z": []},  # 압출
-        "dot":   {"x": [], "y": [], "z": []},  # 트래블/비압출
+        "dot":   {"x": [], "y": [], "z": []},  # 트래블/비압출 (점선)
         "off_l": {"x": [], "y": [], "z": []},  # 좌측(연빨)
         "off_r": {"x": [], "y": [], "z": []},  # 우측(연빨)
         "built_upto": 0,
@@ -330,6 +331,70 @@ def compute_offsets_into_buffers(segments, upto, half_width):
         buf["off_r"]["y"].extend([r1[1], r2[1], None])
         buf["off_r"]["z"].extend([r1[2], r2[2], None])
 
+def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32):
+    """
+    전체 경로에서 '첫 압출 세그먼트의 시작점'과 '마지막 압출 세그먼트의 끝점'에만
+    반원(지름=Layer Width=2*half_width)을 추가해서 좌/우 오프셋을 연결.
+    반원은 시작점에서는 진행방향 '뒤쪽(-t)'으로, 끝점에서는 '앞쪽(+t)'으로 둔다.
+    반원은 off_l 트레이스에만 추가(연한 빨간색)해도 시각적으로 연결이 완성됨.
+    """
+    if half_width <= 0 or upto <= 0 or len(segments) == 0:
+        return
+
+    # 첫/마지막 '압출' 세그먼트 찾기
+    first_idx = None
+    last_idx = None
+    N = min(upto, len(segments))
+
+    for i in range(N):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if (not is_travel) and is_extruding:
+            first_idx = i
+            break
+    for i in range(N - 1, -1, -1):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if (not is_travel) and is_extruding:
+            last_idx = i
+            break
+
+    if first_idx is None or last_idx is None:
+        return
+
+    buf = st.session_state.paths_anim_buf
+    def _append_arc(center, t_unit, n_unit, z, sign_t, steps):
+        # sign_t = -1 (start cap), +1 (end cap)
+        s = sign_t * t_unit
+        thetas = np.linspace(0.0, np.pi, int(max(8, steps)))
+        xs = center[0] + half_width*(n_unit[0]*np.cos(thetas) + s[0]*np.sin(thetas))
+        ys = center[1] + half_width*(n_unit[1]*np.cos(thetas) + s[1]*np.sin(thetas))
+        zs = np.full_like(xs, float(z))
+        # 한 트레이스 안에서 분리된 폴리라인을 만들기 위해 None 삽입
+        if len(buf["off_l"]["x"]) > 0 and buf["off_l"]["x"][-1] is not None:
+            buf["off_l"]["x"].append(None); buf["off_l"]["y"].append(None); buf["off_l"]["z"].append(None)
+        buf["off_l"]["x"].extend(xs.tolist() + [None])
+        buf["off_l"]["y"].extend(ys.tolist() + [None])
+        buf["off_l"]["z"].extend(zs.tolist() + [None])
+
+    # Start cap (global first)
+    p1, p2, _, _ = segments[first_idx]
+    dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1])
+    nrm = (dx*dx + dy*dy) ** 0.5
+    if nrm > 1e-12:
+        t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)  # 좌법선
+        center = (float(p1[0]), float(p1[1]))
+        _append_arc(center, t_unit, n_unit, float(p1[2]), sign_t=-1.0, steps=samples)
+
+    # End cap (global last)
+    p1, p2, _, _ = segments[last_idx]
+    dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1])
+    nrm = (dx*dx + dy*dy) ** 0.5
+    if nrm > 1e-12:
+        t_unit = np.array([dx/nrm, dy/nrm], dtype=float)
+        n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)  # 좌법선
+        center = (float(p2[0]), float(p2[1]))
+        _append_arc(center, t_unit, n_unit, float(p2[2]), sign_t=+1.0, steps=samples)
+
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
     # 0: solid
@@ -343,7 +408,7 @@ def make_base_fig(height=820) -> go.Figure:
     # 2: offset left (연빨)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
-                               name="Offset - Left", showlegend=False))
+                               name="Offset / Caps", showlegend=False))
     # 3: offset right (연빨)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=2, dash="solid", color=OFFSET_COLOR),
@@ -354,7 +419,6 @@ def make_base_fig(height=820) -> go.Figure:
     return fig
 
 def ensure_paths_fig(height=820):
-    """세션의 paths_base_fig가 없거나 트레이스가 4개 미만이면 새로 만든다."""
     fig = st.session_state.get("paths_base_fig")
     ok = False
     try:
@@ -365,7 +429,6 @@ def ensure_paths_fig(height=820):
         st.session_state.paths_base_fig = make_base_fig(height)
 
 def ensure_four_traces(fig: go.Figure):
-    """현재 fig의 트레이스 수를 확인해 4개가 되도록 부족한 만큼 추가."""
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=3, dash="solid", color=PATH_COLOR),
@@ -378,20 +441,14 @@ def ensure_four_traces(fig: go.Figure):
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=2, dash="solid", color=OFFSET_COLOR),
                                    showlegend=False))
-
     while len(fig.data) < 4:
         n = len(fig.data)
-        if n == 0:
-            add_solid()
-        elif n == 1:
-            add_dot()
-        else:
-            add_off()
+        if n == 0: add_solid()
+        elif n == 1: add_dot()
+        else: add_off()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool):
-    # 항상 4트레이스 존재 보장
     ensure_four_traces(fig)
-
     buf = st.session_state.paths_anim_buf
     # main traces
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
@@ -591,7 +648,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     tail = "+0000.0,+0000.0,+0000.0,+0000.0"
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        # 🔧 여기 괄호 수정됨 (불필요한 닫는 괄호 제거)
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
         parts = t.split(); has_xyz = False
@@ -685,9 +741,9 @@ with tab_paths:
 
         # 옵션: Layer width offsets 적용
         apply_offsets = st.checkbox(
-            "Apply layer width offsets (± W/2)",
+            "Apply layer width offsets (± W/2) & global endcaps",
             value=False,
-            help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로를 연한 빨간색으로 표시합니다."
+            help="Path processing의 Trim/Layer Width (mm)를 W로 사용하여, 진행 방향 기준 ±90°로 W/2 평행 오프셋 경로(연빨)를 표시하고, 전체 경로의 처음/마지막 포인트에만 지름 W의 반원을 추가해 좌/우 오프셋을 연결합니다."
         )
 
         # 진행(segments) 슬라이더 + 숫자 입력(우측) UI
@@ -718,10 +774,11 @@ with tab_paths:
             append_segments_to_buffers(segments, built, target)
         st.session_state.paths_scrub = target  # 현재 위치 저장
 
-        # 오프셋 버퍼 생성/지우기
+        # 오프셋 + 전역 캡
         if apply_offsets:
             half_w = float(trim_dist) * 0.5  # Trim/Layer Width 의 절반
             compute_offsets_into_buffers(segments, target, half_w)
+            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32)
         else:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
             st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
@@ -736,7 +793,7 @@ with tab_paths:
 
         st.caption(
             f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-            + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + (f" | Offsets+Caps: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
         )
 
     else:
