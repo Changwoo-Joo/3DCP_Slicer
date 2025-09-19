@@ -903,17 +903,19 @@ with tab_paths:
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        # ─────────────────────────────────────────────────────────
-        # 옵션: 가로 배치 + 바로 아래 '외부치수 (Right offset)'
-        # ─────────────────────────────────────────────────────────
-        with st.container():
-            c1, c2, c3, c4 = st.columns(4)
+        # 1) 위쪽: 그래프 자리만 먼저 확보 (여기 위가 "모델링" 위치가 됨)
+        chart_ph = st.empty()          # ← 그래프는 마지막에 여기에 그립니다.
+        st.write("")                   # 간격 살짝
 
+        # 2) 아래쪽: 옵션/외부치수/슬라이더를 한 컨테이너에(그래프 '아래'에 배치)
+        with st.container():
+            # ── 옵션 4개 가로 배치
+            c1, c2, c3, c4 = st.columns(4)
             with c1:
                 apply_offsets = st.checkbox(
                     "Apply layer width",
-                    value=False,
-                    help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(진한 회색)과 중심 경로(연한 회색)를 표시합니다."
+                    value=bool(st.session_state.get("apply_offsets_flag", False)),
+                    help="Trim/Layer Width (mm)를 W로 사용해 좌/우 오프셋 표시"
                 )
             st.session_state.apply_offsets_flag = bool(apply_offsets)
 
@@ -922,7 +924,7 @@ with tab_paths:
                     "Include Z-climb offsets (travel)",
                     value=True,
                     disabled=not apply_offsets,
-                    help="ON: Z가 변하는 travel 구간에도 좌/우 오프셋(진한 회색)을 그립니다. OFF: 압출 구간에서만 오프셋."
+                    help="Z가 변하는 travel 구간에도 오프셋 표시"
                 )
 
             with c3:
@@ -930,7 +932,7 @@ with tab_paths:
                     "Emphasize caps (start/end)",
                     value=False,
                     disabled=not apply_offsets,
-                    help="시작·끝 반원 캡을 빨강/굵은 선으로 강조 표시"
+                    help="시작/끝 반원 캡 강조(빨강)"
                 )
 
             with c4:
@@ -938,49 +940,59 @@ with tab_paths:
                     show_dotted = st.checkbox(
                         "Show dotted travel lines",
                         value=True,
-                        help="비압출 이동을 점선으로 표시합니다."
+                        help="비압출 이동을 점선으로 표시"
                     )
                     travel_mode = "dotted" if show_dotted else "hidden"
                 else:
-                    st.checkbox(
-                        "Show dotted travel lines",
-                        value=False, disabled=True,
-                        help="Insert E values 가 OFF이면 travel은 실선으로 표시됩니다."
-                    )
+                    st.checkbox("Show dotted travel lines", value=False, disabled=True,
+                                help="Insert E values OFF이면 travel은 실선")
                     travel_mode = "solid"
 
-        prev_mode = st.session_state.get("paths_travel_mode", "solid")
-        st.session_state.paths_travel_mode = travel_mode
+            prev_mode = st.session_state.get("paths_travel_mode", "solid")
+            st.session_state.paths_travel_mode = travel_mode
 
-        # 외부치수 한 줄 아래 자리(여기에 나중에 값 채움)
-        dims_placeholder = st.empty()
+            # ── 외부치수 한 줄(옵션 바로 아래 줄)
+            dims_placeholder = st.empty()
 
-        # ─────────────────────────────────────────────────────────
-        # 진행(segments) 슬라이더 + 숫자 입력 (기존 그대로)
-        # ─────────────────────────────────────────────────────────
-        col1, col2 = st.columns([6, 2])
-        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        with col1:
-            scrub = st.slider("진행(segments)", 0, int(total_segments),
-                              int(default_val), 1, help="해당 세그먼트까지 누적 표시")
-        with col2:
-            scrub_num = st.number_input("행 번호", 0, int(total_segments),
-                                        int(default_val), 1,
-                                        help="표시할 최종 세그먼트(행) 번호")
+            # ── 진행 슬라이더 + 숫자 입력 (둘 다 '아래'에 위치)
+            col1, col2 = st.columns([6, 2])
+            default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+            with col1:
+                scrub = st.slider("진행(segments)", 0, int(total_segments),
+                                  int(default_val), 1, help="해당 세그먼트까지 누적 표시")
+            with col2:
+                scrub_num = st.number_input("행 번호", 0, int(total_segments),
+                                            int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
 
-        # (이하 원래 로직 그대로… 버퍼 구축/업데이트, figure 갱신 등)
+        # 3) 값 동기화 및 버퍼(계산은 위젯 생성 '후'에 수행)
+        target = default_val
+        if scrub != default_val:     target = int(scrub)
+        if scrub_num != default_val: target = int(scrub_num)
+        target = int(clamp(target, 0, total_segments))
 
-        # --- 오프셋/캡 계산(기존 로직) 후 외부치수 텍스트 채우기 ---
+        DRAW_LIMIT = 15000
+        draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+        built = st.session_state.paths_anim_buf["built_upto"]
+        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+
+        if mode_changed or (draw_stride != prev_stride) or (target < built):
+            rebuild_buffers_to(segments, target, stride=draw_stride)
+        elif target > built:
+            append_segments_to_buffers(segments, built, target, stride=draw_stride)
+
+        st.session_state.paths_scrub = target
+
+        # ── 오프셋/캡 계산 후 외부치수 텍스트 채우기
         if apply_offsets:
             half_w = float(trim_dist) * 0.5
             compute_offsets_into_buffers(
-                segments, st.session_state.paths_scrub, half_w,
+                segments, target, half_w,
                 include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9
             )
             st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
             add_global_endcaps_into_buffers(
-                segments, st.session_state.paths_scrub, half_width=half_w,
-                samples=32, store_caps=bool(emphasize_caps)
+                segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps)
             )
         else:
             st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
@@ -988,18 +1000,36 @@ with tab_paths:
             st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
             emphasize_caps = False
 
-        ensure_paths_fig(height=820)
-        fig = st.session_state.paths_base_fig
-        update_fig_with_buffers(fig, show_offsets=apply_offsets, show_caps=bool(emphasize_caps))
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        # ⬇️ 바로 위 ‘가로 옵션’ 아래 줄에 외부치수 표시
         if apply_offsets:
             bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
             z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
             dims_placeholder.markdown(_fmt_dims_inline("외부치수 (Right offset)", bbox_r, z_r))
         else:
             dims_placeholder.markdown("_Offsets OFF_")
+
+        # 4) 마지막에 그래프 갱신(그래프는 항상 위에, 컨트롤은 그 아래)
+        ensure_paths_fig(height=820)
+        fig = st.session_state.paths_base_fig
+        update_fig_with_buffers(fig, show_offsets=apply_offsets, show_caps=bool(emphasize_caps))
+        chart_ph.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # (상태 캡션 유지)
+        tm = st.session_state.paths_travel_mode
+        if not e_on:
+            travel_lbl = "Travel: solid (Insert E OFF)"
+        else:
+            travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
+        st.caption(
+            f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
+            + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if apply_offsets else "")
+            + (" | Caps 강조" if (apply_offsets and emphasize_caps) else "")
+            + (f" | Z-climb offsets: ON" if (apply_offsets and include_z_climb) else (" | Z-climb offsets: OFF" if apply_offsets else ""))
+            + f" | {travel_lbl}"
+            + (f" | Viz stride: ×{draw_stride}" if draw_stride > 1 else "")
+        )
+    else:
+        st.info("슬라이싱을 실행하세요.")
+
 
 
 with tab_stl:
