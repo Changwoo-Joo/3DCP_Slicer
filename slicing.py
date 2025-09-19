@@ -22,10 +22,10 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
-    /* 전체 상단 패딩(탭 포함 컨텐츠가 조금 더 아래로 보이도록) */
+    /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
 
-    /* 탭 자체의 상단 여백 (요청대로 더 내려서 보이게) */
+    /* 탭 자체 상단 여백 */
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
@@ -40,17 +40,17 @@ st.markdown(
       background: white;
     }
 
-    /* 좌측 사이드바 타이틀(조금 크게) */
+    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.35rem; /* 1~2단계 키움 */
+      font-size: 1.35rem;
       font-weight: 700;
       line-height: 1.2;
     }
 
-    /* 외부치수: 줄바꿈이 확실히 보이도록 */
+    /* 외부치수: 줄바꿈 확실히 */
     .dims-block {
-      white-space: pre-line; /* \\n 을 실제 줄바꿈으로 렌더 */
+      white-space: pre-line;  /* \\n을 실제 줄바꿈으로 렌더 */
       line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }
@@ -59,7 +59,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 중앙 큰 타이틀 제거, 좌측 사이드바에만 작게(조금 키워서) 표시
+# 중앙 큰 타이틀 제거, 좌측 사이드바에만 작은 타이틀(조금 키움)
 st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
@@ -87,7 +87,7 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     """
-    폐루프 전체 길이를 기준으로 꼬리에서 trim_distance 만큼 제거 (open polyline 반환).
+    폐루프 길이를 기준으로 꼬리에서 trim_distance 제거 (open polyline 반환).
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
@@ -352,7 +352,7 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
         else:
-            for p1, p2 in zip(poly[:-1], poly[1:])):
+            for p1, p2 in zip(poly[:-1], poly[1:]):
                 is_extruding = (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
     return segs
@@ -800,7 +800,7 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
-    # 중앙 성공 메시지 대신 우측 배너로 표시
+    # 중앙 성공 메시지 대신 우측 배너로만 표시
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
@@ -909,7 +909,7 @@ if KEY_OK:
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
-                    file_name=f"{base}.modx}",
+                    file_name=f"{base}.modx",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -917,7 +917,7 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
-# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌으로 조정 ([14,3] ≈ 17.6%)
+# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌([14,3] ≈ 17.6%)
 center_col, right_col = st.columns([14, 3], gap="large")
 
 # 현재 슬라이스 세그먼트
@@ -945,14 +945,14 @@ with right_col:
     st.session_state.apply_offsets_flag = bool(apply_offsets)
 
     include_z_climb = st.checkbox(
-        "Include Z-climb offsets (travel)",
+        "Include Z-climb offsets",
         value=True,
         help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
         disabled=(segments is None or not apply_offsets)
     )
 
     emphasize_caps = st.checkbox(
-        "Emphasize caps (start/end)",
+        "Emphasize caps",
         value=False,
         help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
         disabled=(segments is None or not apply_offsets)
@@ -973,6 +973,8 @@ with right_col:
 
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
+        scrub = None
+        scrub_num = None
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
         scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
@@ -987,9 +989,9 @@ with right_col:
 if segments is not None and total_segments > 0:
     default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     target = default_val
-    if "scrub" in locals() and scrub != default_val:
+    if scrub is not None and scrub != default_val:
         target = int(scrub)
-    if "scrub_num" in locals() and scrub_num != default_val:
+    if scrub_num is not None and scrub_num != default_val:
         target = int(scrub_num)
     target = int(clamp(target, 0, total_segments))
 
