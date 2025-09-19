@@ -22,17 +22,12 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
-    /* 공통 타이틀 크기(오른쪽 View Options와 사이드바 3DCP Slicer를 동일 크기로) */
-    :root{
-      --panel-title-size: 1.10rem;  /* 둘 다 이 값으로 통일 (원하면 숫자만 조절) */
-    }
-
     /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
 
     /* 탭 자체 상단 여백 */
-    .stTabs { margin-top: 0.8rem !important; padding-top: 0.2rem !important; }
-    .stTabs [data-baseweb="tab-list"] { margin-top: 0.5rem !important; }
+    .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
+    .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
     /* 우측 컨트롤 패널: 독립 스크롤 + sticky */
     .right-panel {
@@ -45,25 +40,17 @@ st.markdown(
       background: white;
     }
 
-    /* 사이드바 상단 타이틀(3DCP Slicer) — View Options와 동일 크기 */
-    .sidebar-title{
+    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
+    .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: var(--panel-title-size);
+      font-size: 1.35rem;
       font-weight: 700;
       line-height: 1.2;
     }
 
-    /* View Options(오른쪽 패널 제목) — 사이드바 타이틀과 동일 크기 */
-    .right-panel h3{
-      font-size: var(--panel-title-size);
-      line-height: 1.2;
-      font-weight: 700;
-      margin: 0.25rem 0 0.6rem;
-    }
-
-    /* 외부치수: 줄바꿈 확실히 (X, Y, Z를 줄바꿈 렌더) */
-    .dims-block{
-      white-space: pre-line;
+    /* 외부치수: 줄바꿈 확실히 */
+    .dims-block {
+      white-space: pre-line;  /* \\n을 실제 줄바꿈으로 렌더 */
       line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }
@@ -72,7 +59,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 중앙 큰 타이틀 제거, 좌측 사이드바에만 타이틀 배치 (크기: View Options와 동일)
+# 중앙 큰 타이틀 제거, 좌측 사이드바에만 작은 타이틀(조금 키움)
 st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
@@ -90,7 +77,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 그대로)
+# Helpers (연산 로직 변경 없음)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -99,6 +86,9 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     return seg
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
+    """
+    폐루프 길이를 기준으로 꼬리에서 trim_distance 제거 (open polyline 반환).
+    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
         return ensure_open_ring(pts)
@@ -132,6 +122,7 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+    """XY 기준 RDP 간소화(끝점 보존)."""
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
@@ -926,7 +917,7 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
-# ► 오른쪽 옵션 폭을 축소([14,3] ≈ 17~18%)
+# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌([14,3] ≈ 17.6%)
 center_col, right_col = st.columns([14, 3], gap="large")
 
 # 현재 슬라이스 세그먼트
@@ -944,7 +935,7 @@ with right_col:
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
-    st.subheader("View Options")  # 사이즈는 .right-panel h3 CSS와 동일
+    st.subheader("View Options")
     apply_offsets = st.checkbox(
         "Apply layer width",
         value=bool(st.session_state.get("apply_offsets_flag", False)),
@@ -1018,7 +1009,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장)
+    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
