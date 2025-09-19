@@ -926,7 +926,7 @@ if KEY_OK:
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
-                    file_name=f"{base}.modx}",
+                    file_name=f"{base}.modx",
                     mime="text/plain",
                     use_container_width=True
                 )
