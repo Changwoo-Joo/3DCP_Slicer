@@ -14,7 +14,7 @@ from pathlib import Path
 # =========================
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 
-# ── 전역 CSS (푸터 숨김 + 우측 패널 스크롤) ──
+# ── 전역 CSS (푸터 숨김 + 탭 상단으로 끌어올림 + 우측 패널 스크롤 + 사이드바 타이틀 크기 Up) ──
 st.markdown(
     """
     <style>
@@ -22,24 +22,37 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
-    /* 우측 컨트롤 패널: 화면 높이에 맞춰 독립 스크롤 */
+    /* 메인 컨테이너 상단 패딩을 줄여 탭과 뷰를 더 위로 */
+    .block-container { padding-top: 0.35rem; }
+
+    /* 탭 자체 상단 마진 제거 */
+    .stTabs { margin-top: 0 !important; padding-top: 0 !important; }
+    .stTabs [data-baseweb="tab-list"] { margin-top: 0 !important; }
+
+    /* 우측 컨트롤 패널: 화면 높이에 맞춘 독립 스크롤 + 경계 */
     .right-panel {
       position: sticky;
-      top: 0.5rem;
-      max-height: calc(100vh - 1rem);
+      top: 0.35rem;
+      max-height: calc(100vh - 0.7rem);
       overflow-y: auto;
       border-left: 1px solid #e6e6e6;
       padding-left: 12px;
     }
-    /* 좌측 사이드바 타이틀 */
-    .sidebar-title {margin: 0.25rem 0 0.5rem 0;}
+
+    /* 좌측 사이드바 타이틀(조금 크게) */
+    .sidebar-title {
+      margin: 0.25rem 0 0.6rem 0;
+      font-size: 1.35rem;    /* 기존보다 1~2단계 키움 */
+      font-weight: 700;
+      line-height: 1.2;
+    }
     </style>
     """,
     unsafe_allow_html=True
 )
 
-# 중앙 큰 타이틀 제거, 좌측 사이드바에 작게 표시
-st.sidebar.markdown("<h3 class='sidebar-title'>3DCP Slicer</h3>", unsafe_allow_html=True)
+# 중앙 큰 타이틀 제거, 좌측 사이드바에 작게(조금 더 크게) 표시
+st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
 
@@ -486,6 +499,8 @@ if "rapid_rz" not in st.session_state: st.session_state.rapid_rz = 0.0
 if "rapid_text" not in st.session_state: st.session_state.rapid_text = None
 if "paths_scrub" not in st.session_state: st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state: st.session_state.paths_travel_mode = "solid"
+# 메시지 표시는 우측 패널에서 처리
+if "ui_banner" not in st.session_state: st.session_state.ui_banner = None
 
 ensure_anim_buffers()
 
@@ -576,7 +591,8 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
     reset_anim_buffers(); rebuild_buffers_to(segs, max_seg)
-    st.success("Slicing complete")
+    # 전역 success 대신, 우측 View Options에 띄울 배너만 설정
+    st.session_state.ui_banner = "Slicing complete"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
@@ -699,6 +715,10 @@ if st.session_state.get("paths_items") is not None:
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
+    # 여기로 성공 메시지 이동
+    if st.session_state.get("ui_banner"):
+        st.success(st.session_state.ui_banner)
+
     st.subheader("View Options")
     apply_offsets = st.checkbox(
         "Apply layer width",
@@ -735,7 +755,7 @@ with right_col:
     dims_placeholder = st.empty()
     st.markdown("---")
 
-    # ▶ 슬라이스 전에는 슬라이더/숫자입력 자체를 만들지 않음 (오류 방지)
+    # ▶ 슬라이스 전에는 슬라이더/숫자입력 자체 생성 안 함
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
@@ -750,12 +770,9 @@ with right_col:
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
     default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    # 우측에서 만든 값이 있을 때 동기화
     target = default_val
-    if "scrub" in locals():  # 슬라이더가 생성된 경우만 사용
-        if scrub != default_val: target = int(scrub)
-    if "scrub_num" in locals():
-        if scrub_num != default_val: target = int(scrub_num)
+    if "scrub" in locals() and scrub != default_val: target = int(scrub)
+    if "scrub_num" in locals() and scrub_num != default_val: target = int(scrub_num)
     target = int(clamp(target, 0, total_segments))
 
     DRAW_LIMIT = 15000
@@ -791,7 +808,7 @@ if segments is not None and total_segments > 0:
         emphasize_caps = False
         dims_placeholder.markdown("_Offsets OFF_")
 
-# ---- 중앙: 탭 뷰어만 표시 ----
+# ---- 중앙: 탭 뷰어(더 위로) ----
 with center_col:
     tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
