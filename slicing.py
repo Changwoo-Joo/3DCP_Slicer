@@ -22,6 +22,14 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
+    /* 제목 크기 변수: 필요시 한 곳에서 조정 */
+    :root{
+      /* Parameters(사이드바 header) 사이즈 느낌 값 */
+      --size-parameters: 1.25rem;
+      /* 기존 View Options(작게) 사이즈 느낌 값 */
+      --size-view-old: 1.00rem;
+    }
+
     /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
 
@@ -40,12 +48,20 @@ st.markdown(
       background: white;
     }
 
-    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
+    /* 사이드바 타이틀(=3DCP Slicer): 현재 View Options 크기(작게)로 맞춤 */
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.35rem;
+      font-size: var(--size-view-old);
       font-weight: 700;
       line-height: 1.2;
+    }
+
+    /* View Options: Parameters 크기(크게)로 맞춤 */
+    .right-panel h3{
+      font-size: var(--size-parameters);
+      line-height: 1.2;
+      font-weight: 700;
+      margin: 0.25rem 0 0.6rem;
     }
 
     /* 외부치수: 줄바꿈 확실히 */
@@ -59,7 +75,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 중앙 큰 타이틀 제거, 좌측 사이드바에만 작은 타이틀(조금 키움)
+# 중앙 큰 타이틀 제거, 좌측 사이드바에만 타이틀(크기: 기존 View Options 크기)
 st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
@@ -587,7 +603,8 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
 
     # 오프셋 트레이스(진한 회색 + 굵기 3)
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
-    fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
+    fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.linewidth = 3 if hasattr(fig.data[3].line,"linewidth") else None
+    fig.data[3].line.width = 3
 
     # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
@@ -909,7 +926,7 @@ if KEY_OK:
                 st.download_button(
                     "Rapid 저장 (.modx)",
                     st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
+                    file_name=f"{base}.modx}",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -935,7 +952,7 @@ with right_col:
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
-    st.subheader("View Options")
+    st.subheader("View Options")  # ← 이 제목이 Parameters 사이즈로 보이도록 CSS에서 조정
     apply_offsets = st.checkbox(
         "Apply layer width",
         value=bool(st.session_state.get("apply_offsets_flag", False)),
@@ -1009,7 +1026,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
+    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장)
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
