@@ -31,7 +31,7 @@ st.markdown(
       border-left: 1px solid #e6e6e6;
       padding-left: 12px;
     }
-    /* 좌측 사이드바 타이틀 사이 간격 살짝 줄이기 */
+    /* 좌측 사이드바 타이틀 */
     .sidebar-title {margin: 0.25rem 0 0.5rem 0;}
     </style>
     """,
@@ -44,10 +44,10 @@ st.sidebar.markdown("<h3 class='sidebar-title'>3DCP Slicer</h3>", unsafe_allow_h
 EXTRUSION_K = 0.05
 
 # 색상 팔레트
-PATH_COLOR_DEFAULT = "#222222"     # 기본 중심 경로(짙은 회색)
-PATH_COLOR_LIGHT   = "#D0D0D0"     # Apply layer width ON일 때 중심 경로(아주 연한 회색)
-OFFSET_DARK_GRAY   = "#444444"     # 오프셋(좌/우) 진한 회색
-CAP_COLOR          = "rgba(220,0,0,0.95)"  # Caps 강조(빨강)
+PATH_COLOR_DEFAULT = "#222222"
+PATH_COLOR_LIGHT   = "#D0D0D0"
+OFFSET_DARK_GRAY   = "#444444"
+CAP_COLOR          = "rgba(220,0,0,0.95)"
 
 def clamp(v, lo, hi):
     try:
@@ -102,16 +102,13 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
         proj = a[:2] + t * ab
         return np.linalg.norm(p[:2] - proj)
     def _rdp_xy(points: np.ndarray, eps_val: float) -> np.ndarray:
-        if len(points) <= 2:
-            return points
+        if len(points) <= 2: return points
         a, b = points[0], points[-1]
         dmax, idx = -1.0, -1
         for i in range(1, len(points) - 1):
             d = _perp_dist_xy(points[i], a, b)
-            if d > dmax:
-                dmax, idx = d, i
-        if dmax <= eps_val:
-            return np.vstack([a, b])
+            if d > dmax: dmax, idx = d, i
+        if dmax <= eps_val: return np.vstack([a, b])
         left = _rdp_xy(points[: idx + 1], eps_val)
         right = _rdp_xy(points[idx:], eps_val)
         return np.vstack([left[:-1], right])
@@ -136,7 +133,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator (연산 로직 변경 없음)
+# G-code generator (그대로)
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -186,7 +183,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (preview, 연산 로직 변경 없음)
+# Slice path computation (그대로)
 # =========================
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0),
@@ -278,7 +275,7 @@ def ensure_anim_buffers():
 
 def append_segments_to_buffers(segments, start_idx, end_idx, stride=1):
     buf = st.session_state.paths_anim_buf
-    travel_mode = st.session_state.get("paths_travel_mode", "solid")  # 'solid' | 'dotted' | 'hidden'
+    travel_mode = st.session_state.get("paths_travel_mode", "solid")
     for i in range(start_idx, end_idx, max(1, int(stride))):
         p1, p2, is_travel, _ = segments[i]
         if is_travel:
@@ -380,15 +377,15 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT), showlegend=False))  # 0 solid
+                               line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT), showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT), showlegend=False))   # 1 dot
+                               line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT), showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))   # 2 off_l
+                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))   # 3 off_r
+                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=6, dash="solid", color=CAP_COLOR), showlegend=False))         # 4 caps
+                               line=dict(width=6, dash="solid", color=CAP_COLOR), showlegend=False))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=820, margin=dict(l=0, r=0, t=10, b=0),
                       uirevision="keep", transition={'duration': 0})
@@ -597,7 +594,7 @@ if st.session_state.get("gcode_text"):
                                use_container_width=True)
 
 # =========================
-# Rapid(MODX) (연산 로직 그대로)
+# Rapid(MODX) (그대로)
 # =========================
 def _fmt_pos(v: float) -> str:
     s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
@@ -690,16 +687,15 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
-# 중앙(콘텐츠) : tabs   |   우측 : 스크롤 컨트롤 패널
 center_col, right_col = st.columns([5, 2], gap="large")
 
-# 현재 슬라이스 세그먼트 미리 계산 (슬라이더 max에 필요)
+# 현재 슬라이스 세그먼트
 segments = None; total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
 
-# ---- 우측 스크롤 패널 (옵션/외부치수/슬라이더 전부 이동) ----
+# ---- 우측 스크롤 패널 ----
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
@@ -739,19 +735,27 @@ with right_col:
     dims_placeholder = st.empty()
     st.markdown("---")
 
-    default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
-                      help="해당 세그먼트까지 누적 표시", disabled=(segments is None))
-    scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1,
-                                help="표시할 최종 세그먼트(행) 번호", disabled=(segments is None))
+    # ▶ 슬라이스 전에는 슬라이더/숫자입력 자체를 만들지 않음 (오류 방지)
+    if segments is None or total_segments == 0:
+        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
+    else:
+        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
+                          help="해당 세그먼트까지 누적 표시")
+        scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1,
+                                    help="표시할 최종 세그먼트(행) 번호")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---- 계산(버퍼 구성/치수) : 컨트롤 값 반영 ----
-if segments is not None:
+# ---- 계산/버퍼 구성 ----
+if segments is not None and total_segments > 0:
+    default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+    # 우측에서 만든 값이 있을 때 동기화
     target = default_val
-    if scrub != default_val: target = int(scrub)
-    if scrub_num != default_val: target = int(scrub_num)
+    if "scrub" in locals():  # 슬라이더가 생성된 경우만 사용
+        if scrub != default_val: target = int(scrub)
+    if "scrub_num" in locals():
+        if scrub_num != default_val: target = int(scrub_num)
     target = int(clamp(target, 0, total_segments))
 
     DRAW_LIMIT = 15000
@@ -792,14 +796,13 @@ with center_col:
     tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
     with tab_paths:
-        if segments is not None:
+        if segments is not None and total_segments > 0:
             ensure_paths_fig(height=820)
             fig = st.session_state.paths_base_fig
             update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
-                                    show_caps=bool(emphasize_caps if segments is not None else False))
+                                    show_caps=bool(emphasize_caps))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-            # 상태 캡션(원하면 유지)
             tm = st.session_state.paths_travel_mode
             if not e_on:
                 travel_lbl = "Travel: solid (Insert E OFF)"
