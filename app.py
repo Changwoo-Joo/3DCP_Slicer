@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import numpy as np
 import math
@@ -903,19 +904,19 @@ with tab_paths:
         segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
         total_segments = len(segments)
 
-        # 1) 위쪽: 그래프 자리만 먼저 확보 (여기 위가 "모델링" 위치가 됨)
-        chart_ph = st.empty()          # ← 그래프는 마지막에 여기에 그립니다.
-        st.write("")                   # 간격 살짝
+        # ── 1) 위쪽: 그래프 자리 먼저 확보 (그래프는 마지막에 그림)
+        chart_ph = st.empty()
+        st.write("")  # 간격
 
-        # 2) 아래쪽: 옵션/외부치수/슬라이더를 한 컨테이너에(그래프 '아래'에 배치)
+        # ── 2) 아래쪽: (그래프 아래) 옵션/외부치수/슬라이더 묶음
         with st.container():
-            # ── 옵션 4개 가로 배치
             c1, c2, c3, c4 = st.columns(4)
+
             with c1:
                 apply_offsets = st.checkbox(
                     "Apply layer width",
                     value=bool(st.session_state.get("apply_offsets_flag", False)),
-                    help="Trim/Layer Width (mm)를 W로 사용해 좌/우 오프셋 표시"
+                    help="Path processing의 Trim/Layer Width (mm)를 W로 사용. 진행방향 ±90°로 ±W/2 오프셋(진한 회색)과 중심 경로(연한 회색)를 표시합니다."
                 )
             st.session_state.apply_offsets_flag = bool(apply_offsets)
 
@@ -924,7 +925,7 @@ with tab_paths:
                     "Include Z-climb offsets (travel)",
                     value=True,
                     disabled=not apply_offsets,
-                    help="Z가 변하는 travel 구간에도 오프셋 표시"
+                    help="ON: Z가 변하는 travel 구간에도 좌/우 오프셋(진한 회색)을 그립니다. OFF: 압출 구간에서만 오프셋."
                 )
 
             with c3:
@@ -932,7 +933,7 @@ with tab_paths:
                     "Emphasize caps (start/end)",
                     value=False,
                     disabled=not apply_offsets,
-                    help="시작/끝 반원 캡 강조(빨강)"
+                    help="시작·끝 반원 캡을 빨강/굵은 선으로 강조 표시"
                 )
 
             with c4:
@@ -940,34 +941,41 @@ with tab_paths:
                     show_dotted = st.checkbox(
                         "Show dotted travel lines",
                         value=True,
-                        help="비압출 이동을 점선으로 표시"
+                        help="비압출 이동을 점선으로 표시합니다."
                     )
                     travel_mode = "dotted" if show_dotted else "hidden"
                 else:
-                    st.checkbox("Show dotted travel lines", value=False, disabled=True,
-                                help="Insert E values OFF이면 travel은 실선")
+                    st.checkbox(
+                        "Show dotted travel lines",
+                        value=False, disabled=True,
+                        help="Insert E values 가 OFF이면 travel은 실선으로 표시됩니다."
+                    )
                     travel_mode = "solid"
 
             prev_mode = st.session_state.get("paths_travel_mode", "solid")
             st.session_state.paths_travel_mode = travel_mode
 
-            # ── 외부치수 한 줄(옵션 바로 아래 줄)
+            # 외부치수 한 줄(옵션 바로 아래 줄)
             dims_placeholder = st.empty()
 
-            # ── 진행 슬라이더 + 숫자 입력 (둘 다 '아래'에 위치)
+            # 진행(segments) 슬라이더 + 숫자 입력
             col1, col2 = st.columns([6, 2])
             default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
             with col1:
-                scrub = st.slider("진행(segments)", 0, int(total_segments),
-                                  int(default_val), 1, help="해당 세그먼트까지 누적 표시")
+                scrub = st.slider("진행(segments)", min_value=0, max_value=int(total_segments),
+                                  value=int(default_val), step=1,
+                                  help="해당 세그먼트까지 누적 표시")
             with col2:
-                scrub_num = st.number_input("행 번호", 0, int(total_segments),
-                                            int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
+                scrub_num = st.number_input("행 번호", min_value=0, max_value=int(total_segments),
+                                            value=int(default_val), step=1,
+                                            help="표시할 최종 세그먼트(행) 번호")
 
-        # 3) 값 동기화 및 버퍼(계산은 위젯 생성 '후'에 수행)
+        # ── 3) 값 동기화 및 버퍼 구성
         target = default_val
-        if scrub != default_val:     target = int(scrub)
-        if scrub_num != default_val: target = int(scrub_num)
+        if scrub != default_val:
+            target = int(scrub)
+        if scrub_num != default_val:
+            target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
 
         DRAW_LIMIT = 15000
@@ -983,7 +991,7 @@ with tab_paths:
 
         st.session_state.paths_scrub = target
 
-        # ── 오프셋/캡 계산 후 외부치수 텍스트 채우기
+        # 오프셋 + 전역 캡 및 외부치수 텍스트 갱신
         if apply_offsets:
             half_w = float(trim_dist) * 0.5
             compute_offsets_into_buffers(
@@ -1007,13 +1015,13 @@ with tab_paths:
         else:
             dims_placeholder.markdown("_Offsets OFF_")
 
-        # 4) 마지막에 그래프 갱신(그래프는 항상 위에, 컨트롤은 그 아래)
+        # ── 4) 마지막에 그래프 갱신 (그래프는 항상 위, 컨트롤 묶음은 아래)
         ensure_paths_fig(height=820)
         fig = st.session_state.paths_base_fig
         update_fig_with_buffers(fig, show_offsets=apply_offsets, show_caps=bool(emphasize_caps))
         chart_ph.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # (상태 캡션 유지)
+        # 상태 캡션
         tm = st.session_state.paths_travel_mode
         if not e_on:
             travel_lbl = "Travel: solid (Insert E OFF)"
@@ -1029,8 +1037,6 @@ with tab_paths:
         )
     else:
         st.info("슬라이싱을 실행하세요.")
-
-
 
 with tab_stl:
     if st.session_state.get("mesh") is not None:
