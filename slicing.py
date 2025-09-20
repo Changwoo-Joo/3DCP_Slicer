@@ -22,10 +22,14 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
+    /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
+
+    /* 탭 자체 상단 여백 */
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
+    /* 우측 컨트롤 패널: 독립 스크롤 + sticky */
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -36,6 +40,7 @@ st.markdown(
       background: white;
     }
 
+    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
       font-size: 1.35rem;
@@ -43,8 +48,9 @@ st.markdown(
       line-height: 1.2;
     }
 
+    /* 외부치수: 줄바꿈 확실히 */
     .dims-block {
-      white-space: pre-line;
+      white-space: pre-line;  /* \\n을 실제 줄바꿈으로 렌더 */
       line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }
@@ -71,7 +77,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 + Thin-wall 강화)
+# Helpers (연산 로직 변경 없음)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -153,186 +159,6 @@ def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
-# ---------- Geometry utils ----------
-def _polygon_area_xy(poly: np.ndarray) -> float:
-    P = np.asarray(poly, float)
-    if len(P) < 3: return 0.0
-    x, y = P[:,0], P[:,1]
-    return 0.5 * float(np.sum(x*np.roll(y,-1) - y*np.roll(x,-1)))
-
-def _poly_centroid_xy(poly: np.ndarray) -> np.ndarray:
-    P = np.asarray(poly, float)
-    if len(P) == 0: return np.array([0.0, 0.0])
-    A = _polygon_area_xy(P)
-    if abs(A) < 1e-15:
-        return np.array([np.mean(P[:,0]), np.mean(P[:,1])])
-    cx = 0.0; cy = 0.0
-    for i in range(len(P)):
-        x1,y1 = P[i,0],P[i,1]; x2,y2 = P[(i+1)%len(P),0],P[(i+1)%len(P),1]
-        cross = x1*y2 - x2*y1
-        cx += (x1 + x2)*cross
-        cy += (y1 + y2)*cross
-    cx /= (6.0*A); cy /= (6.0*A)
-    return np.array([cx, cy])
-
-def _point_in_poly(x: float, y: float, poly_xy: np.ndarray) -> bool:
-    inside = False
-    n = len(poly_xy)
-    for i in range(n):
-        x1,y1 = poly_xy[i]
-        x2,y2 = poly_xy[(i+1)%n]
-        if ((y1 > y) != (y2 > y)):
-            xin = (x2 - x1) * (y - y1) / (y2 - y1 + 1e-18) + x1
-            if x < xin:
-                inside = not inside
-    return inside
-
-def _contains(loop_outer: np.ndarray, loop_inner: np.ndarray) -> bool:
-    # bbox 빠른 배제
-    oxmin, oymin = loop_outer[:,0].min(), loop_outer[:,1].min()
-    oxmax, oymax = loop_outer[:,0].max(), loop_outer[:,1].max()
-    ixmin, iymin = loop_inner[:,0].min(), loop_inner[:,1].min()
-    ixmax, iymax = loop_inner[:,0].max(), loop_inner[:,1].max()
-    if (ixmin < oxmin) or (iymin < oymin) or (ixmax > oxmax) or (iymax > oymax):
-        return False
-    # inner 대표점(centroid)으로 판정
-    cx, cy = _poly_centroid_xy(loop_inner)
-    return _point_in_poly(float(cx), float(cy), loop_outer[:,:2])
-
-def _poly_arclen_xy(poly: np.ndarray) -> float:
-    if len(poly) < 2:
-        return 0.0
-    d = np.linalg.norm(np.diff(poly[:, :2], axis=0), axis=1)
-    return float(np.sum(d))
-
-def _resample_closed_xy(poly: np.ndarray, n: int = 256) -> np.ndarray:
-    """닫힌 루프(마지막 점==첫점일 수 있음)를 XY 아크길이 균등 샘플링."""
-    P = np.array(poly, dtype=float)
-    if len(P) < 2:
-        return P.copy()
-    # 닫힘 보장
-    if np.linalg.norm(P[0, :2] - P[-1, :2]) > 1e-9:
-        P = np.vstack([P, P[0]])
-    seg = np.linalg.norm(np.diff(P[:, :2], axis=0), axis=1)
-    cum = np.hstack([[0.0], np.cumsum(seg)])
-    total = cum[-1] if cum[-1] > 0 else 1.0
-    qs = np.linspace(0.0, total, n+1)[:-1]  # n개, 마지막 제외(원형)
-    out = []
-    for q in qs:
-        i = np.searchsorted(cum, q, side='right') - 1
-        i = max(0, min(i, len(P)-2))
-        t = 0.0 if seg[i] == 0 else (q - cum[i]) / seg[i]
-        xy = P[i, :2] + t * (P[i+1, :2] - P[i, :2])
-        z  = P[i,  2] + t * (P[i+1,  2] - P[i,  2])
-        out.append([xy[0], xy[1], z])
-    return np.asarray(out, dtype=float)
-
-def _circular_best_shift(A: np.ndarray, B: np.ndarray) -> int:
-    n = len(A)
-    if n == 0: return 0
-    errs = []
-    for s in range(n):
-        d = A[:, :2] - np.roll(B[:, :2], shift=s, axis=0)
-        errs.append(np.mean(np.sum(d*d, axis=1)))
-    return int(np.argmin(errs))
-
-def _point_segment_dist_xy(px, py, ax, ay, bx, by) -> float:
-    vx, vy = bx - ax, by - ay
-    wx, wy = px - ax, py - ay
-    denom = vx*vx + vy*vy
-    if denom <= 1e-18:
-        return float(math.hypot(px - ax, py - ay))
-    t = max(0.0, min(1.0, (wx*vx + wy*vy)/denom))
-    qx, qy = ax + t*vx, ay + t*vy
-    return float(math.hypot(px - qx, py - qy))
-
-def _mean_min_dist_A_to_B(A: np.ndarray, B: np.ndarray, sample_n: int = 256) -> float:
-    """A를 균일 샘플 → 각 점이 B의 '가장 가까운 선분'까지의 거리 평균."""
-    As = _resample_closed_xy(A, n=sample_n)
-    B2 = np.asarray(B, float)
-    m = len(B2)
-    if m < 2:
-        return 1e30
-    acc = 0.0
-    for p in As:
-        px, py = float(p[0]), float(p[1])
-        best = 1e30
-        for i in range(m):
-            ax, ay = B2[i,0], B2[i,1]
-            bx, by = B2[(i+1)%m,0], B2[(i+1)%m,1]
-            d = _point_segment_dist_xy(px, py, ax, ay, bx, by)
-            if d < best: best = d
-        acc += best
-    return acc / float(len(As))
-
-def _symmetric_poly_distance(A: np.ndarray, B: np.ndarray, sample_n: int = 256) -> float:
-    return 0.5*(_mean_min_dist_A_to_B(A,B,sample_n) + _mean_min_dist_A_to_B(B,A,sample_n))
-
-def _angle_sort(points: np.ndarray, center_xy: np.ndarray) -> np.ndarray:
-    P = np.asarray(points, float)
-    v = P[:,:2] - center_xy[None,:]
-    ang = np.arctan2(v[:,1], v[:,0])
-    idx = np.argsort(ang)
-    return P[idx]
-
-def _midline_from_pair_angle(loop1: np.ndarray, loop2: np.ndarray, samples: int = 256) -> np.ndarray:
-    """공통 중심 기준 각도 정렬 후 원형 시프트 정합 → 점대점 평균 → 열린 경로 리턴."""
-    a = _resample_closed_xy(loop1, n=samples)
-    b = _resample_closed_xy(loop2, n=samples)
-    cxy = 0.5*(_poly_centroid_xy(a) + _poly_centroid_xy(b))
-    a2 = _angle_sort(a, cxy)
-    b2 = _angle_sort(b, cxy)
-    s = _circular_best_shift(a2, b2)
-    b3 = np.roll(b2, shift=s, axis=0)
-    mid = 0.5*(a2 + b3)
-    # 열린 경로로
-    mid_open = ensure_open_ring(mid)
-    return mid_open
-
-def _pair_thinwalls_by_containment(
-    loops: List[np.ndarray],
-    thresh_mm: float,
-    force: bool = False,
-    sample_n_dist: int = 160,
-    samples_midline: int = 256
-) -> List[np.ndarray]:
-    """포함관계(outer↔inner)인 루프쌍 중, 대칭 평균 최소거리 ≤ thresh면 중심선으로 병합."""
-    n = len(loops)
-    if n < 2: return loops
-    areas = [abs(_polygon_area_xy(lp)) for lp in loops]
-    order = sorted(range(n), key=lambda i: -areas[i])  # 큰 것 → 작은 것
-    used = [False]*n
-    pairs = []
-    # 그리디: 큰 루프부터 자신이 '포함'하는 가장 가까운 inner를 잡음
-    for i in order:
-        if used[i]: continue
-        best = None
-        best_d = None
-        for j in order:
-            if i == j or used[j]: continue
-            if not (_contains(loops[i], loops[j]) or _contains(loops[j], loops[i])):
-                continue
-            d = _symmetric_poly_distance(loops[i], loops[j], sample_n=sample_n_dist)
-            if force or d <= thresh_mm:
-                if best_d is None or d < best_d:
-                    best_d = d
-                    best = j
-        if best is not None:
-            pairs.append((i, best))
-            used[i] = True
-            used[best] = True
-    # 결과 구성: 병합쌍은 midline, 나머지는 원본 유지
-    out: List[np.ndarray] = []
-    paired = set()
-    for i, j in pairs:
-        mid = _midline_from_pair_angle(loops[i], loops[j], samples=samples_midline)
-        out.append(mid)
-        paired.add(i); paired.add(j)
-    for k in range(n):
-        if k not in paired:
-            out.append(loops[k])
-    return out
-
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -349,12 +175,11 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator
+# G-code generator (연산 그대로)
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
-                   trim_dist=30.0, min_spacing=3.0, auto_start=False, m30_on=False,
-                   thinwall_mode="off", thinwall_thresh=1.0):
+                   trim_dist=30.0, min_spacing=3.0, auto_start=False, m30_on=False):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
@@ -375,24 +200,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         except Exception:
             continue
 
-        loops3d = []
+        segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
             seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            loops3d.append(seg3d)
-
-        if not loops3d:
+            segments.append(seg3d)
+        if not segments:
             continue
-
-        # ---- Thin-wall 처리 ----
-        if thinwall_mode in ("auto", "force"):
-            loops3d = _pair_thinwalls_by_containment(
-                loops3d,
-                thresh_mm=float(thinwall_thresh),
-                force=(thinwall_mode == "force"),
-                sample_n_dist=160,
-                samples_midline=256
-            )
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
@@ -401,7 +215,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
-        for i_seg, seg3d in enumerate(loops3d):
+        for i_seg, seg3d in enumerate(segments):
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -437,7 +251,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (시각화용)
+# Slice path computation (연산 그대로)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -446,9 +260,7 @@ def compute_slice_paths_with_travel(
     trim_dist=30.0,
     min_spacing=3.0,
     auto_start=False,
-    e_on=False,
-    thinwall_mode="off",
-    thinwall_thresh=1.0
+    e_on=False
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
@@ -469,23 +281,13 @@ def compute_slice_paths_with_travel(
         except Exception:
             continue
 
-        loops3d = []
+        segments = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
             seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            loops3d.append(seg3d)
-        if not loops3d:
+            segments.append(seg3d)
+        if not segments:
             continue
-
-        # ---- Thin-wall 처리 ----
-        if thinwall_mode in ("auto", "force"):
-            loops3d = _pair_thinwalls_by_containment(
-                loops3d,
-                thresh_mm=float(thinwall_thresh),
-                force=(thinwall_mode == "force"),
-                sample_n_dist=160,
-                samples_midline=256
-            )
 
         # 레이어 기준 시작점
         if auto_start and prev_start_xy is not None:
@@ -494,7 +296,7 @@ def compute_slice_paths_with_travel(
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
-        for i_seg, seg3d in enumerate(loops3d):
+        for i_seg, seg3d in enumerate(segments):
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -783,12 +585,15 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     fig.data[0].line.color = center_color
     fig.data[1].line.color = center_color
 
+    # 오프셋 트레이스(진한 회색 + 굵기 3)
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
     fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
 
+    # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
 
+    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
@@ -796,6 +601,7 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
+    # caps 강조(빨강)
     if show_caps:
         fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
     else:
@@ -826,6 +632,7 @@ def _last_z_from_buffer(buf_dict):
         pass
     return None
 
+# ▶ HTML 줄바꿈 보장 (외부치수)
 def _fmt_dims_block_html(title, bbox, z_single: Optional[float]) -> str:
     if bbox is None:
         return f"<div class='dims-block'><b>{title}</b>\nX=(-)\nY=(-)\nZ=(-)</div>"
@@ -937,24 +744,6 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ---- Thin-wall 옵션 ----
-st.sidebar.subheader("Thin-wall handling")
-thinwall_mode = st.sidebar.radio(
-    "Thin-wall handling",
-    options=["off", "auto", "force"],
-    index=1,  # 기본 Auto
-    help=(
-        "off: 기본 처리\n"
-        "auto: outer↔inner 포함쌍의 대칭 최소거리 ≤ 임계값이면 중심선 병합\n"
-        "force: 포함쌍이면 무조건 중심선 처리(디버그/특수케이스)"
-    )
-)
-thinwall_thresh = st.sidebar.number_input(
-    "Thin-wall threshold (mm)",
-    min_value=0.05, max_value=10.0, value=1.0, step=0.05,
-    help="Auto 모드에서 두 외곽선(outer↔inner)의 대칭 평균 최소거리가 이 값 이하이면 중심선으로 병합"
-)
-
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 slice_clicked = b1.button("Slice Model", use_container_width=True)
@@ -989,9 +778,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         trim_dist=trim_dist,
         min_spacing=min_spacing,
         auto_start=auto_start,
-        e_on=e_on,
-        thinwall_mode=thinwall_mode,
-        thinwall_thresh=thinwall_thresh
+        e_on=e_on
     )
     st.session_state.paths_items = items
 
@@ -1010,10 +797,10 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
-        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on,
-        thinwall_mode=thinwall_mode, thinwall_thresh=thinwall_thresh
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
+    # 중앙 성공 메시지 대신 우측 배너로만 표시
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
@@ -1130,6 +917,7 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
+# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌([14,3] ≈ 17.6%)
 center_col, right_col = st.columns([14, 3], gap="large")
 
 # 현재 슬라이스 세그먼트
@@ -1143,6 +931,7 @@ if st.session_state.get("paths_items") is not None:
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
+    # 우측 상단 배너 (Slicing complete / G-code ready)
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
@@ -1220,7 +1009,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수
+    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
