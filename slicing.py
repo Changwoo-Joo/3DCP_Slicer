@@ -71,7 +71,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 일부 확장)
+# Helpers (연산 로직 + Thin-wall 강화)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -153,12 +153,56 @@ def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
-# ---------- [Thin-wall 처리: 중심선(midline) 생성 유틸] ----------
+# ---------- Geometry utils ----------
+def _polygon_area_xy(poly: np.ndarray) -> float:
+    P = np.asarray(poly, float)
+    if len(P) < 3: return 0.0
+    x, y = P[:,0], P[:,1]
+    return 0.5 * float(np.sum(x*np.roll(y,-1) - y*np.roll(x,-1)))
+
+def _poly_centroid_xy(poly: np.ndarray) -> np.ndarray:
+    P = np.asarray(poly, float)
+    if len(P) == 0: return np.array([0.0, 0.0])
+    A = _polygon_area_xy(P)
+    if abs(A) < 1e-15:
+        return np.array([np.mean(P[:,0]), np.mean(P[:,1])])
+    cx = 0.0; cy = 0.0
+    for i in range(len(P)):
+        x1,y1 = P[i,0],P[i,1]; x2,y2 = P[(i+1)%len(P),0],P[(i+1)%len(P),1]
+        cross = x1*y2 - x2*y1
+        cx += (x1 + x2)*cross
+        cy += (y1 + y2)*cross
+    cx /= (6.0*A); cy /= (6.0*A)
+    return np.array([cx, cy])
+
+def _point_in_poly(x: float, y: float, poly_xy: np.ndarray) -> bool:
+    inside = False
+    n = len(poly_xy)
+    for i in range(n):
+        x1,y1 = poly_xy[i]
+        x2,y2 = poly_xy[(i+1)%n]
+        if ((y1 > y) != (y2 > y)):
+            xin = (x2 - x1) * (y - y1) / (y2 - y1 + 1e-18) + x1
+            if x < xin:
+                inside = not inside
+    return inside
+
+def _contains(loop_outer: np.ndarray, loop_inner: np.ndarray) -> bool:
+    # bbox 빠른 배제
+    oxmin, oymin = loop_outer[:,0].min(), loop_outer[:,1].min()
+    oxmax, oymax = loop_outer[:,0].max(), loop_outer[:,1].max()
+    ixmin, iymin = loop_inner[:,0].min(), loop_inner[:,1].min()
+    ixmax, iymax = loop_inner[:,0].max(), loop_inner[:,1].max()
+    if (ixmin < oxmin) or (iymin < oymin) or (ixmax > oxmax) or (iymax > oymax):
+        return False
+    # inner 대표점(centroid)으로 판정
+    cx, cy = _poly_centroid_xy(loop_inner)
+    return _point_in_poly(float(cx), float(cy), loop_outer[:,:2])
+
 def _poly_arclen_xy(poly: np.ndarray) -> float:
     if len(poly) < 2:
         return 0.0
     d = np.linalg.norm(np.diff(poly[:, :2], axis=0), axis=1)
-    # 닫힌 루프면 첫-끝도 잇지 않음(여기선 폐합 가정 전처리 없이 길이 추정)
     return float(np.sum(d))
 
 def _resample_closed_xy(poly: np.ndarray, n: int = 256) -> np.ndarray:
@@ -172,7 +216,7 @@ def _resample_closed_xy(poly: np.ndarray, n: int = 256) -> np.ndarray:
     seg = np.linalg.norm(np.diff(P[:, :2], axis=0), axis=1)
     cum = np.hstack([[0.0], np.cumsum(seg)])
     total = cum[-1] if cum[-1] > 0 else 1.0
-    qs = np.linspace(0.0, total, n+1)[:-1]  # n개, 마지막은 제외(원형)
+    qs = np.linspace(0.0, total, n+1)[:-1]  # n개, 마지막 제외(원형)
     out = []
     for q in qs:
         i = np.searchsorted(cum, q, side='right') - 1
@@ -184,80 +228,109 @@ def _resample_closed_xy(poly: np.ndarray, n: int = 256) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 def _circular_best_shift(A: np.ndarray, B: np.ndarray) -> int:
-    """
-    A, B는 동일 길이. B를 원형 시프트해 평균 제곱오차가 최소인 시프트량 반환.
-    (간단/빠름: FFT없이 O(n^2) 회전 비교; n=256 기본)
-    """
     n = len(A)
-    if n == 0:
-        return 0
+    if n == 0: return 0
     errs = []
     for s in range(n):
         d = A[:, :2] - np.roll(B[:, :2], shift=s, axis=0)
         errs.append(np.mean(np.sum(d*d, axis=1)))
     return int(np.argmin(errs))
 
-def _mean_gap_xy(A: np.ndarray, B: np.ndarray) -> float:
-    return float(np.mean(np.linalg.norm(A[:, :2] - B[:, :2], axis=1)))
+def _point_segment_dist_xy(px, py, ax, ay, bx, by) -> float:
+    vx, vy = bx - ax, by - ay
+    wx, wy = px - ax, py - ay
+    denom = vx*vx + vy*vy
+    if denom <= 1e-18:
+        return float(math.hypot(px - ax, py - ay))
+    t = max(0.0, min(1.0, (wx*vx + wy*vy)/denom))
+    qx, qy = ax + t*vx, ay + t*vy
+    return float(math.hypot(px - qx, py - qy))
 
-def _midline_from_pair(loop1: np.ndarray, loop2: np.ndarray, samples: int = 256) -> np.ndarray:
+def _mean_min_dist_A_to_B(A: np.ndarray, B: np.ndarray, sample_n: int = 256) -> float:
+    """A를 균일 샘플 → 각 점이 B의 '가장 가까운 선분'까지의 거리 평균."""
+    As = _resample_closed_xy(A, n=sample_n)
+    B2 = np.asarray(B, float)
+    m = len(B2)
+    if m < 2:
+        return 1e30
+    acc = 0.0
+    for p in As:
+        px, py = float(p[0]), float(p[1])
+        best = 1e30
+        for i in range(m):
+            ax, ay = B2[i,0], B2[i,1]
+            bx, by = B2[(i+1)%m,0], B2[(i+1)%m,1]
+            d = _point_segment_dist_xy(px, py, ax, ay, bx, by)
+            if d < best: best = d
+        acc += best
+    return acc / float(len(As))
+
+def _symmetric_poly_distance(A: np.ndarray, B: np.ndarray, sample_n: int = 256) -> float:
+    return 0.5*(_mean_min_dist_A_to_B(A,B,sample_n) + _mean_min_dist_A_to_B(B,A,sample_n))
+
+def _angle_sort(points: np.ndarray, center_xy: np.ndarray) -> np.ndarray:
+    P = np.asarray(points, float)
+    v = P[:,:2] - center_xy[None,:]
+    ang = np.arctan2(v[:,1], v[:,0])
+    idx = np.argsort(ang)
+    return P[idx]
+
+def _midline_from_pair_angle(loop1: np.ndarray, loop2: np.ndarray, samples: int = 256) -> np.ndarray:
+    """공통 중심 기준 각도 정렬 후 원형 시프트 정합 → 점대점 평균 → 열린 경로 리턴."""
     a = _resample_closed_xy(loop1, n=samples)
     b = _resample_closed_xy(loop2, n=samples)
-    s = _circular_best_shift(a, b)
-    b2 = np.roll(b, shift=s, axis=0)
-    mid = 0.5 * (a + b2)
-    # 열린 경로(시작점을 한 점으로 선택)로 변환
+    cxy = 0.5*(_poly_centroid_xy(a) + _poly_centroid_xy(b))
+    a2 = _angle_sort(a, cxy)
+    b2 = _angle_sort(b, cxy)
+    s = _circular_best_shift(a2, b2)
+    b3 = np.roll(b2, shift=s, axis=0)
+    mid = 0.5*(a2 + b3)
+    # 열린 경로로
     mid_open = ensure_open_ring(mid)
     return mid_open
 
-def _pairwise_midlines_for_thinwalls(loops: List[np.ndarray], thresh_mm: float) -> List[np.ndarray]:
-    """
-    loops: 한 Z 단면의 3D 폐루프 리스트
-    두 루프가 서로 근접(평균거리 <= thresh)하고 길이/샘플 수가 비슷하면 midline으로 대체.
-    """
-    if len(loops) < 2:
-        return loops
-    used = [False] * len(loops)
-    out: List[np.ndarray] = []
-
-    # 간단한 휴리스틱: 길이로 소팅 → 가까운 것끼리 그리디 매칭
-    lengths = [(_poly_arclen_xy(lp), i) for i, lp in enumerate(loops)]
-    lengths.sort()
-
-    for idx_a in range(len(lengths)):
-        la, ia = lengths[idx_a]
-        if used[ia]:
-            continue
+def _pair_thinwalls_by_containment(
+    loops: List[np.ndarray],
+    thresh_mm: float,
+    force: bool = False,
+    sample_n_dist: int = 160,
+    samples_midline: int = 256
+) -> List[np.ndarray]:
+    """포함관계(outer↔inner)인 루프쌍 중, 대칭 평균 최소거리 ≤ thresh면 중심선으로 병합."""
+    n = len(loops)
+    if n < 2: return loops
+    areas = [abs(_polygon_area_xy(lp)) for lp in loops]
+    order = sorted(range(n), key=lambda i: -areas[i])  # 큰 것 → 작은 것
+    used = [False]*n
+    pairs = []
+    # 그리디: 큰 루프부터 자신이 '포함'하는 가장 가까운 inner를 잡음
+    for i in order:
+        if used[i]: continue
         best = None
-        best_gap = None
-        for idx_b in range(idx_a + 1, len(lengths)):
-            lb, ib = lengths[idx_b]
-            if used[ib]:
+        best_d = None
+        for j in order:
+            if i == j or used[j]: continue
+            if not (_contains(loops[i], loops[j]) or _contains(loops[j], loops[i])):
                 continue
-            # 길이 유사성(너무 다르면 스킵) — 40% 이내
-            if lb < 1e-9 or la < 1e-9:
-                continue
-            if not (0.6 <= la / lb <= 1.4):
-                continue
-            # 평균 간격 추정(저비용 샘플 후 계산)
-            a = _resample_closed_xy(loops[ia], n=128)
-            b = _resample_closed_xy(loops[ib], n=128)
-            sft = _circular_best_shift(a, b)
-            gap = _mean_gap_xy(a, np.roll(b, sft, axis=0))
-            if gap <= thresh_mm and (best_gap is None or gap < best_gap):
-                best_gap = gap
-                best = ib
+            d = _symmetric_poly_distance(loops[i], loops[j], sample_n=sample_n_dist)
+            if force or d <= thresh_mm:
+                if best_d is None or d < best_d:
+                    best_d = d
+                    best = j
         if best is not None:
-            # 쌍으로 midline 생성
-            mid = _midline_from_pair(loops[ia], loops[best], samples=256)
-            out.append(mid)
-            used[ia] = True
+            pairs.append((i, best))
+            used[i] = True
             used[best] = True
-        else:
-            # 짝을 못 찾은 루프는 그대로 유지
-            out.append(loops[ia])
-            used[ia] = True
-
+    # 결과 구성: 병합쌍은 midline, 나머지는 원본 유지
+    out: List[np.ndarray] = []
+    paired = set()
+    for i, j in pairs:
+        mid = _midline_from_pair_angle(loops[i], loops[j], samples=samples_midline)
+        out.append(mid)
+        paired.add(i); paired.add(j)
+    for k in range(n):
+        if k not in paired:
+            out.append(loops[k])
     return out
 
 # =========================
@@ -276,7 +349,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator (연산 그대로)
+# G-code generator
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -311,12 +384,15 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         if not loops3d:
             continue
 
-        # ---- Thin-wall 처리 (Auto/Force) ----
-        if thinwall_mode == "force":
-            # 모든 인접 쌍을 midline으로 (실무상 과도할 수 있지만 요청 모드)
-            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=1e9)
-        elif thinwall_mode == "auto":
-            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=float(thinwall_thresh))
+        # ---- Thin-wall 처리 ----
+        if thinwall_mode in ("auto", "force"):
+            loops3d = _pair_thinwalls_by_containment(
+                loops3d,
+                thresh_mm=float(thinwall_thresh),
+                force=(thinwall_mode == "force"),
+                sample_n_dist=160,
+                samples_midline=256
+            )
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
@@ -361,7 +437,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (연산 확장: thin-wall 포함)
+# Slice path computation (시각화용)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -402,10 +478,14 @@ def compute_slice_paths_with_travel(
             continue
 
         # ---- Thin-wall 처리 ----
-        if thinwall_mode == "force":
-            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=1e9)
-        elif thinwall_mode == "auto":
-            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=float(thinwall_thresh))
+        if thinwall_mode in ("auto", "force"):
+            loops3d = _pair_thinwalls_by_containment(
+                loops3d,
+                thresh_mm=float(thinwall_thresh),
+                force=(thinwall_mode == "force"),
+                sample_n_dist=160,
+                samples_midline=256
+            )
 
         # 레이어 기준 시작점
         if auto_start and prev_start_xy is not None:
@@ -789,6 +869,7 @@ if "paths_scrub" not in st.session_state:
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 
+# 우측 메시지(슬라이스/G-code 완료) 전용
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
@@ -856,7 +937,7 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ---- Thin-wall 옵션 추가 ----
+# ---- Thin-wall 옵션 ----
 st.sidebar.subheader("Thin-wall handling")
 thinwall_mode = st.sidebar.radio(
     "Thin-wall handling",
@@ -864,14 +945,14 @@ thinwall_mode = st.sidebar.radio(
     index=1,  # 기본 Auto
     help=(
         "off: 기본 처리\n"
-        "auto: 단면의 두 루프 평균 간격 ≤ 임계값이면 Surface Extrude처럼 중심선으로 병합\n"
-        "force: 루프 쌍을 강제 중심선 처리(디버그/특수케이스용)"
+        "auto: outer↔inner 포함쌍의 대칭 최소거리 ≤ 임계값이면 중심선 병합\n"
+        "force: 포함쌍이면 무조건 중심선 처리(디버그/특수케이스)"
     )
 )
 thinwall_thresh = st.sidebar.number_input(
     "Thin-wall threshold (mm)",
     min_value=0.05, max_value=10.0, value=1.0, step=0.05,
-    help="Auto 모드에서 두 외곽선 평균 간격이 이 값 이하이면 Surface 취급"
+    help="Auto 모드에서 두 외곽선(outer↔inner)의 대칭 평균 최소거리가 이 값 이하이면 중심선으로 병합"
 )
 
 b1 = st.sidebar.container()
@@ -933,7 +1014,6 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         thinwall_mode=thinwall_mode, thinwall_thresh=thinwall_thresh
     )
     st.session_state.gcode_text = gcode_text
-    # 중앙 성공 메시지 대신 우측 배너로만 표시
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
@@ -1140,6 +1220,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
+    # 오프셋 + 전역 캡 + 외부치수
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
