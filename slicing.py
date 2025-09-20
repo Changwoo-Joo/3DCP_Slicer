@@ -22,14 +22,10 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
-    /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
-
-    /* 탭 자체 상단 여백 */
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
-    /* 우측 컨트롤 패널: 독립 스크롤 + sticky */
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -40,7 +36,6 @@ st.markdown(
       background: white;
     }
 
-    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
       font-size: 1.35rem;
@@ -48,9 +43,8 @@ st.markdown(
       line-height: 1.2;
     }
 
-    /* 외부치수: 줄바꿈 확실히 */
     .dims-block {
-      white-space: pre-line;  /* \\n을 실제 줄바꿈으로 렌더 */
+      white-space: pre-line;
       line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }
@@ -77,7 +71,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 변경 없음)
+# Helpers (연산 로직 일부 확장)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -159,6 +153,113 @@ def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
+# ---------- [Thin-wall 처리: 중심선(midline) 생성 유틸] ----------
+def _poly_arclen_xy(poly: np.ndarray) -> float:
+    if len(poly) < 2:
+        return 0.0
+    d = np.linalg.norm(np.diff(poly[:, :2], axis=0), axis=1)
+    # 닫힌 루프면 첫-끝도 잇지 않음(여기선 폐합 가정 전처리 없이 길이 추정)
+    return float(np.sum(d))
+
+def _resample_closed_xy(poly: np.ndarray, n: int = 256) -> np.ndarray:
+    """닫힌 루프(마지막 점==첫점일 수 있음)를 XY 아크길이 균등 샘플링."""
+    P = np.array(poly, dtype=float)
+    if len(P) < 2:
+        return P.copy()
+    # 닫힘 보장
+    if np.linalg.norm(P[0, :2] - P[-1, :2]) > 1e-9:
+        P = np.vstack([P, P[0]])
+    seg = np.linalg.norm(np.diff(P[:, :2], axis=0), axis=1)
+    cum = np.hstack([[0.0], np.cumsum(seg)])
+    total = cum[-1] if cum[-1] > 0 else 1.0
+    qs = np.linspace(0.0, total, n+1)[:-1]  # n개, 마지막은 제외(원형)
+    out = []
+    for q in qs:
+        i = np.searchsorted(cum, q, side='right') - 1
+        i = max(0, min(i, len(P)-2))
+        t = 0.0 if seg[i] == 0 else (q - cum[i]) / seg[i]
+        xy = P[i, :2] + t * (P[i+1, :2] - P[i, :2])
+        z  = P[i,  2] + t * (P[i+1,  2] - P[i,  2])
+        out.append([xy[0], xy[1], z])
+    return np.asarray(out, dtype=float)
+
+def _circular_best_shift(A: np.ndarray, B: np.ndarray) -> int:
+    """
+    A, B는 동일 길이. B를 원형 시프트해 평균 제곱오차가 최소인 시프트량 반환.
+    (간단/빠름: FFT없이 O(n^2) 회전 비교; n=256 기본)
+    """
+    n = len(A)
+    if n == 0:
+        return 0
+    errs = []
+    for s in range(n):
+        d = A[:, :2] - np.roll(B[:, :2], shift=s, axis=0)
+        errs.append(np.mean(np.sum(d*d, axis=1)))
+    return int(np.argmin(errs))
+
+def _mean_gap_xy(A: np.ndarray, B: np.ndarray) -> float:
+    return float(np.mean(np.linalg.norm(A[:, :2] - B[:, :2], axis=1)))
+
+def _midline_from_pair(loop1: np.ndarray, loop2: np.ndarray, samples: int = 256) -> np.ndarray:
+    a = _resample_closed_xy(loop1, n=samples)
+    b = _resample_closed_xy(loop2, n=samples)
+    s = _circular_best_shift(a, b)
+    b2 = np.roll(b, shift=s, axis=0)
+    mid = 0.5 * (a + b2)
+    # 열린 경로(시작점을 한 점으로 선택)로 변환
+    mid_open = ensure_open_ring(mid)
+    return mid_open
+
+def _pairwise_midlines_for_thinwalls(loops: List[np.ndarray], thresh_mm: float) -> List[np.ndarray]:
+    """
+    loops: 한 Z 단면의 3D 폐루프 리스트
+    두 루프가 서로 근접(평균거리 <= thresh)하고 길이/샘플 수가 비슷하면 midline으로 대체.
+    """
+    if len(loops) < 2:
+        return loops
+    used = [False] * len(loops)
+    out: List[np.ndarray] = []
+
+    # 간단한 휴리스틱: 길이로 소팅 → 가까운 것끼리 그리디 매칭
+    lengths = [(_poly_arclen_xy(lp), i) for i, lp in enumerate(loops)]
+    lengths.sort()
+
+    for idx_a in range(len(lengths)):
+        la, ia = lengths[idx_a]
+        if used[ia]:
+            continue
+        best = None
+        best_gap = None
+        for idx_b in range(idx_a + 1, len(lengths)):
+            lb, ib = lengths[idx_b]
+            if used[ib]:
+                continue
+            # 길이 유사성(너무 다르면 스킵) — 40% 이내
+            if lb < 1e-9 or la < 1e-9:
+                continue
+            if not (0.6 <= la / lb <= 1.4):
+                continue
+            # 평균 간격 추정(저비용 샘플 후 계산)
+            a = _resample_closed_xy(loops[ia], n=128)
+            b = _resample_closed_xy(loops[ib], n=128)
+            sft = _circular_best_shift(a, b)
+            gap = _mean_gap_xy(a, np.roll(b, sft, axis=0))
+            if gap <= thresh_mm and (best_gap is None or gap < best_gap):
+                best_gap = gap
+                best = ib
+        if best is not None:
+            # 쌍으로 midline 생성
+            mid = _midline_from_pair(loops[ia], loops[best], samples=256)
+            out.append(mid)
+            used[ia] = True
+            used[best] = True
+        else:
+            # 짝을 못 찾은 루프는 그대로 유지
+            out.append(loops[ia])
+            used[ia] = True
+
+    return out
+
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -179,7 +280,8 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
-                   trim_dist=30.0, min_spacing=3.0, auto_start=False, m30_on=False):
+                   trim_dist=30.0, min_spacing=3.0, auto_start=False, m30_on=False,
+                   thinwall_mode="off", thinwall_thresh=1.0):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
@@ -200,13 +302,21 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         except Exception:
             continue
 
-        segments = []
+        loops3d = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
             seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            segments.append(seg3d)
-        if not segments:
+            loops3d.append(seg3d)
+
+        if not loops3d:
             continue
+
+        # ---- Thin-wall 처리 (Auto/Force) ----
+        if thinwall_mode == "force":
+            # 모든 인접 쌍을 midline으로 (실무상 과도할 수 있지만 요청 모드)
+            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=1e9)
+        elif thinwall_mode == "auto":
+            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=float(thinwall_thresh))
 
         g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
 
@@ -215,7 +325,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         else:
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
-        for i_seg, seg3d in enumerate(segments):
+        for i_seg, seg3d in enumerate(loops3d):
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -251,7 +361,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (연산 그대로)
+# Slice path computation (연산 확장: thin-wall 포함)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -260,7 +370,9 @@ def compute_slice_paths_with_travel(
     trim_dist=30.0,
     min_spacing=3.0,
     auto_start=False,
-    e_on=False
+    e_on=False,
+    thinwall_mode="off",
+    thinwall_thresh=1.0
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
@@ -281,13 +393,19 @@ def compute_slice_paths_with_travel(
         except Exception:
             continue
 
-        segments = []
+        loops3d = []
         for seg in slice2D.discrete:
             seg = np.array(seg)
             seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            segments.append(seg3d)
-        if not segments:
+            loops3d.append(seg3d)
+        if not loops3d:
             continue
+
+        # ---- Thin-wall 처리 ----
+        if thinwall_mode == "force":
+            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=1e9)
+        elif thinwall_mode == "auto":
+            loops3d = _pairwise_midlines_for_thinwalls(loops3d, thresh_mm=float(thinwall_thresh))
 
         # 레이어 기준 시작점
         if auto_start and prev_start_xy is not None:
@@ -296,7 +414,7 @@ def compute_slice_paths_with_travel(
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
-        for i_seg, seg3d in enumerate(segments):
+        for i_seg, seg3d in enumerate(loops3d):
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -585,15 +703,12 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     fig.data[0].line.color = center_color
     fig.data[1].line.color = center_color
 
-    # 오프셋 트레이스(진한 회색 + 굵기 3)
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
     fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
 
-    # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
 
-    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
@@ -601,7 +716,6 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
-    # caps 강조(빨강)
     if show_caps:
         fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
     else:
@@ -632,7 +746,6 @@ def _last_z_from_buffer(buf_dict):
         pass
     return None
 
-# ▶ HTML 줄바꿈 보장 (외부치수)
 def _fmt_dims_block_html(title, bbox, z_single: Optional[float]) -> str:
     if bbox is None:
         return f"<div class='dims-block'><b>{title}</b>\nX=(-)\nY=(-)\nZ=(-)</div>"
@@ -676,7 +789,6 @@ if "paths_scrub" not in st.session_state:
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 
-# 우측 메시지(슬라이스/G-code 완료) 전용
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
@@ -744,6 +856,24 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
+# ---- Thin-wall 옵션 추가 ----
+st.sidebar.subheader("Thin-wall handling")
+thinwall_mode = st.sidebar.radio(
+    "Thin-wall handling",
+    options=["off", "auto", "force"],
+    index=1,  # 기본 Auto
+    help=(
+        "off: 기본 처리\n"
+        "auto: 단면의 두 루프 평균 간격 ≤ 임계값이면 Surface Extrude처럼 중심선으로 병합\n"
+        "force: 루프 쌍을 강제 중심선 처리(디버그/특수케이스용)"
+    )
+)
+thinwall_thresh = st.sidebar.number_input(
+    "Thin-wall threshold (mm)",
+    min_value=0.05, max_value=10.0, value=1.0, step=0.05,
+    help="Auto 모드에서 두 외곽선 평균 간격이 이 값 이하이면 Surface 취급"
+)
+
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 slice_clicked = b1.button("Slice Model", use_container_width=True)
@@ -778,7 +908,9 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         trim_dist=trim_dist,
         min_spacing=min_spacing,
         auto_start=auto_start,
-        e_on=e_on
+        e_on=e_on,
+        thinwall_mode=thinwall_mode,
+        thinwall_thresh=thinwall_thresh
     )
     st.session_state.paths_items = items
 
@@ -797,7 +929,8 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
-        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on,
+        thinwall_mode=thinwall_mode, thinwall_thresh=thinwall_thresh
     )
     st.session_state.gcode_text = gcode_text
     # 중앙 성공 메시지 대신 우측 배너로만 표시
@@ -917,7 +1050,6 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
-# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌([14,3] ≈ 17.6%)
 center_col, right_col = st.columns([14, 3], gap="large")
 
 # 현재 슬라이스 세그먼트
@@ -931,7 +1063,6 @@ if st.session_state.get("paths_items") is not None:
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
-    # 우측 상단 배너 (Slicing complete / G-code ready)
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
@@ -1009,7 +1140,6 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
