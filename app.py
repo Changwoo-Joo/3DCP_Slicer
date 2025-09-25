@@ -686,7 +686,7 @@ ensure_anim_buffers()
 # Sidebar (Access)
 # =========================
 st.sidebar.header("Access")
-ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kmou*": "2026-12-31"}
+ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kmou*": "2026-12-31", "0703": "2026-12-31"}
 access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
 
 def check_key_valid(k: str):
