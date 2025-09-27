@@ -77,7 +77,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 일부 확장)
+# Helpers (연산 로직 + 박스 감지)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -86,6 +86,9 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     return seg
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
+    """
+    폐루프 길이를 기준으로 꼬리에서 trim_distance 제거 (open polyline 반환).
+    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
         return ensure_open_ring(pts)
@@ -156,14 +159,13 @@ def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
-# ── NEW: 레이어가 '박스(직사각형)인지' 판정하고 오른쪽 외곽선 한 줄 생성 ──
 def detect_box_right_edge_line(segments_3d: List[np.ndarray], z: float,
                                ref_pt_layer: np.ndarray) -> Tuple[bool, Optional[np.ndarray]]:
     """
     segments_3d: 이 레이어의 폐구간 리스트 (각각 Nx3)
     반환: (is_box, right_edge_polyline or None)
     - '박스' 판정: x, y 좌표 고유값(반올림) 개수가 각각 <= 2 이면 축정렬 직사각형으로 간주
-    - 진행 시작점은 ref_pt_layer의 y에 가장 가까운 쪽에서 시작하도록 함
+    - 진행 시작점은 ref_pt_layer의 y에 가장 가까운 쪽에서 시작
     """
     if not segments_3d:
         return False, None
@@ -172,37 +174,27 @@ def detect_box_right_edge_line(segments_3d: List[np.ndarray], z: float,
     if pts.shape[1] < 3:
         return False, None
 
-    # 고유값 판정을 위한 라운딩(수치 오차 방지)
     xr = np.round(pts[:, 0], 6)
     yr = np.round(pts[:, 1], 6)
     xs = np.unique(xr)
     ys = np.unique(yr)
 
-    if len(xs) <= 2 and len(ys) >= 2 and len(ys) <= 2:
-        x_right = float(np.max(xs))
-        y_min = float(np.min(ys))
-        y_max = float(np.max(ys))
-
-        # ref_y에 가까운 쪽을 시작점으로 (진행방향 정의)
+    def _make_line_from_sets(xs_vals, ys_vals):
+        x_right = float(np.max(xs_vals))
+        y_min = float(np.min(ys_vals))
+        y_max = float(np.max(ys_vals))
         ry = float(ref_pt_layer[1])
         start_y = y_min if abs(ry - y_min) <= abs(ry - y_max) else y_max
         end_y   = y_max if start_y == y_min else y_min
-
-        line = np.array([[x_right, start_y, z],
+        return np.array([[x_right, start_y, z],
                          [x_right, end_y,   z]], dtype=float)
-        return True, line
 
-    # 좀 더 관대한 판정: 둘 중 하나라도 2개 값만(예: x가 2개, y는 다수) → 박스일 가능성 높음
+    if len(xs) <= 2 and 1 < len(ys) <= 2:
+        return True, _make_line_from_sets(xs, ys)
+
+    # 관대한 판정(축정렬 박스가 아닌데 수치 오차로 어긋난 경우 보정)
     if (len(xs) <= 2 and len(ys) >= 2) or (len(ys) <= 2 and len(xs) >= 2):
-        x_right = float(np.max(xr))
-        y_min = float(np.min(yr))
-        y_max = float(np.max(yr))
-        ry = float(ref_pt_layer[1])
-        start_y = y_min if abs(ry - y_min) <= abs(ry - y_max) else y_max
-        end_y   = y_max if start_y == y_min else y_min
-        line = np.array([[x_right, start_y, z],
-                         [x_right, end_y,   z]], dtype=float)
-        return True, line
+        return True, _make_line_from_sets(xr, yr)
 
     return False, None
 
@@ -222,7 +214,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator (확장: 박스 우측선 옵션)
+# G-code generator (박스 우측선 옵션 포함)
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -264,24 +256,20 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             ref_pt_layer = np.array(ref_pt_user, dtype=float)
 
         # ── 박스 슬라이스 옵션 처리 ──
+        layer_polys: List[np.ndarray] = []
         if box_right_edge_only:
             is_box, line_poly = detect_box_right_edge_line(segments, z, ref_pt_layer)
             if is_box and line_poly is not None:
-                # 이 레이어는 오른쪽 외곽 '한 줄'만 출력
                 layer_polys = [line_poly]
             else:
-                # 기본 경로 생성
-                layer_polys = []
-                for i_seg, seg3d in enumerate(segments):
+                for seg3d in segments:
                     seg3d_no_dup = ensure_open_ring(seg3d)
                     shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                     trimmed = trim_closed_ring_tail(shifted, trim_dist)
                     simplified = simplify_segment(trimmed, min_spacing)
                     layer_polys.append(simplified.copy())
         else:
-            # 기존 경로
-            layer_polys = []
-            for i_seg, seg3d in enumerate(segments):
+            for seg3d in segments:
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                 trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -321,7 +309,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (확장: 박스 우측선 옵션)
+# Slice path computation (박스 우측선 옵션 포함)
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -368,22 +356,19 @@ def compute_slice_paths_with_travel(
 
         layer_polys: List[np.ndarray] = []
 
-        # ── 박스 슬라이스 옵션 처리 ──
         if box_right_edge_only:
             is_box, line_poly = detect_box_right_edge_line(segments, z, ref_pt_layer)
             if is_box and line_poly is not None:
                 layer_polys = [line_poly]
             else:
-                # 기본 경로 생성
-                for i_seg, seg3d in enumerate(segments):
+                for seg3d in segments:
                     seg3d_no_dup = ensure_open_ring(seg3d)
                     shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                     trimmed = trim_closed_ring_tail(shifted, trim_dist)
                     simplified = simplify_segment(trimmed, min_spacing)
                     layer_polys.append(simplified.copy())
         else:
-            # 기존 경로
-            for i_seg, seg3d in enumerate(segments):
+            for seg3d in segments:
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                 trimmed = trim_closed_ring_tail(shifted, trim_dist)
@@ -834,12 +819,14 @@ min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
-# ── NEW: 박스 우측 외곽선만 따기 옵션 ──
+# ── NEW: 박스 우측 외곽선만 따기(사이드바) ──
 box_right_edge_only = st.sidebar.checkbox(
     "For box slices, trace only RIGHT outer edge",
     value=False,
     help="직육면체 단면으로 감지되면 사각형 대신 진행방향 기준 오른쪽 외곽선 한 줄만 경로로 생성합니다."
 )
+# 세션에 상태 저장 → 오른쪽 패널과 액션에서 공통 사용
+st.session_state["box_right_edge_only"] = bool(box_right_edge_only)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
@@ -868,6 +855,7 @@ if uploaded is not None:
 # Actions
 # =========================
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
+    use_box_right = bool(st.session_state.get("box_right_edge_only", False))
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
         z_int=z_int,
@@ -876,7 +864,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         min_spacing=min_spacing,
         auto_start=auto_start,
         e_on=e_on,
-        box_right_edge_only=box_right_edge_only
+        box_right_edge_only=use_box_right
     )
     st.session_state.paths_items = items
 
@@ -892,14 +880,14 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     st.session_state.ui_banner = "Slicing complete"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
+    use_box_right = bool(st.session_state.get("box_right_edge_only", False))
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on,
-        box_right_edge_only=box_right_edge_only
+        box_right_edge_only=use_box_right
     )
     st.session_state.gcode_text = gcode_text
-    # 중앙 성공 메시지 대신 우측 배너로만 표시
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
@@ -1035,6 +1023,16 @@ with right_col:
         st.success(st.session_state.ui_banner)
 
     st.subheader("View Options")
+
+    # ── NEW: 오른쪽 패널에도 미러링된 체크박스 표시 ──
+    box_right_edge_only_ui = st.checkbox(
+        "Box slices: right edge only",
+        value=bool(st.session_state.get("box_right_edge_only", False)),
+        disabled=(segments is None),
+        help="직육면체 단면으로 감지되면 오른쪽 외곽선 한 줄만 표시/생성"
+    )
+    st.session_state["box_right_edge_only"] = bool(box_right_edge_only_ui)
+
     apply_offsets = st.checkbox(
         "Apply layer width",
         value=bool(st.session_state.get("apply_offsets_flag", False)),
@@ -1108,7 +1106,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
+    # 오프셋 + 전역 캡 + 외부치수
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
