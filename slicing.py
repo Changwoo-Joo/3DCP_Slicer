@@ -77,7 +77,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 변경 없음)
+# Helpers (연산 로직)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -175,7 +175,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator (연산 그대로)
+# G-code generator
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -251,7 +251,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (연산 그대로)
+# Slice path computation
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -415,7 +415,6 @@ def compute_offsets_into_buffers(
         return
 
     prev_tan = None
-
     N = min(upto, len(segments))
     for i in range(N):
         p1, p2, is_travel, is_extruding = segments[i]
@@ -817,7 +816,8 @@ def _fmt_pos(v: float) -> str:
 def _fmt_ang(v: float) -> str:
     s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1: ].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+# ▶ 부가축 포맷 업데이트 + ExtrudeFlag(마지막 11번째 필드)
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+000.0,+0000.0,+000.0,0'
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
@@ -832,40 +832,62 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
+    """
+    한 줄 형식:
+    X,Y,Z,Rx,Ry,Rz,A7,A8,A9,A10,ExtrudeFlag
+    - ExtrudeFlag = 1 if (해당 G라인에 E 존재 및 float(E)>0), else 0
+    - 좌표(X/Y/Z) 갱신 없는 라인은 스킵
+    """
     lines_out = []
     cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-    tail = "+0000.0,+0000.0,+0000.0,+0000.0"
+    tail = "+0000.0,+000.0,+0000.0,+000.0"
+
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
-        parts = t.split(); has_xyz = False
+
+        parts = t.split()
+        has_xyz = False
+        e_val: Optional[float] = None
+
         for p in parts:
-            if p.startswith("X"):
+            c = p[:1]
+            if c == "X":
                 try: cur_x = float(p[1:]); has_xyz = True
                 except: pass
-            elif p.startswith("Y"):
+            elif c == "Y":
                 try: cur_y = float(p[1:]); has_xyz = True
                 except: pass
-            elif p.startswith("Z"):
+            elif c == "Z":
                 try: cur_z = float(p[1:]); has_xyz = True
                 except: pass
+            elif c == "E":
+                try: e_val = float(p[1:])
+                except: e_val = None
+
         if not has_xyz:
             continue
+
         fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
-        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
+        flag = 1 if (e_val is not None and e_val > 0.0) else 0
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail},{flag}')
+
         if len(lines_out) >= MAX_LINES:
             break
+
+    # 패딩
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
+
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!***************************************************************...****************************************************************\n"
               "!*\n"
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
-              "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+              "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4, ExtrudeFlag\n"
               "!\n"
               "!***************************************************************...****************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1009,7 +1031,7 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
+    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장)
     if apply_offsets:
         half_w = float(trim_dist) * 0.5
         compute_offsets_into_buffers(
