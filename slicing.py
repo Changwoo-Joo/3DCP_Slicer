@@ -832,15 +832,10 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
-    """
-    한 줄 형식:
-    X,Y,Z,Rx,Ry,Rz,A7,A8,A9,A10,ExtrudeFlag
-    - ExtrudeFlag = 1 if (해당 G라인에 E 존재 및 float(E)>0), else 0
-    - 좌표(X/Y/Z) 갱신 없는 라인은 스킵
-    """
     lines_out = []
     cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+    # ✅ 부가축 포맷(요청하신 형태)
     tail = "+0000.0,+000.0,+0000.0,+000.0"
 
     for raw in gcode_text.splitlines():
@@ -850,7 +845,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
 
         parts = t.split()
         has_xyz = False
-        e_val: Optional[float] = None
+        e_val = None
 
         for p in parts:
             c = p[:1]
@@ -871,25 +866,20 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
             continue
 
         fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
+        # ✅ 이 줄에서 마지막 0/1 붙임
         flag = 1 if (e_val is not None and e_val > 0.0) else 0
         lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail},{flag}')
 
         if len(lines_out) >= MAX_LINES:
             break
 
-    # 패딩
+    # ✅ 패딩도 11필드 유지
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
-              "!***************************************************************...****************************************************************\n"
-              "!*\n"
-              f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-              "!\n"
-              "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4, ExtrudeFlag\n"
-              "!\n"
-              "!***************************************************************...****************************************************************\n")
+              "! ... \n")
     cnt_str = str(MAX_LINES)
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
     body = ""
@@ -898,6 +888,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
         body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
+
 
 st.sidebar.markdown("---")
 if KEY_OK:
