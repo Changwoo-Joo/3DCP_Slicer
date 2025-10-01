@@ -902,7 +902,7 @@ if KEY_OK:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
                     gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
                 )
-                st.success("Rapid(MODX, cone1500 형식) 변환 완료")
+                st.success("Rapid(*.MODX) 변환 완료")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
