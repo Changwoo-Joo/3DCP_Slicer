@@ -761,32 +761,27 @@ def _fmt_ang(v: float) -> str:
     s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
+
+def _saturating_split(cur_ext: float, robot_part: float, ext_part: float, lo: float, hi: float):
+    """
+    Clamp external axis to [lo, hi] and spill overflow/underflow into robot_part
+    to preserve total delta. Returns (robot_part_adj, ext_part_adj, new_ext_value).
+    """
+    proposed = cur_ext + ext_part
+    lo_b, hi_b = (min(lo, hi), max(lo, hi))
+    if proposed < lo_b:
+        spill = proposed - lo_b  # negative spill back into robot
+        return robot_part + spill, ext_part - spill, lo_b
+    elif proposed > hi_b:
+        spill = proposed - hi_b  # positive spill back into robot
+        return robot_part + spill, ext_part - spill, hi_b
+    else:
+        return robot_part, ext_part, proposed
     if abs(a1 - a0) < 1e-12:
         return float(b0)
     t = (val - a0) / (a1 - a0)
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
     return float(b0 + t * (b1 - b0))
-
-def _prop_split(delta: float, in0: float, in1: float, out0: float, out1: float):
-    """
-    Proportionally split 'delta' between robot-axis and external-axis using span magnitudes.
-    - Robot part = delta * |in_span| / (|in_span| + |out_span|)
-    - External part = delta * |out_span| / (|in_span| + |out_span|) * dir_sign
-    - dir_sign flips when input and output spans have opposite directions.
-    Returns (robot_part, ext_part).
-    """
-    span_in = abs(float(in1) - float(in0))
-    span_out = abs(float(out1) - float(out0))
-    total = span_in + span_out
-    if total <= 1e-12 or span_out <= 1e-12:
-        return float(delta), 0.0
-    same_dir = ((in1 >= in0 and out1 >= out0) or (in1 <= in0 and out1 <= out0))
-    robot_part = float(delta) * (span_in / total)
-    ext_part   = float(delta) * (span_out / total)
-    if not same_dir:
-        ext_part = -ext_part
-    return robot_part, ext_part
-
 
 # ---- 교정된 기본 프리셋 ----
 DEFAULT_PRESET = {
@@ -875,131 +870,41 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                              preset: Dict[str, Any]) -> str:
-    """
-    Convert G-code to MODX lines with mapping presets.
-    Rules (per user request):
-      - A1, A2: keep ABSOLUTE linear mapping from X/Y (NO proportional split).
-      - A3: apply PROPORTIONAL SPLIT with Z (robot Z + A3 parts sum to original ΔZ).
-      - A4: if preset places A4_out on X or Y, apply PROPORTIONAL SPLIT with that axis
-            (robot axis + A4 parts sum to original ΔX or ΔY). If no A4_out, keep robot axis only.
-    All other UI / behaviors remain unchanged.
-    """
+    """프리셋 기반 XYZ->A1..A4 매핑 (A4 Jump 기능 제거 버전)."""
     lines_out = []
+    cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-
-    # Select preset block
-    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-    P = preset.get(key, {}) if key is not None else {}
-
-    def gi(d: Dict[str, Any], path: list, default: float) -> float:
-        try:
-            cur = d
-            for k in path[:-1]:
-                cur = cur[k]
-            return float(cur[path[-1]])
-        except Exception:
-            return float(default)
-
-    # Input spans
-    x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
-    y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
-    z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
-    # Output spans
-    a1_0, a1_1 = gi(P, ["X","A1_out",0], 0.0), gi(P, ["X","A1_out",1], 0.0)
-    a2_0, a2_1 = gi(P, ["Y","A2_out",0], 0.0), gi(P, ["Y","A2_out",1], 0.0)
-    a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
-
-    # A4 attachment (X or Y)
-    a4_on_x = "A4_out" in P.get("X", {})
-    a4_on_y = "A4_out" in P.get("Y", {})
-    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
-    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
-
-    # State (absolute robot pos & external axes)
-    have_prev = False
-    prev_x = prev_y = prev_z = 0.0
-
-    rob_x = rob_y = rob_z = 0.0
-    cur_a1 = cur_a2 = cur_a3 = cur_a4 = 0.0
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # Parse absolute XYZ in this line (keep previous for missing components)
-        cx, cy, cz = prev_x, prev_y, prev_z
-        has_any = False
-        for p in t.split():
+        parts = t.split()
+        has_xyz = False
+        for p in parts:
             if p.startswith("X"):
-                try: cx = float(p[1:]); has_any = True
+                try: cur_x = float(p[1:]); has_xyz = True
                 except: pass
             elif p.startswith("Y"):
-                try: cy = float(p[1:]); has_any = True
+                try: cur_y = float(p[1:]); has_xyz = True
                 except: pass
             elif p.startswith("Z"):
-                try: cz = float(p[1:]); has_any = True
+                try: cur_z = float(p[1:]); has_xyz = True
                 except: pass
-        if not has_any:
+        if not has_xyz:
             continue
 
-        if not have_prev:
-            # Initial anchor: robot matches current point;
-            # A1/A2 absolute linear; A3/A4 anchored to absolute linear for continuity.
-            rob_x, rob_y, rob_z = cx, cy, cz
-            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)  # A1 ABS-only
-            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)  # A2 ABS-only
-            cur_a3 = _linmap(cz, z0, z1, a3_0, a3_1)  # anchor
-            if a4_on_x:
-                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y:
-                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
-            else:
-                cur_a4 = 0.0
-            have_prev = True
-        else:
-            dx, dy, dz = cx - prev_x, cy - prev_y, cz - prev_z
+        a1, a2, a3, a4 = map_axes_from_xyz_with_preset(cur_x, cur_y, cur_z, rz, preset)
 
-            # X axis movement: A1 remains ABS-only; if A4 is on X, split X with A4.
-            if abs(dx) > 0:
-                if a4_on_x:
-                    rdx, a4dx = _prop_split(dx, x0, x1, a4x_0, a4x_1)
-                    rob_x += rdx
-                    cur_a4 += a4dx
-                else:
-                    rob_x += dx
-            # A1 is recalculated ABS from final X
-            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)
-
-            # Y axis movement: A2 remains ABS-only; if A4 on Y, split with A4.
-            if abs(dy) > 0:
-                if a4_on_y:
-                    rdy, a4dy = _prop_split(dy, y0, y1, a4y_0, a4y_1)
-                    rob_y += rdy
-                    cur_a4 += a4dy
-                else:
-                    rob_y += dy
-            # A2 is recalculated ABS from final Y
-            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)
-
-            # Z axis movement: split Z with A3.
-            if abs(dz) > 0:
-                rdz, a3dz = _prop_split(dz, z0, z1, a3_0, a3_1)
-                rob_z += rdz
-                cur_a3 += a3dz
-            # (Do not overwrite cur_a3 with absolute mapping; keep accumulated split.)
-
-        fx, fy, fz = _fmt_pos(rob_x), _fmt_pos(rob_y), _fmt_pos(rob_z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(cur_a1), _fmt_pos(cur_a2), _fmt_pos(cur_a3), _fmt_pos(cur_a4)
-        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+        fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
 
         if len(lines_out) >= MAX_LINES:
             break
-
-        prev_x, prev_y, prev_z = cx, cy, cz
 
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
@@ -1011,7 +916,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2 absolute-mapped; A3/A4 are proportional-split per preset spans.\n"
+              "!*** A-axes mapped by editable presets (A4 axis auto-selected by preset A4_out on X or Y).\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1022,7 +927,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
-
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
