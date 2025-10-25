@@ -709,230 +709,12 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # z 살짝 벌려서 단면 안정화
+    # Z 아주 미세 확장 (절단면 인식)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
-
-# =========================
-# Rapid(MODX) - Mapping Presets + Converter
-# =========================
-def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
-def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
-
-def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
-    if abs(a1 - a0) < 1e-12:
-        return float(b0)
-    t = (val - a0) / (a1 - a0)
-    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-    return float(b0 + t * (b1 - b0))
-
-# ---- 프리셋 (요청값 반영) ----
-DEFAULT_PRESET = {
-    "0": {
-        "X": {"in": [0.0, 2000.0],     "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
-        "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
-        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
-    },
-    "90": {
-        "X": {"in": [0.0, -5000.0],    "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [1000.0, 3000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
-    },
-    "-90": {
-        "X": {"in": [0.0, -5000.0],     "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 2200.0],      "A3_out": [   0.0, 1000.0]},
-    },
-}
-
-def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
-    return json.loads(json.dumps(p))
-
-# 세션 프리셋
-if "mapping_preset" not in st.session_state:
-    st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
-
-# ===== 유틸: 축 범위 =====
-def _axis_ranges(P_axis: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
-    """입력(in) 구간 signed range, 출력(A#_out) signed range dict."""
-    in0, in1 = float(P_axis["in"][0]), float(P_axis["in"][1])
-    in_rng = in1 - in0
-    outs = {}
-    for k in ("A1_out", "A2_out", "A3_out", "A4_out"):
-        if k in P_axis:
-            o0, o1 = float(P_axis[k][0]), float(P_axis[k][1])
-            outs[k] = o1 - o0
-    return in_rng, outs
-
-# =========================
-# G-code → MODX 변환
-#   - A1,A2: 선형(절대) 매핑
-#   - A3:    Z축과 비례분해 (누적)
-#   - A4:    (Rz별로 연결된 X 또는 Y)와 비례분해 (누적)
-# =========================
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
-MAX_LINES = 64000
-
-def _extract_xyz_lines_count(gcode_text: str) -> int:
-    cnt = 0
-    for raw in gcode_text.splitlines():
-        t = raw.strip()
-        if not (t.startswith(("G0","G00","G1","G01"))):
-            continue
-        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
-        if has_xyz:
-            cnt += 1
-    return cnt
-
-def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
-                             preset: Dict[str, Any]) -> str:
-    """
-    - 로봇 좌표(X,Y,Z): 비례분해가 필요한 축(X/Y의 A4 연결, Z의 A3 연결)에서는 '누적 분해'로 업데이트.
-      (즉, Δ를 |in|+|out|으로 나눠 로봇과 A#로 배분하여 합이 Δ가 되도록)
-    - A1, A2: 절대값을 선형 매핑 (비례분해 없음, '참여'하지만 로봇 몫과 합 분배하지 않음)
-    - A3, A4: 비례분해(누적)
-    """
-    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-    P = preset.get(key, preset["0"])
-
-    # 프리셋 범위
-    X_in_rng, X_outs = _axis_ranges(P["X"])
-    Y_in_rng, Y_outs = _axis_ranges(P["Y"])
-    Z_in_rng, Z_outs = _axis_ranges(P["Z"])
-
-    # A4가 연결된 입력축 결정 (Y 우선, 없으면 X)
-    a4_bind = None  # ('X' or 'Y', in_rng, out_rng)
-    if "A4_out" in Y_outs:
-        a4_bind = ("Y", Y_in_rng, Y_outs["A4_out"])
-    elif "A4_out" in X_outs:
-        a4_bind = ("X", X_in_rng, X_outs["A4_out"])
-
-    # A3 범위
-    a3_out_rng = Z_outs.get("A3_out", 0.0)
-
-    # 누적 상태 (로봇)
-    pos_X = 0.0
-    pos_Y = 0.0
-    pos_Z = 0.0
-    # 누적 상태 (외부축)
-    pos_A4 = 0.0
-    pos_A3 = 0.0
-
-    # A1,A2는 '절대' 선형 매핑(누적 아님)
-    def a1_from_abs_x(abs_x: float) -> float:
-        a1_0, a1_1 = float(P["X"]["A1_out"][0]), float(P["X"]["A1_out"][1])
-        x0, x1 = float(P["X"]["in"][0]), float(P["X"]["in"][1])
-        return _linmap(abs_x, x0, x1, a1_0, a1_1)
-
-    def a2_from_abs_y(abs_y: float) -> float:
-        a2_0, a2_1 = float(P["Y"]["A2_out"][0]), float(P["Y"]["A2_out"][1])
-        y0, y1 = float(P["Y"]["in"][0]), float(P["Y"]["in"][1])
-        return _linmap(abs_y, y0, y1, a2_0, a2_1)
-
-    # 각 라인 처리
-    lines_out = []
-    prev_cmd_x = 0.0
-    prev_cmd_y = 0.0
-    prev_cmd_z = 0.0
-    frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-
-    for raw in gcode_text.splitlines():
-        t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01")):
-            continue
-
-        # 현재 G코드 절대 좌표
-        cur_x = prev_cmd_x
-        cur_y = prev_cmd_y
-        cur_z = prev_cmd_z
-
-        parts = t.split()
-        has_xyz = False
-        for p in parts:
-            if p.startswith("X"):
-                try: cur_x = float(p[1:]); has_xyz = True
-                except: pass
-            elif p.startswith("Y"):
-                try: cur_y = float(p[1:]); has_xyz = True
-                except: pass
-            elif p.startswith("Z"):
-                try: cur_z = float(p[1:]); has_xyz = True
-                except: pass
-        if not has_xyz:
-            continue
-
-        # Δ지령
-        dX = cur_x - prev_cmd_x
-        dY = cur_y - prev_cmd_y
-        dZ = cur_z - prev_cmd_z
-
-        # ---- A4 비례분해 (X 또는 Y 중 연결된 축) ----
-        if a4_bind is not None:
-            axis_name, in_rng, out_rng = a4_bind
-            mag_in = abs(in_rng)
-            mag_out = abs(out_rng)
-            denom = mag_in + mag_out if (mag_in + mag_out) > 1e-12 else 1.0
-            w_in = mag_in / denom
-            w_out = mag_out / denom
-
-            if axis_name == "X":
-                pos_X += dX * w_in
-                pos_A4 += dX * w_out
-            else:  # 'Y'
-                pos_Y += dY * w_in
-                pos_A4 += dY * w_out
-        else:
-            # A4 없으면 로봇이 그대로 전부 수행
-            pos_X += dX
-            pos_Y += dY
-
-        # ---- A3 비례분해 (Z) ----
-        mag_in_z = abs(Z_in_rng)
-        mag_out_z = abs(a3_out_rng)
-        denom_z = mag_in_z + mag_out_z if (mag_in_z + mag_out_z) > 1e-12 else 1.0
-        w_in_z = mag_in_z / denom_z
-        w_out_z = mag_out_z / denom_z
-        pos_Z += dZ * w_in_z
-        pos_A3 += dZ * w_out_z
-
-        # ---- A1, A2는 절대값 선형 매핑 ----
-        a1_abs = a1_from_abs_x(cur_x)
-        a2_abs = a2_from_abs_y(cur_y)
-
-        # 출력 포맷
-        fx, fy, fz = _fmt_pos(pos_X), _fmt_pos(pos_Y), _fmt_pos(pos_Z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(a1_abs), _fmt_pos(a2_abs), _fmt_pos(pos_A3), _fmt_pos(pos_A4)
-        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
-
-        prev_cmd_x, prev_cmd_y, prev_cmd_z = cur_x, cur_y, cur_z
-        if len(lines_out) >= MAX_LINES:
-            break
-
-    while len(lines_out) < MAX_LINES:
-        lines_out.append(PAD_LINE)
-
-    ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-    header = ("MODULE Converted\n"
-              "!***************************************************************************************************************\n"
-              "!*  Gcode→RAPID converter\n"
-              "!*  A1/A2: linear absolute mapping (no proportional split)\n"
-              "!*  A3:    proportional split with Z\n"
-              "!*  A4:    proportional split with bound axis (X@0° or Y@±90°)\n"
-              f"!*  Generated {ts}\n"
-              "!***************************************************************************************************************\n")
-    cnt_str = str(MAX_LINES)
-    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-    body = ""
-    for i, ln in enumerate(lines_out):
-        q = f'"{ln}"'
-        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-    close_decl = "];\nENDMODULE\n"
-    return header + open_decl + body + close_decl
 
 # =========================
 # Slicing Actions
@@ -970,277 +752,256 @@ if st.session_state.get("gcode_text"):
                                file_name=f"{base}.gcode", mime="text/plain",
                                use_container_width=True)
 
-# ---- 사이드바: Rapid UI ----
-st.sidebar.markdown("---")
-if KEY_OK:
-    if st.sidebar.button("Generate Rapid", use_container_width=True):
-        st.session_state.show_rapid_panel = True
-
-    if st.session_state.show_rapid_panel:
-        with st.sidebar.expander("Rapid Settings", expanded=True):
-            st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
-            st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
-
-            rz_preset = st.selectbox("Rz (deg) preset", options=[0.0, 90.0, -90.0],
-                                     index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
-            st.session_state.rapid_rz = float(rz_preset)
-
-        # ---- Mapping Presets UI ----
-        with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
-            st.caption("각 Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A1/A2/A3/A4 출력 구간을 편집하세요.")
-
-            # 불러오기
-            up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
-            if up_json is not None:
-                try:
-                    loaded = json.loads(up_json.read().decode("utf-8"))
-                    if isinstance(loaded, dict) and all(k in loaded for k in ["0","90","-90"]):
-                        st.session_state.mapping_preset = loaded
-                        st.success("프리셋을 불러왔습니다.")
-                    else:
-                        st.error("프리셋 형식이 올바르지 않습니다. (keys: '0','90','-90')")
-                except Exception as e:
-                    st.error(f"프리셋 로드 실패: {e}")
-
-            # 편집 폼
-            def edit_axis(title_key: str, axis_key: str):
-                st.write(f"**Rz = {title_key}° — {axis_key}**")
-                cols = st.columns(4)
-                P = st.session_state.mapping_preset[title_key][axis_key]
-
-                # 입력 구간
-                in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(P["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
-                in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(P["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
-                P["in"] = [float(in0), float(in1)]
-
-                # 출력 (축별로 다름)
-                if axis_key == "X":
-                    a1_0 = cols[2].number_input("A1_out[0]", value=float(P.get("A1_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
-                    a1_1 = cols[3].number_input("A1_out[1]", value=float(P.get("A1_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
-                    P["A1_out"] = [float(a1_0), float(a1_1)]
-
-                    cols2 = st.columns(2)
-                    a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
-                    a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
-                    if "A4_out" in P:
-                        P["A4_out"] = [float(a4_0), float(a4_1)]
-
-                elif axis_key == "Y":
-                    a2_0 = cols[2].number_input("A2_out[0]", value=float(P.get("A2_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a20")
-                    a2_1 = cols[3].number_input("A2_out[1]", value=float(P.get("A2_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a21")
-                    P["A2_out"] = [float(a2_0), float(a2_1)]
-
-                    cols2 = st.columns(2)
-                    a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
-                    a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
-                    if "A4_out" in P:
-                        P["A4_out"] = [float(a4_0), float(a4_1)]
-
-                else:  # Z
-                    a3_0 = cols[2].number_input("A3_out[0]", value=float(P.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
-                    a3_1 = cols[3].number_input("A3_out[1]", value=float(P.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
-                    P["A3_out"] = [float(a3_0), float(a3_1)]
-
-            for key_title in ["0", "90", "-90"]:
-                st.markdown(f"---\n**Rz = {key_title}°**")
-                edit_axis(key_title, "X")
-                edit_axis(key_title, "Y")
-                edit_axis(key_title, "Z")
-
-            # 저장(다운로드)
-            preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-            st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
-
-        # ---- 저장 버튼 ----
-        gtxt = st.session_state.get("gcode_text")
-        over = None
-        if gtxt is not None:
-            xyz_count = _extract_xyz_lines_count(gtxt)
-            over = (xyz_count > MAX_LINES)
-
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            st.session_state.rapid_text = gcode_to_cone1500_module(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset
-            )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
-
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
-            )
-
 # =========================
-# Layout (Center + Right)
+# Rapid(MODX) - Mapping Presets + Converter
 # =========================
-center_col, right_col = st.columns([14, 3], gap="large")
+def _fmt_pos(v: float) -> str:
+    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
+def _fmt_ang(v: float) -> str:
+    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
-segments = None
-total_segments = 0
-if st.session_state.get("paths_items") is not None:
-    segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
-    total_segments = len(segments)
+def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
+    if abs(a1 - a0) < 1e-12:
+        return float(b0)
+    t = (val - a0) / (a1 - a0)
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return float(b0 + t * (b1 - b0))
 
-with right_col:
-    st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
-    if st.session_state.get("ui_banner"):
-        st.success(st.session_state.ui_banner)
+def _prop_split(delta: float, in0: float, in1: float, out0: float, out1: float) -> Tuple[float, float]:
+    """비례분해:
+    - 입력축(in)의 스팬과 출력축(out)의 스팬의 합으로 나눠 delta를 분배.
+    - 반환: (robot_component, external_axis_component)
+    - 스팬 방향이 반대여도 외부축 성분의 부호가 자연스럽게 맞춰짐.
+    """
+    span_in = abs(float(in1) - float(in0))
+    span_out = abs(float(out1) - float(out0))
+    total = span_in + span_out
+    if total <= 1e-12 or span_out <= 1e-12:
+        return float(delta), 0.0
+    same_dir = ((in1 >= in0 and out1 >= out0) or (in1 <= in0 and out1 <= out0))
+    robot_part = float(delta) * (span_in / total)
+    ext_part   = float(delta) * (span_out / total)
+    if not same_dir:
+        ext_part = -ext_part
+    return robot_part, ext_part
 
-    st.subheader("View Options")
-    apply_offsets = st.checkbox(
-        "Apply layer width",
-        value=bool(st.session_state.get("apply_offsets_flag", False)),
-        help="Trim/Layer Width (mm)를 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
-        disabled=(segments is None)
-    )
-    st.session_state.apply_offsets_flag = bool(apply_offsets)
+# ---- 교정된 기본 프리셋 ----
+DEFAULT_PRESET = {
+    "0": {
+        # 0°: X -> A1, A4 / Y -> A2 / Z -> A3
+        "X": {"in": [0.0, 2000.0],     "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
+        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
+    },
+    "90": {
+        # +90°: X -> A1 / Y -> A2, A4 / Z -> A3
+        "X": {"in": [0.0, -5000.0],    "A1_out": [   0.0, 4000.0]},
+        "Y": {"in": [1000.0, 3000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
+    },
+    "-90": {
+        # −90°: X -> A1 / Y -> A2(0→500), A4 / Z -> A3
+        "X": {"in": [0.0, -5000.0],     "A1_out": [   0.0, 4000.0]},
+        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 2200.0],      "A3_out": [   0.0, 1000.0]},
+    },
+}
 
-    include_z_climb = st.checkbox(
-        "Include Z-climb offsets",
-        value=True,
-        help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
+def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(p))
 
-    emphasize_caps = st.checkbox(
-        "Emphasize caps",
-        value=False,
-        help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
+# 세션에 프리셋 보관
+if "mapping_preset" not in st.session_state:
+    st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-    if e_on:
-        show_dotted = st.checkbox("Show dotted travel lines", value=True, disabled=(segments is None))
-        travel_mode = "dotted" if show_dotted else "hidden"
+def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
+    """A4_out 이 어느 축(X/Y)에 있든 해당 축 입력구간으로 선형 매핑."""
+    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+    if key is None or key not in preset:
+        return 0.0, 0.0, 0.0, 0.0
+    P = preset[key]
+
+    def gi(d: Dict[str, Any], path: List[Any], default: float) -> float:
+        cur = d
+        try:
+            for k in path[:-1]:
+                cur = cur[k]
+            return float(cur[path[-1]])
+        except Exception:
+            return float(default)
+
+    # 입력 구간
+    x0 = gi(P, ["X", "in", 0], 0.0); x1 = gi(P, ["X", "in", 1], 1.0)
+    y0 = gi(P, ["Y", "in", 0], 0.0); y1 = gi(P, ["Y", "in", 1], 1.0)
+    z0 = gi(P, ["Z", "in", 0], 0.0); z1 = gi(P, ["Z", "in", 1], 1.0)
+
+    # 출력 구간
+    a1_0 = gi(P, ["X", "A1_out", 0], 0.0); a1_1 = gi(P, ["X", "A1_out", 1], 0.0)
+    a2_0 = gi(P, ["Y", "A2_out", 0], 0.0); a2_1 = gi(P, ["Y", "A2_out", 1], 0.0)
+    a3_0 = gi(P, ["Z", "A3_out", 0], 0.0); a3_1 = gi(P, ["Z", "A3_out", 1], 0.0)
+
+    # A4는 X 또는 Y 중 "A4_out"이 존재하는 축을 자동 선택
+    a4_axis = None
+    if "A4_out" in P.get("Y", {}):
+        a4_axis = ("Y", y, y0, y1, gi(P, ["Y", "A4_out", 0], 0.0), gi(P, ["Y", "A4_out", 1], 0.0))
+    elif "A4_out" in P.get("X", {}):
+        a4_axis = ("X", x, x0, x1, gi(P, ["X", "A4_out", 0], 0.0), gi(P, ["X", "A4_out", 1], 0.0))
+
+    a1 = _linmap(x, x0, x1, a1_0, a1_1)
+    a2 = _linmap(y, y0, y1, a2_0, a2_1)
+    a3 = _linmap(z, z0, z1, a3_0, a3_1)
+    if a4_axis is None:
+        a4 = 0.0
     else:
-        st.checkbox("Show dotted travel lines", value=False, disabled=True,
-                    help="Insert E values OFF이면 travel은 실선으로 표기")
-        travel_mode = "solid"
-    prev_mode = st.session_state.get("paths_travel_mode", "solid")
-    st.session_state.paths_travel_mode = travel_mode
+        _, val, i0, i1, o0, o1 = a4_axis
+        a4 = _linmap(val, i0, i1, o0, o1)
 
-    dims_placeholder = st.empty()
-    st.markdown("---")
+    return a1, a2, a3, a4
 
-    if segments is None or total_segments == 0:
-        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
-        scrub = None
-        scrub_num = None
-    else:
-        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
-                          help="해당 세그먼트까지 누적 표시")
-        scrub_num = st.number_input("행 번호", 0, int(total_segments),
-                                    int(default_val), 1,
-                                    help="표시할 최종 세그먼트(행) 번호")
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+MAX_LINES = 64000
 
-    st.markdown("</div>", unsafe_allow_html=True)
+def _extract_xyz_lines_count(gcode_text: str) -> int:
+    cnt = 0
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not (t.startswith(("G0","G00","G1","G01"))):
+            continue
+        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
+        if has_xyz:
+            cnt += 1
+    return cnt
 
-# ---- 계산/버퍼 구성 ----
-if segments is not None and total_segments > 0:
-    default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    target = default_val
-    if 'scrub' in locals() and scrub is not None and scrub != default_val:
-        target = int(scrub)
-    if 'scrub_num' in locals() and scrub_num is not None and scrub_num != default_val:
-        target = int(scrub_num)
-    target = int(clamp(target, 0, total_segments))
 
-    DRAW_LIMIT = 15000
-    draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
+                             preset: Dict[str, Any]) -> str:
+    """
+    프리셋 기반 XYZ->A1..A4 매핑
+    - A1/A2: 절대 선형 매핑 (비례분해 금지)
+    - A3: Z 이동을 Z.in vs A3_out 스팬으로 비례분해하여 로봇Z와 A3에 배분
+    - A4: 프리셋에서 A4_out이 붙은 축(X 또는 Y)의 이동을 해당 축 in vs A4_out 스팬으로 비례분해
+    결과적으로, (로봇 이동 + 외부축 이동)이 원래 G코드 이동량과 정확히 동일해지도록 보장.
+    """
+    lines_out = []
+    frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
-    built = st.session_state.paths_anim_buf["built_upto"]
-    prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-    mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+    # Rz 키
+    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+    P = preset.get(key, {}) if key is not None else {}
 
-    if mode_changed or (draw_stride != prev_stride) or (target < built):
-        rebuild_buffers_to(segments, target, stride=draw_stride)
-    elif target > built:
-        append_segments_to_buffers(segments, built, target, stride=draw_stride)
+    def gi(d: Dict[str, Any], path: List[Any], default: float) -> float:
+        try:
+            cur = d
+            for k in path[:-1]:
+                cur = cur[k]
+            return float(cur[path[-1]])
+        except Exception:
+            return float(default)
 
-    st.session_state.paths_scrub = target
+    # 입력 구간
+    x0, x1 = gi(P, ["X", "in", 0], 0.0), gi(P, ["X", "in", 1], 1.0)
+    y0, y1 = gi(P, ["Y", "in", 0], 0.0), gi(P, ["Y", "in", 1], 1.0)
+    z0, z1 = gi(P, ["Z", "in", 0], 0.0), gi(P, ["Z", "in", 1], 1.0)
 
-    if bool(st.session_state.get("apply_offsets_flag", False)):
-        half_w = float(trim_dist) * 0.5
-        compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-        st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-        add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-        bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
-        dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
-    else:
-        st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
-        emphasize_caps = False
-        dims_placeholder.markdown("_Offsets OFF_")
+    # 출력 구간
+    a1_0, a1_1 = gi(P, ["X", "A1_out", 0], 0.0), gi(P, ["X", "A1_out", 1], 0.0)
+    a2_0, a2_1 = gi(P, ["Y", "A2_out", 0], 0.0), gi(P, ["Y", "A2_out", 1], 0.0)
+    a3_0, a3_1 = gi(P, ["Z", "A3_out", 0], 0.0), gi(P, ["Z", "A3_out", 1], 0.0)
 
-# ---- 중앙: 탭 뷰어 ----
-with center_col:
-    tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
+    # A4가 X에 붙었는지, Y에 붙었는지
+    a4_on_x = ("A4_out" in P.get("X", {}))
+    a4_on_y = ("A4_out" in P.get("Y", {}))
+    a4x_0, a4x_1 = (gi(P, ["X", "A4_out", 0], 0.0), gi(P, ["X", "A4_out", 1], 0.0)) if a4_on_x else (0.0, 0.0)
+    a4y_0, a4y_1 = (gi(P, ["Y", "A4_out", 0], 0.0), gi(P, ["Y", "A4_out", 1], 0.0)) if a4_on_y else (0.0, 0.0)
 
-    with tab_paths:
-        if segments is not None and total_segments > 0:
-            if "paths_base_fig" not in st.session_state:
-                st.session_state.paths_base_fig = make_base_fig(height=820)
-            fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(
-                fig,
-                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
-                show_caps=bool(emphasize_caps)
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    # 누적 상태
+    have_prev = False
+    prev_x = prev_y = prev_z = 0.0
 
-            tm = st.session_state.paths_travel_mode
-            if not e_on:
-                travel_lbl = "Travel: solid (Insert E OFF)"
+    rob_x = rob_y = rob_z = 0.0
+    cur_a1 = cur_a2 = cur_a3 = cur_a4 = 0.0
+
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not t or not t.startswith(("G0","G00","G1","G01")):
+            continue
+
+        # 현재 명령에서 지정된 좌표(절대, G90)
+        cx = prev_x
+        cy = prev_y
+        cz = prev_z
+        parts = t.split()
+        has_any = False
+        for p in parts:
+            if p.startswith("X"):
+                try: cx = float(p[1:]); has_any = True
+                except: pass
+            elif p.startswith("Y"):
+                try: cy = float(p[1:]); has_any = True
+                except: pass
+            elif p.startswith("Z"):
+                try: cz = float(p[1:]); has_any = True
+                except: pass
+        if not has_any:
+            continue
+
+        if not have_prev:
+            # 첫 점: 로봇은 위치를 그대로 맞추고, A1/A2는 절대 선형, A3/A4는 초기 절대 선형으로 정렬
+            rob_x, rob_y, rob_z = cx, cy, cz
+            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)
+            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)
+            cur_a3 = _linmap(cz, z0, z1, a3_0, a3_1)
+            if a4_on_x:
+                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y:
+                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
             else:
-                travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
-            st.caption(
-                f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-                + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
-                + (" | Caps 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
-                + (f" | {travel_lbl}")
-                + (f" | Viz stride: ×{st.session_state.paths_anim_buf.get('stride',1)}"
-                   if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
-            )
+                cur_a4 = 0.0
+            have_prev = True
         else:
-            st.info("슬라이싱을 실행하세요.")
+            dx = cx - prev_x
+            dy = cy - prev_y
+            dz = cz - prev_z
 
-    with tab_stl:
-        if st.session_state.get("mesh") is not None:
-            st.plotly_chart(
-                plot_trimesh(st.session_state.mesh, height=820),
-                use_container_width=True,
-                key="stl_chart",
-                config={"displayModeBar": False}
-            )
-        else:
-            st.info("STL을 업로드하세요.")
+            # X: A1은 비례분해 금지(절대 선형), A4가 X에 붙어 있으면 X<->A4 비례분해
+            if abs(dx) > 0:
+                if a4_on_x:
+                    rob_dx, a4_dx = _prop_split(dx, x0, x1, a4x_0, a4x_1)
+                    rob_x += rob_dx
+                    cur_a4 += a4_dx
+                else:
+                    rob_x += dx
+            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)
 
-    with tab_gcode:
-        if st.session_state.get("gcode_text"):
-            st.code(st.session_state.gcode_text, language="gcode")
-        else:
-            st.info("G-code를 생성하세요.")
+            # Y: A2는 비례분해 금지(절대 선형), A4가 Y에 붙어 있으면 Y<->A4 비례분해
+            if abs(dy) > 0:
+                if a4_on_y:
+                    rob_dy, a4_dy = _prop_split(dy, y0, y1, a4y_0, a4y_1)
+                    rob_y += rob_dy
+                    cur_a4 += a4_dy
+                else:
+                    rob_y += dy
+            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)
 
-# 키가 없거나 만료 시 안내
-if not KEY_OK:
-    st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+            # Z: A3만 비례분해
+            if abs(dz) > 0:
+                rob_dz, a3_dz = _prop_split(dz, z0, z1, a3_0, a3_1)
+                rob_z += rob_dz
+                cur_a3 += a3_dz
+
+        # 한 줄 출력
+        fx, fy, fz = _fmt_pos(rob_x), _fmt_pos(rob_y), _fmt_pos(rob_z)
+        fa1, fa2, fa3, fa4 = _fmt_pos(cur_a1), _fmt_pos(cur_a2), _fmt_pos(cur_a3), _fmt_pos(cur_a4)
+        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+
+        if len(lines_out) >= MAX_LINES:
+            break
+
+        prev_x, prev_y, prev_z = cx, cy, cz
+
+    if len(lines_out) < MAX_LINES:
+        pad = MAX_LINES - len(lines_out)
+        lines_out.extend([PAD_LINE] * pad)
+
+    return "\n".join(lines_out)
