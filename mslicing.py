@@ -50,7 +50,7 @@ st.markdown(
 
     /* 외부치수: 줄바꿈 확실히 */
     .dims-block {
-      white-space: pre-line;  /* \\n을 실제 줄바꿈으로 렌더 */
+      white-space: pre-line;
       line-height: 1.3;
       font-variant-numeric: tabular-nums;
     }
@@ -86,9 +86,6 @@ def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     return seg
 
 def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
-    """
-    폐루프 길이를 기준으로 꼬리에서 trim_distance 제거 (open polyline 반환).
-    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
         return ensure_open_ring(pts)
@@ -122,7 +119,6 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
-    """XY 기준 RDP 간소화(끝점 보존)."""
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
@@ -243,7 +239,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 g.append("G01 E0")
 
             if i_seg == 0:
-                prev_start_xy = start[:2]  # auto_start 기준
+                prev_start_xy = start[:2]
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -289,7 +285,6 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
-        # 레이어 기준 시작점
         if auto_start and prev_start_xy is not None:
             ref_pt_layer = prev_start_xy
         else:
@@ -308,13 +303,11 @@ def compute_slice_paths_with_travel(
         if not layer_polys:
             continue
 
-        # 레이어 간 travel
         first_poly_start = layer_polys[0][0]
         if prev_layer_last_end is not None:
             travel = np.vstack([prev_layer_last_end, first_poly_start])
             all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
-        # 같은 레이어 내: 경로 + 다음 폐구간으로 이동
         for i_seg in range(len(layer_polys)):
             poly = layer_polys[i_seg]
             if e_on:
@@ -338,8 +331,7 @@ def compute_slice_paths_with_travel(
     return all_items
 
 # === items -> segments ===
-def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
-                      e_on: bool
+def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
@@ -402,11 +394,7 @@ def rebuild_buffers_to(segments, upto, stride=1):
         append_segments_to_buffers(segments, 0, upto, stride=stride)
 
 def compute_offsets_into_buffers(
-    segments,
-    upto,
-    half_width,
-    include_travel_climb: bool = False,
-    climb_z_thresh: float = 1e-6
+    segments, upto, half_width, include_travel_climb: bool = False, climb_z_thresh: float = 1e-6
 ):
     buf = st.session_state.paths_anim_buf
     buf["off_l"] = {"x": [], "y": [], "z": []}
@@ -415,11 +403,9 @@ def compute_offsets_into_buffers(
         return
 
     prev_tan = None
-
     N = min(upto, len(segments))
     for i in range(N):
         p1, p2, is_travel, is_extruding = segments[i]
-
         use_this = False
         if (not is_travel) and is_extruding:
             use_this = True
@@ -498,7 +484,6 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
             buf["caps"]["y"].extend(ys.tolist() + [None])
             buf["caps"]["z"].extend(zs.tolist() + [None])
 
-    # Start cap
     p1, p2, _, _ = segments[first_idx]
     dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
@@ -506,7 +491,6 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
         n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         _append_arc((float(p1[0]), float(p1[1])), t_unit, n_unit, float(p1[2]), sign_t=-1.0, steps=samples)
 
-    # End cap
     p1, p2, _, _ = segments[last_idx]
     dx = float(p2[0] - p1[0]); dy = float(p2[1] - p1[1]); nrm = (dx*dx + dy*dy) ** 0.5
     if nrm > 1e-12:
@@ -516,23 +500,18 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
-    # 0: solid (중심 경로 실선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
-    # 1: dot (여정 점선)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
-    # 2: offset left (좌)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
-    # 3: offset right (우)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
-    # 4: caps emphasized (빨강)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
@@ -540,16 +519,6 @@ def make_base_fig(height=820) -> go.Figure:
                       height=height, margin=dict(l=0, r=0, t=10, b=0),
                       uirevision="keep", transition={'duration': 0})
     return fig
-
-def ensure_paths_fig(height=820):
-    fig = st.session_state.get("paths_base_fig")
-    ok = False
-    try:
-        ok = isinstance(fig, go.Figure) and (len(fig.data) >= 5)
-    except Exception:
-        ok = False
-    if not ok:
-        st.session_state.paths_base_fig = make_base_fig(height)
 
 def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
@@ -579,21 +548,17 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     ensure_traces(fig, want=5)
     buf = st.session_state.paths_anim_buf
 
-    # 중심 경로 컬러/굵기 동적 설정
     apply_on = bool(st.session_state.get("apply_offsets_flag", False))
     center_color = PATH_COLOR_LIGHT if apply_on else PATH_COLOR_DEFAULT
     fig.data[0].line.color = center_color
     fig.data[1].line.color = center_color
 
-    # 오프셋 트레이스(진한 회색 + 굵기 3)
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
     fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
 
-    # 메인 좌표 업데이트
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
 
-    # offsets
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
         fig.data[3].x = buf["off_r"]["x"]; fig.data[3].y = buf["off_r"]["y"]; fig.data[3].z = buf["off_r"]["z"]
@@ -601,7 +566,6 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
-    # caps 강조(빨강)
     if show_caps:
         fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
     else:
@@ -616,10 +580,8 @@ def _bbox_from_buffer(buf_dict):
             return None
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
-        return {
-            "x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
-            "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min,
-        }
+        return {"x_min": x_min, "x_max": x_max, "x_len": x_max - x_min,
+                "y_min": y_min, "y_max": y_max, "y_len": y_max - y_min}
     except Exception:
         return None
 
@@ -632,21 +594,18 @@ def _last_z_from_buffer(buf_dict):
         pass
     return None
 
-# ▶ HTML 줄바꿈 보장 (외부치수)
 def _fmt_dims_block_html(title, bbox, z_single: Optional[float]) -> str:
     if bbox is None:
         return f"<div class='dims-block'><b>{title}</b>\nX=(-)\nY=(-)\nZ=(-)</div>"
     xm, xM, xl = bbox["x_min"], bbox["x_max"], bbox["x_len"]
     ym, yM, yl = bbox["y_min"], bbox["y_max"], bbox["y_len"]
     z_txt = "-" if z_single is None else f"{z_single:.3f}"
-    return (
-        "<div class='dims-block'>"
-        f"<b>{title}</b>\n"
-        f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f})\n"
-        f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f})\n"
-        f"Z=({z_txt})"
-        "</div>"
-    )
+    return ("<div class='dims-block'>"
+            f"<b>{title}</b>\n"
+            f"X=({xm:.3f}→{xM:.3f}, Δ{xl:.3f})\n"
+            f"Y=({ym:.3f}→{yM:.3f}, Δ{yl:.3f})\n"
+            f"Z=({z_txt})"
+            "</div>")
 
 # =========================
 # Session init
@@ -676,7 +635,6 @@ if "paths_scrub" not in st.session_state:
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 
-# 우측 메시지(슬라이스/G-code 완료) 전용
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
@@ -760,9 +718,7 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # Z 축 미세 확장 (최대 Z 절단면 인식 보정)
-    scale_matrix = np.eye(4)
-    scale_matrix[2, 2] = 1.0000001
+    scale_matrix = np.eye(4); scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
@@ -781,16 +737,11 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
         e_on=e_on
     )
     st.session_state.paths_items = items
-
-    # 첫 화면에서 '최대'로 보이게
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
-
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
-
-    # 우측 View Options 상단 배너
     st.session_state.ui_banner = "Slicing complete"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
@@ -800,7 +751,6 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
-    # 중앙 성공 메시지 대신 우측 배너로만 표시
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
@@ -813,9 +763,24 @@ if st.session_state.get("gcode_text"):
 # Rapid(MODX)
 # =========================
 def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
+    s = f"{v:+.1f}"
+    sign = s[0]; intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(4)
+    return f"{sign}{intpart}.{dec}"
+
 def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1: ].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
+    s = f"{v:+.2f}"
+    sign = s[0]; intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(3)
+    return f"{sign}{intpart}.{dec}"
+
+# ---- 선형 매핑 유틸(양/음 순서 모두 지원 + 클램프) ----
+def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
+    if abs(a1 - a0) < 1e-12:
+        return float(b0)
+    t = (val - a0) / (a1 - a0)
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return float(b0 + t * (b1 - b0))
 
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
@@ -832,40 +797,75 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
+    """Rz 프리셋(0/90/-90)에 따라 A1~A4를 XYZ에서 선형 매핑하여 MODX 문자열 배열 생성"""
     lines_out = []
     cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-    tail = "+0000.0,+0000.0,+0000.0,+0000.0"
+
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
-        parts = t.split(); has_xyz = False
+        parts = t.split()
+        has_xyz = False
         for p in parts:
             if p.startswith("X"):
-                try: cur_x = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_x = float(p[1:]); has_xyz = True
+                except:
+                    pass
             elif p.startswith("Y"):
-                try: cur_y = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_y = float(p[1:]); has_xyz = True
+                except:
+                    pass
             elif p.startswith("Z"):
-                try: cur_z = float(p[1:]); has_xyz = True
-                except: pass
+                try:
+                    cur_z = float(p[1:]); has_xyz = True
+                except:
+                    pass
         if not has_xyz:
             continue
+
+        # ---- XYZ → A1~A4 매핑 (Rz 프리셋 기준) ----
+        if abs(rz - 0.0) < 1e-6:
+            a1 = _linmap(cur_x, 0.0, 2000.0, 1500.0,   0.0)   # X:0→2000  → A1:1500→0
+            a2 = _linmap(cur_y, -1500.0, 1500.0, 500.0,  0.0) # Y:-1500→+1500 → A2:500→0
+            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200  → A3:0→1000
+            a4 = _linmap(cur_x, 0.0, 2000.0,     0.0,  500.0) # X:0→2000  → A4:0→500
+        elif abs(rz - 90.0) < 1e-6:
+            a1 = _linmap(cur_x, 0.0, 5000.0,    0.0, 4000.0)  # X:0→5000 → A1:0→4000
+            a2 = _linmap(cur_y, 1000.0, 3000.0, 500.0,   0.0) # Y:+1000→+3000 → A2:500→0
+            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200 → A3:0→1000
+            a4 = _linmap(cur_x, 0.0, 5000.0,     0.0,  500.0) # X:0→5000 → A4:0→500
+        elif abs(rz + 90.0) < 1e-6:
+            a1 = _linmap(cur_x, 0.0, 5000.0,    0.0, 4000.0)  # X:0→5000 → A1:0→4000
+            a2 = _linmap(cur_y, -1000.0, -3000.0, 0.0, 500.0) # Y:-1000→-3000 → A2:0→500
+            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200 → A3:0→1000
+            a4 = _linmap(cur_x, 0.0, 5000.0,     0.0,  500.0) # X:0→5000 → A4:0→500
+        else:
+            # 기타 값(안전): 모두 0
+            a1 = a2 = a3 = a4 = 0.0
+
         fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
-        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{tail}')
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
+
+        line = f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}'
+        lines_out.append(line)
         if len(lines_out) >= MAX_LINES:
             break
+
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
+
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!***************************************************************...****************************************************************\n"
               "!*\n"
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
-              "!*** data3dp syntax: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+              "!*** A-axes are linearly mapped from XYZ depending on Rz preset (0/90/-90).\n"
               "!\n"
               "!***************************************************************...****************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -885,7 +885,17 @@ if KEY_OK:
         with st.sidebar.expander("Rapid Settings", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
-            st.session_state.rapid_rz = st.number_input("Rz (deg)", value=float(st.session_state.rapid_rz), step=0.1, format="%.2f")
+
+            # Rz 프리셋 선택 (0 / +90 / -90)
+            rz_preset = st.selectbox(
+                "Rz (deg) preset",
+                options=[0.0, 90.0, -90.0],
+                index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0),
+                help=("0°: X(0→2000)→A1(1500→0), A4(0→500); Y(-1500→+1500)→A2(500→0); Z(0→2200)→A3(0→1000)\n"
+                      "+90°: X(0→5000)→A1(0→4000), A4(0→500); Y(+1000→+3000)→A2(500→0); Z 동일\n"
+                      "-90°: X 동일→A1(0→4000), A4(0→500); Y(-1000→-3000)→A2(0→500); Z 동일")
+            )
+            st.session_state.rapid_rz = float(rz_preset)
 
             gtxt = st.session_state.get("gcode_text")
             over = None
@@ -900,9 +910,12 @@ if KEY_OK:
                 st.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
             elif save_rapid_clicked:
                 st.session_state.rapid_text = gcode_to_cone1500_module(
-                    gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz
+                    gtxt,
+                    rx=st.session_state.rapid_rx,
+                    ry=st.session_state.rapid_ry,
+                    rz=st.session_state.rapid_rz,
                 )
-                st.success("Rapid(*.MODX) 변환 완료")
+                st.success(f"Rapid(*.MODX) 변환 완료 (Rz = {st.session_state.rapid_rz:.2f}°)")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
@@ -917,21 +930,17 @@ if KEY_OK:
 # =========================
 # Center + Right 레이아웃
 # =========================
-# ► 오른쪽 폭을 기존보다 약 3/5 축소 느낌([14,3] ≈ 17.6%)
 center_col, right_col = st.columns([14, 3], gap="large")
 
-# 현재 슬라이스 세그먼트
 segments = None
 total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
 
-# ---- 우측 스크롤 패널 ----
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
 
-    # 우측 상단 배너 (Slicing complete / G-code ready)
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
@@ -985,13 +994,12 @@ with right_col:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
     default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     target = default_val
-    if scrub is not None and scrub != default_val:
+    if 'scrub' in locals() and scrub is not None and scrub != default_val:
         target = int(scrub)
-    if scrub_num is not None and scrub_num != default_val:
+    if 'scrub_num' in locals() and scrub_num is not None and scrub_num != default_val:
         target = int(scrub_num)
     target = int(clamp(target, 0, total_segments))
 
@@ -1009,17 +1017,11 @@ if segments is not None and total_segments > 0:
 
     st.session_state.paths_scrub = target
 
-    # 오프셋 + 전역 캡 + 외부치수(줄바꿈 보장, 영문 제거)
-    if apply_offsets:
+    if bool(st.session_state.get("apply_offsets_flag", False)):
         half_w = float(trim_dist) * 0.5
-        compute_offsets_into_buffers(
-            segments, target, half_w,
-            include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9
-        )
+        compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
         st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-        add_global_endcaps_into_buffers(
-            segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps)
-        )
+        add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
         bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
         z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
         dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
@@ -1031,13 +1033,13 @@ if segments is not None and total_segments > 0:
         emphasize_caps = False
         dims_placeholder.markdown("_Offsets OFF_")
 
-# ---- 중앙: 탭 뷰어 ----
 with center_col:
     tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
     with tab_paths:
         if segments is not None and total_segments > 0:
-            ensure_paths_fig(height=820)
+            if "paths_base_fig" not in st.session_state:
+                st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
             update_fig_with_buffers(
                 fig,
@@ -1079,6 +1081,5 @@ with center_col:
         else:
             st.info("G-code를 생성하세요.")
 
-# 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
