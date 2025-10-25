@@ -709,7 +709,7 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    # Z 미세 확장 (절단면 인식)
+    # z 살짝 벌려서 단면 안정화
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
@@ -724,24 +724,28 @@ def _fmt_pos(v: float) -> str:
 def _fmt_ang(v: float) -> str:
     s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
-# ---- 교정된 기본 프리셋 ----
+def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
+    if abs(a1 - a0) < 1e-12:
+        return float(b0)
+    t = (val - a0) / (a1 - a0)
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return float(b0 + t * (b1 - b0))
+
+# ---- 프리셋 (요청값 반영) ----
 DEFAULT_PRESET = {
     "0": {
-        # 0°: X -> (A4만 비례), A1 제외 / Y -> A2 제외 / Z -> A3 비례
         "X": {"in": [0.0, 2000.0],     "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
         "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
         "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
     },
     "90": {
-        # +90°: X -> A1 제외 / Y -> (A4만 비례), A2 제외 / Z -> A3 비례
         "X": {"in": [0.0, -5000.0],    "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [0.0, 2000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [1000.0, 3000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
         "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
     },
     "-90": {
-        # −90°: X -> A1 제외 / Y -> (A4만 비례), A2 제외 / Z -> A3 비례
         "X": {"in": [0.0, -5000.0],     "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [0, -2000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
         "Z": {"in": [0.0, 2200.0],      "A3_out": [   0.0, 1000.0]},
     },
 }
@@ -749,13 +753,13 @@ DEFAULT_PRESET = {
 def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(p))
 
-# 세션에 프리셋 보관
+# 세션 프리셋
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-# ====== 비례 분해 유틸 ======
+# ===== 유틸: 축 범위 =====
 def _axis_ranges(P_axis: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
-    """입력(in) 구간의 signed range, 출력(A#_out)들의 signed range dict 반환."""
+    """입력(in) 구간 signed range, 출력(A#_out) signed range dict."""
     in0, in1 = float(P_axis["in"][0]), float(P_axis["in"][1])
     in_rng = in1 - in0
     outs = {}
@@ -765,23 +769,11 @@ def _axis_ranges(P_axis: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
             outs[k] = o1 - o0
     return in_rng, outs
 
-def _split_delta(delta_cmd: float, in_rng: float, out_rngs: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
-    """
-    Δcmd 를 |in|, |outs|의 합으로 비례 분해.
-    반환: (Δcart, {k: Δout_k})
-    """
-    mag_in = abs(in_rng)
-    mag_out = sum(abs(v) for v in out_rngs.values())
-    denom = mag_in + mag_out
-    if denom <= 1e-12:
-        return delta_cmd, {k: 0.0 for k in out_rngs.keys()}
-    w_in = mag_in / denom
-    Δcart = delta_cmd * w_in
-    Δouts = {k: delta_cmd * (abs(v)/denom) for k, v in out_rngs.items()}
-    return Δcart, Δouts
-
 # =========================
-# G-code → MODX 변환 (A1/A2 제외 비례분해)
+# G-code → MODX 변환
+#   - A1,A2: 선형(절대) 매핑
+#   - A3:    Z축과 비례분해 (누적)
+#   - A4:    (Rz별로 연결된 X 또는 Y)와 비례분해 (누적)
 # =========================
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
@@ -800,60 +792,61 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                              preset: Dict[str, Any]) -> str:
     """
-    비례 분해 로직(수정):
-    - X축: A1 제외(변화 없음). A4만 비례(0°에서만 존재).
-    - Y축: A2 제외(변화 없음). A4만 비례(±90°에서만 존재).
-    - Z축: A3 비례.
+    - 로봇 좌표(X,Y,Z): 비례분해가 필요한 축(X/Y의 A4 연결, Z의 A3 연결)에서는 '누적 분해'로 업데이트.
+      (즉, Δ를 |in|+|out|으로 나눠 로봇과 A#로 배분하여 합이 Δ가 되도록)
+    - A1, A2: 절대값을 선형 매핑 (비례분해 없음, '참여'하지만 로봇 몫과 합 분배하지 않음)
+    - A3, A4: 비례분해(누적)
     """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, preset["0"])
 
-    # 축별 초기 기준값(절대 좌표 누적 시작점)
-    def base_in(axis_key: str) -> float:
-        try:
-            return float(P[axis_key]["in"][0])
-        except Exception:
-            return 0.0
-    def base_out(axis_key: str, out_key: str) -> float:
-        try:
-            return float(P[axis_key][out_key][0])
-        except Exception:
-            return 0.0
+    # 프리셋 범위
+    X_in_rng, X_outs = _axis_ranges(P["X"])
+    Y_in_rng, Y_outs = _axis_ranges(P["Y"])
+    Z_in_rng, Z_outs = _axis_ranges(P["Z"])
 
-    # 누적 절대 값(출력으로 기록될 값)
-    pos_X = base_in("X"); pos_Y = base_in("Y"); pos_Z = base_in("Z")
-    pos_A1 = base_out("X", "A1_out")   # A1은 고정(변화 없음)
-    pos_A2 = base_out("Y", "A2_out")   # A2는 고정(변화 없음)
-    pos_A3 = base_out("Z", "A3_out")
-    # A4는 X 또는 Y 중 프리셋에 존재하는 쪽 사용
-    A4_on_X = ("A4_out" in P.get("X", {}))
-    A4_on_Y = ("A4_out" in P.get("Y", {}))
-    pos_A4 = base_out("X", "A4_out") if A4_on_X else base_out("Y", "A4_out") if A4_on_Y else 0.0
+    # A4가 연결된 입력축 결정 (Y 우선, 없으면 X)
+    a4_bind = None  # ('X' or 'Y', in_rng, out_rng)
+    if "A4_out" in Y_outs:
+        a4_bind = ("Y", Y_in_rng, Y_outs["A4_out"])
+    elif "A4_out" in X_outs:
+        a4_bind = ("X", X_in_rng, X_outs["A4_out"])
 
-    # G-code 절대 좌표의 이전값 (차분 계산용)
+    # A3 범위
+    a3_out_rng = Z_outs.get("A3_out", 0.0)
+
+    # 누적 상태 (로봇)
+    pos_X = 0.0
+    pos_Y = 0.0
+    pos_Z = 0.0
+    # 누적 상태 (외부축)
+    pos_A4 = 0.0
+    pos_A3 = 0.0
+
+    # A1,A2는 '절대' 선형 매핑(누적 아님)
+    def a1_from_abs_x(abs_x: float) -> float:
+        a1_0, a1_1 = float(P["X"]["A1_out"][0]), float(P["X"]["A1_out"][1])
+        x0, x1 = float(P["X"]["in"][0]), float(P["X"]["in"][1])
+        return _linmap(abs_x, x0, x1, a1_0, a1_1)
+
+    def a2_from_abs_y(abs_y: float) -> float:
+        a2_0, a2_1 = float(P["Y"]["A2_out"][0]), float(P["Y"]["A2_out"][1])
+        y0, y1 = float(P["Y"]["in"][0]), float(P["Y"]["in"][1])
+        return _linmap(abs_y, y0, y1, a2_0, a2_1)
+
+    # 각 라인 처리
+    lines_out = []
     prev_cmd_x = 0.0
     prev_cmd_y = 0.0
     prev_cmd_z = 0.0
-
-    lines_out = []
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-
-    # 축별 range 정보
-    X_in_rng, X_out_rngs_raw = _axis_ranges(P.get("X", {"in":[0.0,0.0]}))
-    Y_in_rng, Y_out_rngs_raw = _axis_ranges(P.get("Y", {"in":[0.0,0.0]}))
-    Z_in_rng, Z_out_rngs_raw = _axis_ranges(P.get("Z", {"in":[0.0,0.0]}))
-
-    # ---- 제외 규칙 적용: X에서 A1 제거, Y에서 A2 제거 ----
-    X_out_rngs = {k:v for k,v in X_out_rngs_raw.items() if k != "A1_out"}  # A1 제외
-    Y_out_rngs = {k:v for k,v in Y_out_rngs_raw.items() if k != "A2_out"}  # A2 제외
-    Z_out_rngs = dict(Z_out_rngs_raw)  # Z는 그대로(A3 비례)
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # 현재 지령(절대)
+        # 현재 G코드 절대 좌표
         cur_x = prev_cmd_x
         cur_y = prev_cmd_y
         cur_z = prev_cmd_z
@@ -870,39 +863,50 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
             elif p.startswith("Z"):
                 try: cur_z = float(p[1:]); has_xyz = True
                 except: pass
-
         if not has_xyz:
             continue
 
-        # Δ지령(절대차분)
+        # Δ지령
         dX = cur_x - prev_cmd_x
         dY = cur_y - prev_cmd_y
         dZ = cur_z - prev_cmd_z
 
-        # --- X축: A1 제외, A4만 비례(있으면) ---
-        dX_cart, dX_outs = _split_delta(dX, X_in_rng, X_out_rngs)
-        pos_X += dX_cart
-        # A4만 반영 (0°에서만 존재)
-        if "A4_out" in X_out_rngs and A4_on_X:
-            pos_A4 += dX_outs.get("A4_out", 0.0)
-        # A1은 제외 → pos_A1 변화 없음
+        # ---- A4 비례분해 (X 또는 Y 중 연결된 축) ----
+        if a4_bind is not None:
+            axis_name, in_rng, out_rng = a4_bind
+            mag_in = abs(in_rng)
+            mag_out = abs(out_rng)
+            denom = mag_in + mag_out if (mag_in + mag_out) > 1e-12 else 1.0
+            w_in = mag_in / denom
+            w_out = mag_out / denom
 
-        # --- Y축: A2 제외, A4만 비례(±90°에서 존재) ---
-        dY_cart, dY_outs = _split_delta(dY, Y_in_rng, Y_out_rngs)
-        pos_Y += dY_cart
-        if "A4_out" in Y_out_rngs and A4_on_Y:
-            pos_A4 += dY_outs.get("A4_out", 0.0)
-        # A2는 제외 → pos_A2 변화 없음
+            if axis_name == "X":
+                pos_X += dX * w_in
+                pos_A4 += dX * w_out
+            else:  # 'Y'
+                pos_Y += dY * w_in
+                pos_A4 += dY * w_out
+        else:
+            # A4 없으면 로봇이 그대로 전부 수행
+            pos_X += dX
+            pos_Y += dY
 
-        # --- Z축: A3 비례 ---
-        dZ_cart, dZ_outs = _split_delta(dZ, Z_in_rng, Z_out_rngs)
-        pos_Z += dZ_cart
-        if "A3_out" in Z_out_rngs:
-            pos_A3 += dZ_outs.get("A3_out", 0.0)
+        # ---- A3 비례분해 (Z) ----
+        mag_in_z = abs(Z_in_rng)
+        mag_out_z = abs(a3_out_rng)
+        denom_z = mag_in_z + mag_out_z if (mag_in_z + mag_out_z) > 1e-12 else 1.0
+        w_in_z = mag_in_z / denom_z
+        w_out_z = mag_out_z / denom_z
+        pos_Z += dZ * w_in_z
+        pos_A3 += dZ * w_out_z
+
+        # ---- A1, A2는 절대값 선형 매핑 ----
+        a1_abs = a1_from_abs_x(cur_x)
+        a2_abs = a2_from_abs_y(cur_y)
 
         # 출력 포맷
         fx, fy, fz = _fmt_pos(pos_X), _fmt_pos(pos_Y), _fmt_pos(pos_Z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(pos_A1), _fmt_pos(pos_A2), _fmt_pos(pos_A3), _fmt_pos(pos_A4)
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1_abs), _fmt_pos(a2_abs), _fmt_pos(pos_A3), _fmt_pos(pos_A4)
         lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
 
         prev_cmd_x, prev_cmd_y, prev_cmd_z = cur_x, cur_y, cur_z
@@ -914,13 +918,13 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
-              "!******************************************************************************************************************************\n"
-              "!*  Gcode→RAPID converter (proportional split with A1/A2 excluded; robot handles sync for A1/A2)\n"
+              "!***************************************************************************************************************\n"
+              "!*  Gcode→RAPID converter\n"
+              "!*  A1/A2: linear absolute mapping (no proportional split)\n"
+              "!*  A3:    proportional split with Z\n"
+              "!*  A4:    proportional split with bound axis (X@0° or Y@±90°)\n"
               f"!*  Generated {ts}\n"
-              "!*\n"
-              "!*  data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*  A4 Jump removed. A4: X@0° or Y@±90°. A1/A2: fixed (no proportional drive).\n"
-              "!******************************************************************************************************************************\n")
+              "!***************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
     body = ""
