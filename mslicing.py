@@ -777,6 +777,7 @@ def _saturating_split(cur_ext: float, robot_part: float, ext_part: float, lo: fl
         return robot_part + spill, ext_part - spill, hi_b
     else:
         return robot_part, ext_part, proposed
+
     if abs(a1 - a0) < 1e-12:
         return float(b0)
     t = (val - a0) / (a1 - a0)
