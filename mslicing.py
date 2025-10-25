@@ -2,10 +2,11 @@
 import streamlit as st
 import numpy as np
 import math
+import json
 import trimesh
 import tempfile
 import plotly.graph_objects as go
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
 
@@ -22,14 +23,10 @@ st.markdown(
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
 
-    /* 전체 상단 패딩(탭 포함 컨텐츠가 너무 위로 붙지 않게) */
     .block-container { padding-top: 2.0rem; }
-
-    /* 탭 자체 상단 여백 */
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
-    /* 우측 컨트롤 패널: 독립 스크롤 + sticky */
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -40,7 +37,6 @@ st.markdown(
       background: white;
     }
 
-    /* 좌측 사이드바 타이틀(조금 키움: 1~2단계) */
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
       font-size: 1.35rem;
@@ -48,7 +44,6 @@ st.markdown(
       line-height: 1.2;
     }
 
-    /* 외부치수: 줄바꿈 확실히 */
     .dims-block {
       white-space: pre-line;
       line-height: 1.3;
@@ -59,7 +54,6 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 중앙 큰 타이틀 제거, 좌측 사이드바에만 작은 타이틀(조금 키움)
 st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
@@ -77,7 +71,7 @@ def clamp(v, lo, hi):
         return lo
 
 # =========================
-# Helpers (연산 로직 변경 없음)
+# Helpers (연산 로직)
 # =========================
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -171,7 +165,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 # =========================
-# G-code generator (연산 그대로)
+# G-code generator
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
@@ -247,7 +241,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     return "\n".join(g)
 
 # =========================
-# Slice path computation (연산 그대로)
+# Slice path computation
 # =========================
 def compute_slice_paths_with_travel(
     mesh,
@@ -285,10 +279,7 @@ def compute_slice_paths_with_travel(
         if not segments:
             continue
 
-        if auto_start and prev_start_xy is not None:
-            ref_pt_layer = prev_start_xy
-        else:
-            ref_pt_layer = np.array(ref_pt_user, dtype=float)
+        ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
 
         layer_polys: List[np.ndarray] = []
         for i_seg, seg3d in enumerate(segments):
@@ -641,7 +632,7 @@ if "ui_banner" not in st.session_state:
 ensure_anim_buffers()
 
 # =========================
-# Sidebar (Access)
+# Access
 # =========================
 st.sidebar.header("Access")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kmou*": "2026-12-31", "0703": "2026-12-31"}
@@ -682,7 +673,7 @@ else:
 uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
 
 # =========================
-# Sidebar (Parameters)
+# Parameters
 # =========================
 st.sidebar.header("Parameters")
 z_int = st.sidebar.number_input("Z interval (mm)", 1.0, 1000.0, 15.0)
@@ -718,13 +709,14 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL must contain a single mesh")
         st.stop()
-    scale_matrix = np.eye(4); scale_matrix[2, 2] = 1.0000001
+    scale_matrix = np.eye(4)
+    scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
-# Actions
+# Slicing Actions
 # =========================
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
@@ -760,27 +752,78 @@ if st.session_state.get("gcode_text"):
                                use_container_width=True)
 
 # =========================
-# Rapid(MODX)
+# Rapid(MODX) - Mapping Presets + Converter
 # =========================
 def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"
-    sign = s[0]; intpart, dec = s[1:].split(".")
-    intpart = intpart.zfill(4)
-    return f"{sign}{intpart}.{dec}"
-
+    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
 def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"
-    sign = s[0]; intpart, dec = s[1:].split(".")
-    intpart = intpart.zfill(3)
-    return f"{sign}{intpart}.{dec}"
+    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
 
-# ---- 선형 매핑 유틸(양/음 순서 모두 지원 + 클램프) ----
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
     if abs(a1 - a0) < 1e-12:
         return float(b0)
     t = (val - a0) / (a1 - a0)
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
     return float(b0 + t * (b1 - b0))
+
+# ---- 기본 프리셋 (요청한 기본값) ----
+DEFAULT_PRESET = {
+    "0": {
+        "X": {"in": [0.0, 2000.0],   "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
+        "Z": {"in": [0.0, 2200.0],   "A3_out": [   0.0, 1000.0]},
+    },
+    "90": {
+        "X": {"in": [0.0, -5000.0],  "A1_out": [   0.0, 4000.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [1000.0, 3000.0], "A2_out": [ 500.0,   0.0]},
+        "Z": {"in": [0.0, 2200.0],   "A3_out": [   0.0, 1000.0]},
+    },
+    "-90": {
+        "X": {"in": [0.0, -5000.0],  "A1_out": [   0.0, 4000.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0]},
+        "Z": {"in": [0.0, 2200.0],   "A3_out": [   0.0, 1000.0]},
+    },
+}
+
+def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(p))
+
+# 세션에 프리셋 보관
+if "mapping_preset" not in st.session_state:
+    st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
+
+def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
+    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+    if key is None or key not in preset:
+        return 0.0, 0.0, 0.0, 0.0
+    P = preset[key]
+
+    # 안전하게 키 체크
+    def gi(d: Dict[str, Any], path: List[str], default: float) -> float:
+        cur = d
+        try:
+            for k in path[:-1]:
+                cur = cur[k]
+            return float(cur[path[-1]])
+        except Exception:
+            return float(default)
+
+    # 입력 구간
+    x0 = gi(P, ["X", "in", 0], 0.0); x1 = gi(P, ["X", "in", 1], 1.0)
+    y0 = gi(P, ["Y", "in", 0], 0.0); y1 = gi(P, ["Y", "in", 1], 1.0)
+    z0 = gi(P, ["Z", "in", 0], 0.0); z1 = gi(P, ["Z", "in", 1], 1.0)
+
+    # 출력 구간
+    a1_0 = gi(P, ["X", "A1_out", 0], 0.0); a1_1 = gi(P, ["X", "A1_out", 1], 0.0)
+    a4_0 = gi(P, ["X", "A4_out", 0], 0.0); a4_1 = gi(P, ["X", "A4_out", 1], 0.0)
+    a2_0 = gi(P, ["Y", "A2_out", 0], 0.0); a2_1 = gi(P, ["Y", "A2_out", 1], 0.0)
+    a3_0 = gi(P, ["Z", "A3_out", 0], 0.0); a3_1 = gi(P, ["Z", "A3_out", 1], 0.0)
+
+    a1 = _linmap(x, x0, x1, a1_0, a1_1)
+    a4 = _linmap(x, x0, x1, a4_0, a4_1)
+    a2 = _linmap(y, y0, y1, a2_0, a2_1)
+    a3 = _linmap(z, z0, z1, a3_0, a3_1)
+    return a1, a2, a3, a4
 
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
@@ -796,62 +839,72 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -> str:
-    """Rz 프리셋(0/90/-90)에 따라 A1~A4를 XYZ에서 선형 매핑하여 MODX 문자열 배열 생성"""
+def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
+                             preset: Dict[str, Any],
+                             a4_jump_on: bool = False, a4_jump_break_x: float = -500.0) -> str:
+    """프리셋 기반 XYZ->A1..A4 매핑, ±90°일 때 X=a4_jump_break_x 통과 시 중간점 삽입(A4=500 점프 옵션)"""
     lines_out = []
     cur_x = cur_y = cur_z = 0.0
+    prev_x = prev_y = prev_z = None
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+
+    # A4 최댓값(프리셋에서 X에 대한 A4_out 상한) 추출: 점프 시 상한으로 세팅
+    def a4_upper_from_preset(preset: Dict[str, Any], rz: float) -> float:
+        key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+        if key is None or key not in preset: return 500.0
+        try:
+            a0, a1 = preset[key]["X"]["A4_out"]
+            return float(max(a0, a1))
+        except Exception:
+            return 500.0
+
+    A4_MAX_AT_JUMP = a4_upper_from_preset(preset, rz)
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
+
         parts = t.split()
         has_xyz = False
         for p in parts:
             if p.startswith("X"):
-                try:
-                    cur_x = float(p[1:]); has_xyz = True
-                except:
-                    pass
+                try: cur_x = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Y"):
-                try:
-                    cur_y = float(p[1:]); has_xyz = True
-                except:
-                    pass
+                try: cur_y = float(p[1:]); has_xyz = True
+                except: pass
             elif p.startswith("Z"):
-                try:
-                    cur_z = float(p[1:]); has_xyz = True
-                except:
-                    pass
+                try: cur_z = float(p[1:]); has_xyz = True
+                except: pass
         if not has_xyz:
             continue
 
-        # ---- XYZ → A1~A4 매핑 (Rz 프리셋 기준) ----
-        if abs(rz - 0.0) < 1e-6:
-            a1 = _linmap(cur_x, 0.0, 2000.0, 1500.0,   0.0)   # X:0→2000  → A1:1500→0
-            a2 = _linmap(cur_y, -1500.0, 1500.0, 500.0,  0.0) # Y:-1500→+1500 → A2:500→0
-            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200  → A3:0→1000
-            a4 = _linmap(cur_x, 0.0, 2000.0,     0.0,  500.0) # X:0→2000  → A4:0→500
-        elif abs(rz - 90.0) < 1e-6:
-            a1 = _linmap(cur_x, 0.0, -5000.0,    0.0, 4000.0)  # X:0→5000 → A1:0→4000
-            a2 = _linmap(cur_y, 1000.0, 3000.0, 500.0,   0.0) # Y:+1000→+3000 → A2:500→0
-            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200 → A3:0→1000
-            a4 = _linmap(cur_x, 0.0, -5000.0,     0.0,  500.0) # X:0→5000 → A4:0→500
-        elif abs(rz + 90.0) < 1e-6:
-            a1 = _linmap(cur_x, 0.0, -5000.0,    0.0, 4000.0)  # X:0→5000 → A1:0→4000
-            a2 = _linmap(cur_y, -1000.0, -3000.0, 0.0, 500.0) # Y:-1000→-3000 → A2:0→500
-            a3 = _linmap(cur_z, 0.0, 2200.0,    0.0, 1000.0)  # Z:0→2200 → A3:0→1000
-            a4 = _linmap(cur_x, 0.0, -5000.0,     0.0,  500.0) # X:0→5000 → A4:0→500
-        else:
-            # 기타 값(안전): 모두 0
-            a1 = a2 = a3 = a4 = 0.0
+        # --- (옵션) ±90°에서 X=break_x 교차 시 중간점 1개 삽입 & A4 점프 ---
+        is_pm90 = (abs(rz - 90.0) < 1e-6) or (abs(rz + 90.0) < 1e-6)
+        if a4_jump_on and is_pm90 and prev_x is not None:
+            bx = float(a4_jump_break_x)
+            crossed = (prev_x > bx and cur_x <= bx) or (prev_x < bx and cur_x >= bx)
+            if crossed and abs(cur_x - prev_x) > 1e-12:
+                t_cross = (bx - prev_x) / (cur_x - prev_x)
+                ix = bx
+                iy = prev_y + t_cross * (cur_y - prev_y)
+                iz = prev_z + t_cross * (cur_z - prev_z)
 
+                a1_i, a2_i, a3_i, _ = map_axes_from_xyz_with_preset(ix, iy, iz, rz, preset)
+                a4_i = A4_MAX_AT_JUMP  # 점프 시 상한(보통 500.0)
+
+                fx_i, fy_i, fz_i = _fmt_pos(ix), _fmt_pos(iy), _fmt_pos(iz)
+                fa1_i, fa2_i, fa3_i, fa4_i = _fmt_pos(a1_i), _fmt_pos(a2_i), _fmt_pos(a3_i), _fmt_pos(a4_i)
+                lines_out.append(f'{fx_i},{fy_i},{fz_i},{frx},{fry},{frz},{fa1_i},{fa2_i},{fa3_i},{fa4_i}')
+
+        # --- 현재점 매핑 ---
+        a1, a2, a3, a4 = map_axes_from_xyz_with_preset(cur_x, cur_y, cur_z, rz, preset)
         fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
         fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
 
-        line = f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}'
-        lines_out.append(line)
+        prev_x, prev_y, prev_z = cur_x, cur_y, cur_z
         if len(lines_out) >= MAX_LINES:
             break
 
@@ -865,7 +918,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A-axes are linearly mapped from XYZ depending on Rz preset (0/90/-90).\n"
+              "!*** A-axes mapped by editable presets; optional A4 jump at X = break for ±90°.\n"
               "!\n"
               "!***************************************************************...****************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -877,58 +930,124 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float) -
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
 
+# ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
         st.session_state.show_rapid_panel = True
+
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
 
-            # Rz 프리셋 선택 (0 / +90 / -90)
-            rz_preset = st.selectbox(
-                "Rz (deg) preset",
-                options=[0.0, 90.0, -90.0],
-                index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0),
-                help=("0°: X(0→2000)→A1(1500→0), A4(0→500); Y(-1500→+1500)→A2(500→0); Z(0→2200)→A3(0→1000)\n"
-                      "+90°: X(0→5000)→A1(0→4000), A4(0→500); Y(+1000→+3000)→A2(500→0); Z 동일\n"
-                      "-90°: X 동일→A1(0→4000), A4(0→500); Y(-1000→-3000)→A2(0→500); Z 동일")
-            )
+            rz_preset = st.selectbox("Rz (deg) preset", options=[0.0, 90.0, -90.0],
+                                     index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-            gtxt = st.session_state.get("gcode_text")
-            over = None
-            if gtxt is not None:
-                xyz_count = _extract_xyz_lines_count(gtxt)
-                over = (xyz_count > MAX_LINES)
+            st.markdown("**A4 Jump 옵션 (±90°에서만 의미 있음)**")
+            a4_jump_opt = st.checkbox("Enable A4 jump at X = break", value=False)
+            a4_break_x = st.number_input("A4 jump break X (mm)", value=-500.0, step=50.0, format="%.1f")
 
-            save_rapid_clicked = st.button("Save Rapid", use_container_width=True, disabled=(gtxt is None))
-            if gtxt is None:
-                st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-            elif over:
-                st.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-            elif save_rapid_clicked:
-                st.session_state.rapid_text = gcode_to_cone1500_module(
-                    gtxt,
-                    rx=st.session_state.rapid_rx,
-                    ry=st.session_state.rapid_ry,
-                    rz=st.session_state.rapid_rz,
-                )
-                st.success(f"Rapid(*.MODX) 변환 완료 (Rz = {st.session_state.rapid_rz:.2f}°)")
+        # ---- Mapping Presets UI ----
+        with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
+            st.caption("각 Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A1/A2/A3/A4 출력 구간을 편집하세요.")
 
-            if st.session_state.get("rapid_text"):
-                base = st.session_state.get("base_name", "output")
-                st.download_button(
-                    "Rapid 저장 (.modx)",
-                    st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+            # 불러오기
+            up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
+            if up_json is not None:
+                try:
+                    loaded = json.loads(up_json.read().decode("utf-8"))
+                    # 가벼운 검증 (키 존재 확인)
+                    if isinstance(loaded, dict) and all(k in loaded for k in ["0","90","-90"]):
+                        st.session_state.mapping_preset = loaded
+                        st.success("프리셋을 불러왔습니다.")
+                    else:
+                        st.error("프리셋 형식이 올바르지 않습니다. (keys: '0','90','-90')")
+                except Exception as e:
+                    st.error(f"프리셋 로드 실패: {e}")
+
+            # 편집 폼
+            def edit_axis(title_key: str, axis_key: str):
+                st.write(f"**Rz = {title_key}° — {axis_key}**")
+                cols = st.columns(4)
+                P = st.session_state.mapping_preset[title_key][axis_key]
+
+                # 입력 구간
+                in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(P["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
+                in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(P["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
+                P["in"] = [float(in0), float(in1)]
+
+                # 출력 (축별로 다름)
+                if axis_key == "X":
+                    a1_0 = cols[2].number_input("A1_out[0]", value=float(P["A1_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
+                    a1_1 = cols[3].number_input("A1_out[1]", value=float(P["A1_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
+                    P["A1_out"] = [float(a1_0), float(a1_1)]
+
+                    cols2 = st.columns(2)
+                    a4_0 = cols2[0].number_input("A4_out[0]", value=float(P["A4_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
+                    a4_1 = cols2[1].number_input("A4_out[1]", value=float(P["A4_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
+                    P["A4_out"] = [float(a4_0), float(a4_1)]
+
+                elif axis_key == "Y":
+                    a2_0 = cols[2].number_input("A2_out[0]", value=float(P["A2_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a20")
+                    a2_1 = cols[3].number_input("A2_out[1]", value=float(P["A2_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a21")
+                    P["A2_out"] = [float(a2_0), float(a2_1)]
+
+                else:  # Z
+                    a3_0 = cols[2].number_input("A3_out[0]", value=float(P["A3_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
+                    a3_1 = cols[3].number_input("A3_out[1]", value=float(P["A3_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
+                    P["A3_out"] = [float(a3_0), float(a3_1)]
+
+            for key_title in ["0", "90", "-90"]:
+                st.markdown(f"---\n**Rz = {key_title}°**")
+                edit_axis(key_title, "X")
+                edit_axis(key_title, "Y")
+                edit_axis(key_title, "Z")
+
+            # 저장(다운로드)
+            preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
+            st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
+
+        # ---- 저장 버튼 ----
+        gtxt = st.session_state.get("gcode_text")
+        over = None
+        if gtxt is not None:
+            xyz_count = _extract_xyz_lines_count(gtxt)
+            over = (xyz_count > MAX_LINES)
+
+        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
+        if gtxt is None:
+            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+        elif over:
+            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+        elif save_rapid_clicked:
+            st.session_state.rapid_text = gcode_to_cone1500_module(
+                gtxt,
+                rx=st.session_state.rapid_rx,
+                ry=st.session_state.rapid_ry,
+                rz=st.session_state.rapid_rz,
+                preset=st.session_state.mapping_preset,
+                a4_jump_on=bool(a4_jump_opt),
+                a4_jump_break_x=float(a4_break_x)
+            )
+            st.sidebar.success(
+                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°, "
+                f"A4 Jump={'ON' if a4_jump_opt else 'OFF'}, BreakX={a4_break_x:.1f})"
+            )
+
+        if st.session_state.get("rapid_text"):
+            base = st.session_state.get("base_name", "output")
+            st.sidebar.download_button(
+                "Rapid 저장 (.modx)",
+                st.session_state.rapid_text,
+                file_name=f"{base}.modx",
+                mime="text/plain",
+                use_container_width=True
+            )
 
 # =========================
-# Center + Right 레이아웃
+# Layout (Center + Right)
 # =========================
 center_col, right_col = st.columns([14, 3], gap="large")
 
@@ -994,6 +1113,7 @@ with right_col:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+# ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
     default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     target = default_val
@@ -1033,6 +1153,7 @@ if segments is not None and total_segments > 0:
         emphasize_caps = False
         dims_placeholder.markdown("_Offsets OFF_")
 
+# ---- 중앙: 탭 뷰어 ----
 with center_col:
     tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
 
@@ -1081,5 +1202,6 @@ with center_col:
         else:
             st.info("G-code를 생성하세요.")
 
+# 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
