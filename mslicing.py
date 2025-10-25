@@ -856,127 +856,39 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                              preset: Dict[str, Any]) -> str:
-    """
-    Convert G-code to MODX lines with mapping presets.
-
-    규칙(요청사항 그대로):
-      - A1, A2: 절대 선형 매핑(기존과 동일, 비례분해 금지).
-      - A3: Z 이동을 Z.in vs A3_out 스팬으로 비례분해 후, '포화(saturating)' 적용.
-      - A4: 프리셋에서 A4_out이 X 또는 Y 중 어디에 달렸는지 보고,
-            그 축(X 또는 Y)의 이동을 비례분해 + '포화(saturating)' 적용.
-            (외부축(A3/A4)은 항상 범위 내, 넘친/부족분은 로봇축으로 스필백하여
-             (로봇이동 + 외부축이동) = 원래 G코드 이동량 보존)
-
-    나머지 UI/로직/출력 포맷/패딩 등은 기존과 동일.
-    """
+    """프리셋 기반 XYZ->A1..A4 매핑 (A4 Jump 기능 제거 버전)."""
     lines_out = []
+    cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-
-    # 프리셋 선택
-    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-    P = preset.get(key, {}) if key is not None else {}
-
-    def gi(d: Dict[str, Any], path: list, default: float) -> float:
-        try:
-            cur = d
-            for k in path[:-1]:
-                cur = cur[k]
-            return float(cur[path[-1]])
-        except Exception:
-            return float(default)
-
-    # 입력 스팬
-    x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
-    y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
-    z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
-    # 출력 스팬
-    a1_0, a1_1 = gi(P, ["X","A1_out",0], 0.0), gi(P, ["X","A1_out",1], 0.0)
-    a2_0, a2_1 = gi(P, ["Y","A2_out",0], 0.0), gi(P, ["Y","A2_out",1], 0.0)
-    a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
-
-    # A4 연결 (X or Y)
-    a4_on_x = ("A4_out" in P.get("X", {}))
-    a4_on_y = ("A4_out" in P.get("Y", {}))
-    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
-    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
-
-    # 누적 상태
-    have_prev = False
-    prev_x = prev_y = prev_z = 0.0
-    rob_x = rob_y = rob_z = 0.0
-    cur_a1 = cur_a2 = cur_a3 = cur_a4 = 0.0
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # 이번 줄의 절대 XYZ (명시 안된 축은 직전 값 유지)
-        cx, cy, cz = prev_x, prev_y, prev_z
-        has_any = False
-        for p in t.split():
+        parts = t.split()
+        has_xyz = False
+        for p in parts:
             if p.startswith("X"):
-                try: cx = float(p[1:]); has_any = True
+                try: cur_x = float(p[1:]); has_xyz = True
                 except: pass
             elif p.startswith("Y"):
-                try: cy = float(p[1:]); has_any = True
+                try: cur_y = float(p[1:]); has_xyz = True
                 except: pass
             elif p.startswith("Z"):
-                try: cz = float(p[1:]); has_any = True
+                try: cur_z = float(p[1:]); has_xyz = True
                 except: pass
-        if not has_any:
+        if not has_xyz:
             continue
 
-        if not have_prev:
-            # 초기 앵커: 로봇축은 현재 점으로, 외부축은 절대 선형으로 초기화
-            rob_x, rob_y, rob_z = cx, cy, cz
-            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)  # A1 ABS-only
-            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)  # A2 ABS-only
-            cur_a3 = _linmap(cz, z0, z1, a3_0, a3_1)  # anchor
-            if a4_on_x:
-                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y:
-                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
-            else:
-                cur_a4 = 0.0
-            have_prev = True
-        else:
-            dx, dy, dz = cx - prev_x, cy - prev_y, cz - prev_z
+        a1, a2, a3, a4 = map_axes_from_xyz_with_preset(cur_x, cur_y, cur_z, rz, preset)
 
-            # X 처리: A4가 X에 붙어 있으면 비례분해 + 포화, A1은 절대 재계산
-            if abs(dx) > 0:
-                if a4_on_x:
-                    rdx, a4dx = _prop_split(dx, x0, x1, a4x_0, a4x_1)
-                    rdx, a4dx, cur_a4 = _saturating_split(cur_a4, rdx, a4dx, a4x_0, a4x_1)
-                    rob_x += rdx
-                else:
-                    rob_x += dx
-            cur_a1 = _linmap(cx, x0, x1, a1_0, a1_1)
-
-            # Y 처리: A4가 Y에 붙어 있으면 비례분해 + 포화, A2는 절대 재계산
-            if abs(dy) > 0:
-                if a4_on_y:
-                    rdy, a4dy = _prop_split(dy, y0, y1, a4y_0, a4y_1)
-                    rdy, a4dy, cur_a4 = _saturating_split(cur_a4, rdy, a4dy, a4y_0, a4y_1)
-                    rob_y += rdy
-                else:
-                    rob_y += dy
-            cur_a2 = _linmap(cy, y0, y1, a2_0, a2_1)
-
-            # Z 처리: A3와 비례분해 + 포화
-            if abs(dz) > 0:
-                rdz, a3dz = _prop_split(dz, z0, z1, a3_0, a3_1)
-                rdz, a3dz, cur_a3 = _saturating_split(cur_a3, rdz, a3dz, a3_0, a3_1)
-                rob_z += rdz
-
-        fx, fy, fz = _fmt_pos(rob_x), _fmt_pos(rob_y), _fmt_pos(rob_z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(cur_a1), _fmt_pos(cur_a2), _fmt_pos(cur_a3), _fmt_pos(cur_a4)
-        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+        fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
 
         if len(lines_out) >= MAX_LINES:
             break
-
-        prev_x, prev_y, prev_z = cx, cy, cz
 
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
@@ -988,7 +900,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2 absolute-mapped; A3/A4 are proportional-split with saturation.\n"
+              "!*** A-axes mapped by editable presets (A4 axis auto-selected by preset A4_out on X or Y).\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -999,7 +911,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
-
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
