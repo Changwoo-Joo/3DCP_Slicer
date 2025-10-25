@@ -837,10 +837,9 @@ def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, prese
     else:
         _, val, i0, i1, o0, o1 = a4_axis
         a4 = _linmap(val, i0, i1, o0, o1)
-        # ---- 여기만 추가: A4를 A4_out 구간으로 확실히 클램프 ----
+        # A4 절대 매핑 값도 범위 클램프 (안전)
         lo, hi = (o0, o1) if o0 <= o1 else (o1, o0)
         a4 = lo if a4 < lo else hi if a4 > hi else a4
-        # -----------------------------------------------
 
     return a1, a2, a3, a4
 
@@ -860,39 +859,117 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                              preset: Dict[str, Any]) -> str:
-    """프리셋 기반 XYZ->A1..A4 매핑 (A4 Jump 기능 제거 버전)."""
+    """
+    A4만 '비례 분해(증분 누적)'로 동작하도록 수정:
+      - A4가 X에 붙으면 dx를 분해해 ext(=A4)로 누적
+      - A4가 Y에 붙으면 dy를 분해해 ext(=A4)로 누적
+      - 항상 A4_out 구간 [min,max]로 클램프
+    A1/A2/A3는 기존처럼 절대 매핑값 사용.
+    """
+    # --- 프리셋 블록/스팬 추출 (여기만 추가) ---
+    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+    P = preset.get(key, {}) if key is not None else {}
+
+    def gi(d: Dict[str, Any], path: list, default: float) -> float:
+        try:
+            cur = d
+            for k in path[:-1]:
+                cur = cur[k]
+            return float(cur[path[-1]])
+        except Exception:
+            return float(default)
+
+    # 입력 스팬
+    x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
+    y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
+
+    # A4 부착 위치와 출력 스팬
+    a4_on_x = "A4_out" in P.get("X", {})
+    a4_on_y = "A4_out" in P.get("Y", {})
+    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
+    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
+
+    def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
+        """
+        delta(입력축 증분)를 in/out 스팬 비로 외부축(A4) 분량만 반환.
+        입력·출력 스팬 방향이 반대면 부호 반전.
+        """
+        span_in = abs(float(in1) - float(in0))
+        span_out = abs(float(out1) - float(out0))
+        total = span_in + span_out
+        if total <= 1e-12 or span_out <= 1e-12:
+            return 0.0
+        same_dir = ((in1 >= in0 and out1 >= out0) or (in1 <= in0 and out1 <= out0))
+        ext_part = float(delta) * (span_out / total)
+        if not same_dir:
+            ext_part = -ext_part
+        return ext_part
+
+    # --- 원래 로직 + A4만 누적 방식으로 대체 ---
     lines_out = []
-    cur_x = cur_y = cur_z = 0.0
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+
+    have_prev = False
+    prev_x = prev_y = prev_z = 0.0
+    cur_a4 = 0.0  # 누적 A4
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        parts = t.split()
-        has_xyz = False
-        for p in parts:
+        # 좌표 파싱(없으면 이전 유지)
+        cx, cy, cz = prev_x, prev_y, prev_z
+        has_any = False
+        for p in t.split():
             if p.startswith("X"):
-                try: cur_x = float(p[1:]); has_xyz = True
+                try: cx = float(p[1:]); has_any = True
                 except: pass
             elif p.startswith("Y"):
-                try: cur_y = float(p[1:]); has_xyz = True
+                try: cy = float(p[1:]); has_any = True
                 except: pass
             elif p.startswith("Z"):
-                try: cur_z = float(p[1:]); has_xyz = True
+                try: cz = float(p[1:]); has_any = True
                 except: pass
-        if not has_xyz:
+        if not has_any:
             continue
 
-        a1, a2, a3, a4 = map_axes_from_xyz_with_preset(cur_x, cur_y, cur_z, rz, preset)
+        # A1/A2/A3는 절대 매핑(기존 그대로)
+        a1, a2, a3, _a4_abs = map_axes_from_xyz_with_preset(cx, cy, cz, rz, preset)
 
-        fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
+        # A4: 첫 점은 절대 매핑으로 앵커, 이후는 증분 누적
+        if not have_prev:
+            if a4_on_x:
+                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y:
+                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
+            else:
+                cur_a4 = 0.0
+            have_prev = True
+        else:
+            dx, dy = cx - prev_x, cy - prev_y
+            if a4_on_x and abs(dx) > 0:
+                cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y and abs(dy) > 0:
+                cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
+
+        # A4 범위 클램프
+        if a4_on_x:
+            lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
+        elif a4_on_y:
+            lo, hi = (a4y_0, a4y_1) if a4y_0 <= a4y_1 else (a4y_1, a4y_0)
+        else:
+            lo, hi = (0.0, 0.0)
+        cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
+
+        fx, fy, fz = _fmt_pos(cx), _fmt_pos(cy), _fmt_pos(cz)
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(cur_a4)
+        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
 
         if len(lines_out) >= MAX_LINES:
             break
+
+        prev_x, prev_y, prev_z = cx, cy, cz
 
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
@@ -904,7 +981,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A-axes mapped by editable presets (A4 axis auto-selected by preset A4_out on X or Y).\n"
+              "!*** A1/A2/A3: absolute-mapped; A4: proportional-split & clamped to preset range.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
