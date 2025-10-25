@@ -717,6 +717,212 @@ if uploaded is not None:
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
 # =========================
+# Rapid(MODX) - Mapping Presets + Converter
+# =========================
+def _fmt_pos(v: float) -> str:
+    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
+def _fmt_ang(v: float) -> str:
+    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
+
+# ---- 교정된 기본 프리셋 ----
+DEFAULT_PRESET = {
+    "0": {
+        # 0°: X -> A1, A4 / Y -> A2 / Z -> A3
+        "X": {"in": [0.0, 2000.0],     "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
+        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
+    },
+    "90": {
+        # +90°: X -> A1 / Y -> A2, A4 / Z -> A3
+        "X": {"in": [0.0, -5000.0],    "A1_out": [   0.0, 4000.0]},
+        "Y": {"in": [1000.0, 3000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
+    },
+    "-90": {
+        # −90°: X -> A1 / Y -> A2(0→500), A4 / Z -> A3
+        "X": {"in": [0.0, -5000.0],     "A1_out": [   0.0, 4000.0]},
+        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 2200.0],      "A3_out": [   0.0, 1000.0]},
+    },
+}
+
+def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(p))
+
+# 세션에 프리셋 보관
+if "mapping_preset" not in st.session_state:
+    st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
+
+# ====== 비례 분해 유틸 ======
+def _axis_ranges(P_axis: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+    """입력(in) 구간의 signed range, 출력(A#_out)들의 signed range dict 반환."""
+    in0, in1 = float(P_axis["in"][0]), float(P_axis["in"][1])
+    in_rng = in1 - in0
+    outs = {}
+    for k in ("A1_out", "A2_out", "A3_out", "A4_out"):
+        if k in P_axis:
+            o0, o1 = float(P_axis[k][0]), float(P_axis[k][1])
+            outs[k] = o1 - o0
+    return in_rng, outs
+
+def _split_delta(delta_cmd: float, in_rng: float, out_rngs: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
+    """
+    Δcmd 를 |in|, |outs|의 합으로 비례 분해.
+    반환: (Δcart, {k: Δout_k})
+    """
+    mag_in = abs(in_rng)
+    mag_out = sum(abs(v) for v in out_rngs.values())
+    denom = mag_in + mag_out
+    if denom <= 1e-12:
+        # 분해 대상 없음 → 전부 카트로
+        return delta_cmd, {k: 0.0 for k in out_rngs.keys()}
+    w_in = mag_in / denom
+    Δcart = delta_cmd * w_in
+    Δouts = {k: delta_cmd * (abs(v)/denom) for k, v in out_rngs.items()}
+    return Δcart, Δouts
+
+# =========================
+# G-code → MODX 변환 (비례분해 적용)
+# =========================
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+MAX_LINES = 64000
+
+def _extract_xyz_lines_count(gcode_text: str) -> int:
+    cnt = 0
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not (t.startswith(("G0","G00","G1","G01"))):
+            continue
+        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
+        if has_xyz:
+            cnt += 1
+    return cnt
+
+def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
+                             preset: Dict[str, Any]) -> str:
+    """
+    비례 분해 로직:
+    각 축 X/Y/Z 의 Δ지령(절대 G-code 기준 차분)을
+    |in| + Σ|A#| 로 나눈 가중비로 카트/외부축에 나눠 누적.
+    누적 결과를 카트(X,Y,Z) 및 A1/A2/A3/A4 절대값으로 기록.
+    """
+    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+    P = preset.get(key, preset["0"])
+
+    # 축별 초기 기준값(절대 좌표 누적 시작점)
+    def base_in(axis_key: str) -> float:
+        try:
+            return float(P[axis_key]["in"][0])
+        except Exception:
+            return 0.0
+    def base_out(axis_key: str, out_key: str) -> float:
+        try:
+            return float(P[axis_key][out_key][0])
+        except Exception:
+            return 0.0
+
+    # 누적 절대 값(출력으로 기록될 값)
+    pos_X = base_in("X"); pos_Y = base_in("Y"); pos_Z = base_in("Z")
+    pos_A1 = base_out("X", "A1_out")
+    pos_A2 = base_out("Y", "A2_out")
+    pos_A3 = base_out("Z", "A3_out")
+    # A4는 X 또는 Y 중 프리셋에 존재하는 쪽 사용
+    A4_on_X = ("A4_out" in P.get("X", {}))
+    A4_on_Y = ("A4_out" in P.get("Y", {}))
+    pos_A4 = base_out("X", "A4_out") if A4_on_X else base_out("Y", "A4_out") if A4_on_Y else 0.0
+
+    # G-code 절대 좌표의 이전값 (차분 계산용)
+    prev_cmd_x = 0.0
+    prev_cmd_y = 0.0
+    prev_cmd_z = 0.0
+
+    lines_out = []
+    frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+
+    # 축별 range 정보
+    X_in_rng, X_out_rngs = _axis_ranges(P.get("X", {"in":[0.0,0.0]}))
+    Y_in_rng, Y_out_rngs = _axis_ranges(P.get("Y", {"in":[0.0,0.0]}))
+    Z_in_rng, Z_out_rngs = _axis_ranges(P.get("Z", {"in":[0.0,0.0]}))
+
+    for raw in gcode_text.splitlines():
+        t = raw.strip()
+        if not t or not t.startswith(("G0","G00","G1","G01")):
+            continue
+
+        # 현재 지령(절대)
+        cur_x = prev_cmd_x
+        cur_y = prev_cmd_y
+        cur_z = prev_cmd_z
+
+        parts = t.split()
+        has_xyz = False
+        for p in parts:
+            if p.startswith("X"):
+                try: cur_x = float(p[1:]); has_xyz = True
+                except: pass
+            elif p.startswith("Y"):
+                try: cur_y = float(p[1:]); has_xyz = True
+                except: pass
+            elif p.startswith("Z"):
+                try: cur_z = float(p[1:]); has_xyz = True
+                except: pass
+
+        if not has_xyz:
+            continue
+
+        # Δ지령(절대차분)
+        dX = cur_x - prev_cmd_x
+        dY = cur_y - prev_cmd_y
+        dZ = cur_z - prev_cmd_z
+
+        # --- X축 분해 ---
+        dX_cart, dX_outs = _split_delta(dX, X_in_rng, X_out_rngs)
+        pos_X += dX_cart
+        if "A1_out" in X_out_rngs: pos_A1 += dX_outs.get("A1_out", 0.0)
+        if "A4_out" in X_out_rngs and A4_on_X: pos_A4 += dX_outs.get("A4_out", 0.0)
+
+        # --- Y축 분해 ---
+        dY_cart, dY_outs = _split_delta(dY, Y_in_rng, Y_out_rngs)
+        pos_Y += dY_cart
+        if "A2_out" in Y_out_rngs: pos_A2 += dY_outs.get("A2_out", 0.0)
+        if "A4_out" in Y_out_rngs and A4_on_Y: pos_A4 += dY_outs.get("A4_out", 0.0)
+
+        # --- Z축 분해 ---
+        dZ_cart, dZ_outs = _split_delta(dZ, Z_in_rng, Z_out_rngs)
+        pos_Z += dZ_cart
+        if "A3_out" in Z_out_rngs: pos_A3 += dZ_outs.get("A3_out", 0.0)
+
+        # 출력 포맷
+        fx, fy, fz = _fmt_pos(pos_X), _fmt_pos(pos_Y), _fmt_pos(pos_Z)
+        fa1, fa2, fa3, fa4 = _fmt_pos(pos_A1), _fmt_pos(pos_A2), _fmt_pos(pos_A3), _fmt_pos(pos_A4)
+        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
+
+        prev_cmd_x, prev_cmd_y, prev_cmd_z = cur_x, cur_y, cur_z
+        if len(lines_out) >= MAX_LINES:
+            break
+
+    while len(lines_out) < MAX_LINES:
+        lines_out.append(PAD_LINE)
+
+    ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
+    header = ("MODULE Converted\n"
+              "!******************************************************************************************************************************\n"
+              "!*  Gcode→RAPID converter (proportional split: Δcmd → robot-cart + external axes, sum equals Δcmd)\n"
+              f"!*  Generated {ts}\n"
+              "!*\n"
+              "!*  data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+              "!*  A4 Jump removed. A4 is tied to X@0° or Y@±90° per preset.\n"
+              "!******************************************************************************************************************************\n")
+    cnt_str = str(MAX_LINES)
+    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
+    body = ""
+    for i, ln in enumerate(lines_out):
+        q = f'"{ln}"'
+        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
+    close_decl = "];\nENDMODULE\n"
+    return header + open_decl + body + close_decl
+
+# =========================
 # Slicing Actions
 # =========================
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
@@ -751,166 +957,6 @@ if st.session_state.get("gcode_text"):
     st.sidebar.download_button("G-code 저장", st.session_state.gcode_text,
                                file_name=f"{base}.gcode", mime="text/plain",
                                use_container_width=True)
-
-# =========================
-# Rapid(MODX) - Mapping Presets + Converter
-# =========================
-def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
-def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
-
-def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
-    if abs(a1 - a0) < 1e-12:
-        return float(b0)
-    t = (val - a0) / (a1 - a0)
-    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-    return float(b0 + t * (b1 - b0))
-
-# ---- 교정된 기본 프리셋 ----
-DEFAULT_PRESET = {
-    "0": {
-        # 0°: X -> A1, A4 / Y -> A2 / Z -> A3
-        "X": {"in": [0.0, 2000.0],     "A1_out": [1500.0,   0.0], "A4_out": [0.0, 500.0]},
-        "Y": {"in": [-1500.0, 1500.0], "A2_out": [ 500.0,   0.0]},
-        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
-    },
-    "90": {
-        # +90°: X -> A1 / Y -> A2, A4 / Z -> A3
-        "X": {"in": [0.0, -5000.0],    "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [1000.0, 3000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 2200.0],     "A3_out": [   0.0, 1000.0]},
-    },
-    "-90": {
-        # −90°: X -> A1 / Y -> A2(0→500), A4 / Z -> A3
-        "X": {"in": [0.0, -5000.0],     "A1_out": [   0.0, 4000.0]},
-        "Y": {"in": [-1000.0, -3000.0], "A2_out": [  0.0, 500.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 2200.0],      "A3_out": [   0.0, 1000.0]},
-    },
-}
-
-def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
-    return json.loads(json.dumps(p))
-
-# 세션에 프리셋 보관
-if "mapping_preset" not in st.session_state:
-    st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
-
-def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
-    """A4_out 이 어느 축(X/Y)에 있든 해당 축 입력구간으로 선형 매핑."""
-    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-    if key is None or key not in preset:
-        return 0.0, 0.0, 0.0, 0.0
-    P = preset[key]
-
-    def gi(d: Dict[str, Any], path: List[Any], default: float) -> float:
-        cur = d
-        try:
-            for k in path[:-1]:
-                cur = cur[k]
-            return float(cur[path[-1]])
-        except Exception:
-            return float(default)
-
-    # 입력 구간
-    x0 = gi(P, ["X", "in", 0], 0.0); x1 = gi(P, ["X", "in", 1], 1.0)
-    y0 = gi(P, ["Y", "in", 0], 0.0); y1 = gi(P, ["Y", "in", 1], 1.0)
-    z0 = gi(P, ["Z", "in", 0], 0.0); z1 = gi(P, ["Z", "in", 1], 1.0)
-
-    # 출력 구간
-    a1_0 = gi(P, ["X", "A1_out", 0], 0.0); a1_1 = gi(P, ["X", "A1_out", 1], 0.0)
-    a2_0 = gi(P, ["Y", "A2_out", 0], 0.0); a2_1 = gi(P, ["Y", "A2_out", 1], 0.0)
-    a3_0 = gi(P, ["Z", "A3_out", 0], 0.0); a3_1 = gi(P, ["Z", "A3_out", 1], 0.0)
-
-    # A4는 X 또는 Y 중 "A4_out"이 존재하는 축을 자동 선택
-    a4_axis = None
-    if "A4_out" in P.get("Y", {}):
-        a4_axis = ("Y", y, y0, y1, gi(P, ["Y", "A4_out", 0], 0.0), gi(P, ["Y", "A4_out", 1], 0.0))
-    elif "A4_out" in P.get("X", {}):
-        a4_axis = ("X", x, x0, x1, gi(P, ["X", "A4_out", 0], 0.0), gi(P, ["X", "A4_out", 1], 0.0))
-
-    a1 = _linmap(x, x0, x1, a1_0, a1_1)
-    a2 = _linmap(y, y0, y1, a2_0, a2_1)
-    a3 = _linmap(z, z0, z1, a3_0, a3_1)
-    if a4_axis is None:
-        a4 = 0.0
-    else:
-        _, val, i0, i1, o0, o1 = a4_axis
-        a4 = _linmap(val, i0, i1, o0, o1)
-
-    return a1, a2, a3, a4
-
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
-MAX_LINES = 64000
-
-def _extract_xyz_lines_count(gcode_text: str) -> int:
-    cnt = 0
-    for raw in gcode_text.splitlines():
-        t = raw.strip()
-        if not (t.startswith(("G0","G00","G1","G01"))):
-            continue
-        has_xyz = any(p.startswith(("X","Y","Z")) for p in t.split())
-        if has_xyz:
-            cnt += 1
-    return cnt
-
-def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
-                             preset: Dict[str, Any]) -> str:
-    """프리셋 기반 XYZ->A1..A4 매핑 (A4 Jump 기능 제거 버전)."""
-    lines_out = []
-    cur_x = cur_y = cur_z = 0.0
-    frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
-
-    for raw in gcode_text.splitlines():
-        t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01")):
-            continue
-
-        parts = t.split()
-        has_xyz = False
-        for p in parts:
-            if p.startswith("X"):
-                try: cur_x = float(p[1:]); has_xyz = True
-                except: pass
-            elif p.startswith("Y"):
-                try: cur_y = float(p[1:]); has_xyz = True
-                except: pass
-            elif p.startswith("Z"):
-                try: cur_z = float(p[1:]); has_xyz = True
-                except: pass
-        if not has_xyz:
-            continue
-
-        a1, a2, a3, a4 = map_axes_from_xyz_with_preset(cur_x, cur_y, cur_z, rz, preset)
-
-        fx, fy, fz = _fmt_pos(cur_x), _fmt_pos(cur_y), _fmt_pos(cur_z)
-        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-        lines_out.append(f'{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}')
-
-        if len(lines_out) >= MAX_LINES:
-            break
-
-    while len(lines_out) < MAX_LINES:
-        lines_out.append(PAD_LINE)
-
-    ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-    header = ("MODULE Converted\n"
-              "!******************************************************************************************************************************\n"
-              "!*\n"
-              f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-              "!\n"
-              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A-axes mapped by editable presets (A4 axis auto-selected by preset A4_out on X or Y).\n"
-              "!\n"
-              "!******************************************************************************************************************************\n")
-    cnt_str = str(MAX_LINES)
-    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-    body = ""
-    for i, ln in enumerate(lines_out):
-        q = f'"{ln}"'
-        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-    close_decl = "];\nENDMODULE\n"
-    return header + open_decl + body + close_decl
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
@@ -957,7 +1003,6 @@ if KEY_OK:
 
                 # 출력 (축별로 다름)
                 if axis_key == "X":
-                    # A1
                     a1_0 = cols[2].number_input("A1_out[0]", value=float(P.get("A1_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
                     a1_1 = cols[3].number_input("A1_out[1]", value=float(P.get("A1_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
                     P["A1_out"] = [float(a1_0), float(a1_1)]
