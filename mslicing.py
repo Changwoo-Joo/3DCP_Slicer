@@ -837,6 +837,10 @@ def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, prese
     else:
         _, val, i0, i1, o0, o1 = a4_axis
         a4 = _linmap(val, i0, i1, o0, o1)
+        # ---- 여기만 추가: A4를 A4_out 구간으로 확실히 클램프 ----
+        lo, hi = (o0, o1) if o0 <= o1 else (o1, o0)
+        a4 = lo if a4 < lo else hi if a4 > hi else a4
+        # -----------------------------------------------
 
     return a1, a2, a3, a4
 
