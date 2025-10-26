@@ -489,22 +489,27 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
         n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         _append_arc((float(p2[0]), float(p2[1])), t_unit, n_unit, float(p2[2]), sign_t=+1.0, steps=samples)
 
+# ======== Path 라인 굵기 옵션 ========
+if "path_line_width" not in st.session_state:
+    st.session_state.path_line_width = 3
+
 def make_base_fig(height=820) -> go.Figure:
+    lw = int(st.session_state.get("path_line_width", 3))
     fig = go.Figure()
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT),
+                               line=dict(width=lw, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT),
+                               line=dict(width=lw, dash="dot", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
+                               line=dict(width=lw, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
+                               line=dict(width=lw, dash="solid", color=OFFSET_DARK_GRAY),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=6, dash="solid", color=CAP_COLOR),
+                               line=dict(width=max(2*lw, 4), dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
     fig.update_layout(scene=dict(aspectmode="data"),
                       height=height, margin=dict(l=0, r=0, t=10, b=0),
@@ -512,21 +517,22 @@ def make_base_fig(height=820) -> go.Figure:
     return fig
 
 def ensure_traces(fig: go.Figure, want=5):
+    lw = int(st.session_state.get("path_line_width", 3))
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=3, dash="solid", color=PATH_COLOR_DEFAULT),
+                                   line=dict(width=lw, dash="solid", color=PATH_COLOR_DEFAULT),
                                    showlegend=False))
     def add_dot():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=3, dash="dot", color=PATH_COLOR_DEFAULT),
+                                   line=dict(width=lw, dash="dot", color=PATH_COLOR_DEFAULT),
                                    showlegend=False))
     def add_off():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=3, dash="solid", color=OFFSET_DARK_GRAY),
+                                   line=dict(width=lw, dash="solid", color=OFFSET_DARK_GRAY),
                                    showlegend=False))
     def add_caps():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=6, dash="solid", color=CAP_COLOR),
+                                   line=dict(width=max(2*lw, 4), dash="solid", color=CAP_COLOR),
                                    showlegend=False))
     while len(fig.data) < want:
         n = len(fig.data)
@@ -541,11 +547,14 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
 
     apply_on = bool(st.session_state.get("apply_offsets_flag", False))
     center_color = PATH_COLOR_LIGHT if apply_on else PATH_COLOR_DEFAULT
-    fig.data[0].line.color = center_color
-    fig.data[1].line.color = center_color
+    lw = int(st.session_state.get("path_line_width", 3))
 
-    fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 3
-    fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 3
+    fig.data[0].line.color = center_color; fig.data[0].line.width = lw
+    fig.data[1].line.color = center_color; fig.data[1].line.width = lw
+
+    fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = lw
+    fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = lw
+    fig.data[4].line.color = CAP_COLOR; fig.data[4].line.width = max(2*lw, 4)
 
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
@@ -692,6 +701,10 @@ trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 3.0)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
+
+# ---- 추가: 큰 모델 선 가독성 옵션 ----
+st.sidebar.subheader("Render options")
+st.session_state.path_line_width = st.sidebar.slider("Path line width (px)", 1, 12, int(st.session_state.get("path_line_width", 3)))
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
@@ -860,13 +873,15 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                              preset: Dict[str, Any]) -> str:
     """
-    A4만 '비례 분해(증분 누적)'로 동작하도록 수정:
-      - A4가 X에 붙으면 dx를 분해해 ext(=A4)로 누적
-      - A4가 Y에 붙으면 dy를 분해해 ext(=A4)로 누적
-      - 항상 A4_out 구간 [min,max]로 클램프
-    A1/A2/A3는 기존처럼 절대 매핑값 사용.
+    변경점:
+      1) A1/A2/A3/A4는 '원본' X,Y,Z로 매핑 (A4는 기존대로 비례분해 누적)
+      2) 출력 좌표는 보정 적용:
+         X_out = X_raw - A4
+         Z_out = Z_raw - A3
+         (요청 사항: A3만큼 Z가 줄고, A4만큼 X가 줄어든다)
+      3) A2가 X에 붙어있는 프리셋인 경우(드물지만 대비), 보정된 X_out으로 재계산.
     """
-    # --- 프리셋 블록/스팬 추출 (여기만 추가) ---
+    # --- 프리셋 접근 ---
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
@@ -890,10 +905,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
     a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
-        """
-        delta(입력축 증분)를 in/out 스팬 비로 외부축(A4) 분량만 반환.
-        입력·출력 스팬 방향이 반대면 부호 반전.
-        """
         span_in = abs(float(in1) - float(in0))
         span_out = abs(float(out1) - float(out0))
         total = span_in + span_out
@@ -905,7 +916,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
             ext_part = -ext_part
         return ext_part
 
-    # --- 원래 로직 + A4만 누적 방식으로 대체 ---
+    # --- 변환 ---
     lines_out = []
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
@@ -918,7 +929,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # 좌표 파싱(없으면 이전 유지)
+        # 원본 좌표 파싱(없으면 이전 유지)
         cx, cy, cz = prev_x, prev_y, prev_z
         has_any = False
         for p in t.split():
@@ -934,11 +945,12 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         if not has_any:
             continue
 
-        # A1/A2/A3는 절대 매핑(기존 그대로)
-        a1, a2, a3, _a4_abs = map_axes_from_xyz_with_preset(cx, cy, cz, rz, preset)
+        # A1/A2/A3: 원본 좌표로 절대 매핑
+        a1_abs, a2_abs, a3_abs, _ = map_axes_from_xyz_with_preset(cx, cy, cz, rz, preset)
 
-        # A4: 첫 점은 절대 매핑으로 앵커, 이후는 증분 누적
+        # A4: 비례 분해(증분 누적) 유지
         if not have_prev:
+            # 첫 점은 절대 매핑으로 앵커
             if a4_on_x:
                 cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
             elif a4_on_y:
@@ -962,8 +974,22 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
             lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        fx, fy, fz = _fmt_pos(cx), _fmt_pos(cy), _fmt_pos(cz)
-        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(cur_a4)
+        # ===== 핵심 보정 로직 =====
+        # Z 출력은 A3 만큼 감소
+        z_out_val = cz - a3_abs
+        # X 출력은 A4 만큼 감소
+        x_out_val = cx - cur_a4
+
+        # 만약 프리셋이 "A2_out"을 X에 붙여둔 특수 케이스라면, 보정된 X로 A2를 다시 계산
+        # (기본 프리셋은 Y에 붙어 있으므로 그대로 유지됨)
+        if "A2_out" in P.get("X", {}):
+            # X 기반 A2 재계산
+            a2_0x, a2_1x = gi(P, ["X","A2_out",0], 0.0), gi(P, ["X","A2_out",1], 0.0)
+            a2_abs = _linmap(x_out_val, x0, x1, a2_0x, a2_1x)
+
+        # 최종 포맷팅
+        fx, fy, fz = _fmt_pos(x_out_val), _fmt_pos(cy), _fmt_pos(z_out_val)
+        fa1, fa2, fa3, fa4 = _fmt_pos(a1_abs), _fmt_pos(a2_abs), _fmt_pos(a3_abs), _fmt_pos(cur_a4)
         lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
 
         if len(lines_out) >= MAX_LINES:
@@ -981,7 +1007,8 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2/A3: absolute-mapped; A4: proportional-split & clamped to preset range.\n"
+              "!*** A1/A2/A3: absolute-mapped from original XYZ; A4: proportional-split & clamped.\n"
+              "!*** Output XYZ adjusted: X:=X-A4, Z:=Z-A3 (per request).\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1244,6 +1271,7 @@ with center_col:
                 + (f" | {travel_lbl}")
                 + (f" | Viz stride: ×{st.session_state.paths_anim_buf.get('stride',1)}"
                    if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
+                + (f" | Line width: {int(st.session_state.get('path_line_width',3))} px")
             )
         else:
             st.info("슬라이싱을 실행하세요.")
