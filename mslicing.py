@@ -817,15 +817,6 @@ if "mapping_preset" not in st.session_state:
 def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
     """A4_out 이 어느 축(X/Y)에 있든 해당 축 입력구간으로 선형 매핑."""
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-
-    # A3/A4 proportional split flags from UI (default True)
-    try:
-        a3_split = bool(st.session_state.get("a3_prop_split", True))
-        a4_split = bool(st.session_state.get("a4_prop_split", True))
-    except Exception:
-        a3_split = True
-        a4_split = True
-
     if key is None or key not in preset:
         return 0.0, 0.0, 0.0, 0.0
     P = preset[key]
@@ -966,44 +957,15 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
 
         # --- A4: 첫 점은 절대 앵커, 이후 증분 누적 ---
-
         if not have_prev:
-
-            if a4_split:
-
-                if a4_on_x:
-
-                    cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-
-                elif a4_on_y:
-
-                    cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
-
-                else:
-
-                    cur_a4 = 0.0
-
+            if a4_on_x:
+                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y:
+                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
             else:
-
                 cur_a4 = 0.0
-
             have_prev = True
-
         else:
-
-            if a4_split:
-
-                dx, dy = cx - prev_x, cy - prev_y
-
-                if a4_on_x and abs(dx) > 0:
-
-                    cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
-
-                elif a4_on_y and abs(dy) > 0:
-
-                    cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
-
-            # a4_split이 False면 누적 갱신 없음 (항상 0 유지)
             dx, dy = cx - prev_x, cy - prev_y
             if a4_on_x and abs(dx) > 0:
                 cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
@@ -1020,40 +982,25 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
         # --- 출력 좌표 보정 ---
+        x_out, y_out, z_out = cx, cy, cz - a3_abs  # Z' = Z - A3
 
-        if a3_split:
-
-            x_out, y_out, z_out = cx, cy, cz - a3_abs  # Z' = Z - A3
-
-        else:
-
-            x_out, y_out, z_out = cx, cy, cz          # A3 분할 OFF → Z 그대로
-
-
-        if a4_split:
-
-            if key == "90":
-
-                y_out = cy - cur_a4
-
-            elif key == "0":
-
-                x_out = cx - cur_a4
-
-            elif key == "-90":
-
-                a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
-
-                y_out = cy - (a4_max - cur_a4)
-
-        # a4_split이 False면 X/Y 보정 없음
-
+        if key == "90":
+            # Y' = Y - A4
+            y_out = cy - cur_a4
+        elif key == "0":
+            # X' = X - A4
+            x_out = cx - cur_a4
+        elif key == "-90":
+            # Y' = Y - (A4_max - A4)
+            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
+            y_out = cy - (a4_max - cur_a4)
 
         # --- A1/A2는 보정된 축으로 계산, A3는 원본 Z 기반 값 유지 ---
         a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
         a2 = _linmap(y_out, y0, y1, a2_0, a2_1)
-        a3 = (a3_abs if a3_split else 0.0)
-        a4 = (cur_a4 if a4_split else 0.0)
+        a3 = a3_abs
+        a4 = cur_a4
+
         fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
         fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
         lines_out.append((f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}" if swap_a3_a4 else f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}"))
@@ -1099,10 +1046,6 @@ if KEY_OK:
             rz_preset = st.selectbox("Rz (deg) preset", options=[0.0, 90.0, -90.0],
                                      index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
-
-            # --- A3/A4 proportional split toggles ---
-            st.session_state.a3_prop_split = st.checkbox("A3축 비례분할 사용", value=True)
-            st.session_state.a4_prop_split = st.checkbox("A4축 비례분할 사용", value=True)
 
         # ---- Mapping Presets UI ----
         with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
