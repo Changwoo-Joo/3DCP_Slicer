@@ -15,6 +15,19 @@ from pathlib import Path
 # =========================
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 
+
+
+# === A3/A4 order option (always visible in sidebar) ===
+if "swap_a3_a4" not in st.session_state:
+    st.session_state.swap_a3_a4 = False
+_swap_choice__a3a4 = st.sidebar.radio(
+    "RAPID 저장 시 A3/A4 순서 선택",
+    ["A1,A2,A3,A4 (기본)", "A1,A2,A4,A3 (교차)"],
+    index=(1 if st.session_state.get("swap_a3_a4", False) else 0)
+)
+st.session_state.swap_a3_a4 = (_swap_choice__a3a4 == "A1,A2,A4,A3 (교차)")
+# ================================================
+
 # ── 전역 CSS (UI만 수정) ──
 st.markdown(
     """
@@ -625,8 +638,6 @@ if "rapid_rz" not in st.session_state:
     st.session_state.rapid_rz = 0.0
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
-if "swap_a3_a4" not in st.session_state:
-    st.session_state.swap_a3_a4 = False
 
 if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
@@ -992,13 +1003,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
 
         fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
         fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-        lines_out.append(
-            (
-                f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}"
-                if swap_a3_a4
-                else f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}"
-            )
-        )
+        lines_out.append((f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}" if swap_a3_a4 else f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}"))
 
         if len(lines_out) >= MAX_LINES:
             break
@@ -1127,9 +1132,8 @@ if KEY_OK:
                 rx=st.session_state.rapid_rx,
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=st.session_state.get('swap_a3_a4', False)
-            )
+                preset=st.session_state.mapping_preset
+            , swap_a3_a4=st.session_state.get('swap_a3_a4', False))
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
             )
