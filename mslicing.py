@@ -888,14 +888,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
-    # A3/A4 proportional split flags from UI (default True)
-    try:
-        a3_split = bool(st.session_state.get("a3_prop_split", True))
-        a4_split = bool(st.session_state.get("a4_prop_split", True))
-    except Exception:
-        a3_split = True
-        a4_split = True
-
     def gi(d: Dict[str, Any], path: list, default: float) -> float:
         try:
             cur = d
@@ -965,15 +957,44 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
 
         # --- A4: 첫 점은 절대 앵커, 이후 증분 누적 ---
+
         if not have_prev:
-            if a4_on_x:
-                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y:
-                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
+
+            if a4_split:
+
+                if a4_on_x:
+
+                    cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
+
+                elif a4_on_y:
+
+                    cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
+
+                else:
+
+                    cur_a4 = 0.0
+
             else:
+
                 cur_a4 = 0.0
+
             have_prev = True
+
         else:
+
+            if a4_split:
+
+                dx, dy = cx - prev_x, cy - prev_y
+
+                if a4_on_x and abs(dx) > 0:
+
+                    cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
+
+                elif a4_on_y and abs(dy) > 0:
+
+                    cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
+
+            # a4_split이 False면 누적 갱신 없음 (항상 0 유지)
             dx, dy = cx - prev_x, cy - prev_y
             if a4_on_x and abs(dx) > 0:
                 cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
@@ -988,24 +1009,36 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         else:
             lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
+
         # --- 출력 좌표 보정 ---
+
         if a3_split:
+
             x_out, y_out, z_out = cx, cy, cz - a3_abs  # Z' = Z - A3
+
         else:
+
             x_out, y_out, z_out = cx, cy, cz          # A3 분할 OFF → Z 그대로
 
+
         if a4_split:
+
             if key == "90":
-                # Y' = Y - A4
+
                 y_out = cy - cur_a4
+
             elif key == "0":
-                # X' = X - A4
+
                 x_out = cx - cur_a4
+
             elif key == "-90":
-                # Y' = Y - (A4_max - A4)
+
                 a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
+
                 y_out = cy - (a4_max - cur_a4)
+
         # a4_split이 False면 X/Y 보정 없음
+
 
         # --- A1/A2는 보정된 축으로 계산, A3는 원본 Z 기반 값 유지 ---
         a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
