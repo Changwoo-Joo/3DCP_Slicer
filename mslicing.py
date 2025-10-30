@@ -1294,3 +1294,23 @@ with center_col:
 # 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+# =======================================================================
+# === 추가된 기능: A3/A4 출력 순서 선택 옵션 (2025-10-30) ===============
+# =======================================================================
+# 사이드바의 "Rapid Settings" 아래에 다음 코드 추가:
+# swap_choice = st.selectbox(
+#     "RAPID A3/A4 필드 순서",
+#     options=["A1,A2,A3,A4 (기본)", "A1,A2,A4,A3 (A3↔A4 교체)"],
+#     index=0
+# )
+# st.session_state.swap_a34 = (swap_choice.endswith("교체)"))
+#
+# gcode_to_cone1500_module() 호출부를 다음과 같이 수정:
+# swap_a34=st.session_state.get("swap_a34", False)
+#
+# gcode_to_cone1500_module 함수 내부에 아래 코드 추가:
+# if swap_a34:
+#     lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}")
+# else:
+#     lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+# =======================================================================
