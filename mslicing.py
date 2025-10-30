@@ -817,6 +817,15 @@ if "mapping_preset" not in st.session_state:
 def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
     """A4_out 이 어느 축(X/Y)에 있든 해당 축 입력구간으로 선형 매핑."""
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
+
+    # A3/A4 proportional split flags from UI (default True)
+    try:
+        a3_split = bool(st.session_state.get("a3_prop_split", True))
+        a4_split = bool(st.session_state.get("a4_prop_split", True))
+    except Exception:
+        a3_split = True
+        a4_split = True
+
     if key is None or key not in preset:
         return 0.0, 0.0, 0.0, 0.0
     P = preset[key]
