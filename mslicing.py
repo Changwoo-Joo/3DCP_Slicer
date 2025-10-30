@@ -863,7 +863,7 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
-                             preset: Dict[str, Any]) -> str:
+                             preset: Dict[str, Any], swap_a3_a4: bool = False) -> str:
     """
     A4만 '비례 분해(증분 누적)'로 동작.
     추가: 출력 좌표 보정
@@ -990,7 +990,13 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
 
         fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
         fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-        lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+        lines_out.append(
+            (
+                f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}"
+                if swap_a3_a4
+                else f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}"
+            )
+        )
 
         if len(lines_out) >= MAX_LINES:
             break
@@ -1119,7 +1125,8 @@ if KEY_OK:
                 rx=st.session_state.rapid_rx,
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset
+                preset=st.session_state.mapping_preset,
+                swap_a3_a4=swap_a3_a4
             )
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
@@ -1294,23 +1301,3 @@ with center_col:
 # 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
-# =======================================================================
-# === 추가된 기능: A3/A4 출력 순서 선택 옵션 (2025-10-30) ===============
-# =======================================================================
-# 사이드바의 "Rapid Settings" 아래에 다음 코드 추가:
-# swap_choice = st.selectbox(
-#     "RAPID A3/A4 필드 순서",
-#     options=["A1,A2,A3,A4 (기본)", "A1,A2,A4,A3 (A3↔A4 교체)"],
-#     index=0
-# )
-# st.session_state.swap_a34 = (swap_choice.endswith("교체)"))
-#
-# gcode_to_cone1500_module() 호출부를 다음과 같이 수정:
-# swap_a34=st.session_state.get("swap_a34", False)
-#
-# gcode_to_cone1500_module 함수 내부에 아래 코드 추가:
-# if swap_a34:
-#     lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}")
-# else:
-#     lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
-# =======================================================================
