@@ -1122,7 +1122,7 @@ if KEY_OK:
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset, 
-                swap_a3_a4=True
+                swap_a3_a4=True)
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
             )
