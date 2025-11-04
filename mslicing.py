@@ -1225,7 +1225,17 @@ if KEY_OK:
         over = None
         if gtxt is not None:
             xyz_count = _extract_xyz_lines_count(gtxt)
+            total_count = len(gtxt.splitlines())
             over = (xyz_count > MAX_LINES)
+
+    # 🔎 사이드바에 두 카운트 표시 (expander + progress bar)
+    with st.sidebar.expander("G-code Line Counts", expanded=True):
+        colA, colB = st.columns(2)
+        colA.metric("전체 줄수", f"{total_count:,}")
+        colB.metric("XYZ 이동줄수", f"{xyz_count:,}")
+        ratio = min(xyz_count / float(MAX_LINES), 1.0)
+        st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
+
 
         save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
         if gtxt is None:
