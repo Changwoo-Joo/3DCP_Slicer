@@ -279,12 +279,18 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
 
             # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
-            simplified = simplify_segment(trimmed, min_spacing)
+            # 1) 과밀 구간 정리(삭제)
 
-            # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
-            if st.session_state.get("densify_long_segments", False):
-                simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
-                simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+        simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+
+# 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
+        simplified = densify_segment_by_distance(
+            simplified,
+            gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
+            step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
+            min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
+        )
+
 
 
             if i_seg > 0:
@@ -364,12 +370,17 @@ def compute_slice_paths_with_travel(
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
 
             # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
-            simplified = simplify_segment(trimmed, min_spacing)
+            # 1) 과밀 구간 정리(삭제)
+        simplified = simplify_segment(trimmed, min_spacing)
+        simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
 
-            # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
-            if st.session_state.get("densify_long_segments", False):
-                simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
-                simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+        # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
+        simplified = densify_segment_by_distance(
+            simplified,
+            gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
+            step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
+            min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
+        )
 
             layer_polys.append(simplified.copy())
             if i_seg == 0:
