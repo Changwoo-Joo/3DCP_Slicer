@@ -1122,6 +1122,58 @@ if KEY_OK:
 
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
+
+        # ---- G-code 줄수 계산 & RAPID 저장 UI (안전 초기화 포함) ----
+        gtxt = st.session_state.get("gcode_text")
+        xyz_count = 0
+        total_count = 0
+        over = None
+        if isinstance(gtxt, str):
+            try:
+                total_count = len(gtxt.splitlines())
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
+            except Exception as e:
+                st.sidebar.warning(f"줄수 계산 오류: {e}")
+                total_count = 0
+                xyz_count = 0
+                over = None
+
+        with st.sidebar.expander("G-code Line Counts", expanded=True):
+            colA, colB = st.columns(2)
+            colA.metric("전체 줄수", f"{int(total_count):,}")
+            colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
+            ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
+            st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
+
+        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
+        if gtxt is None:
+            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+        elif over:
+            st.sidebar.error("G-code의 XYZ 이동 줄수가 64,000을 초과하여 Rapid 파일로 변환할 수 없습니다.")
+        elif save_rapid_clicked:
+            try:
+                st.session_state.rapid_text = gcode_to_cone1500_module(
+                    gtxt,
+                    rx=st.session_state.rapid_rx,
+                    ry=st.session_state.rapid_ry,
+                    rz=st.session_state.rapid_rz,
+                    preset=st.session_state.mapping_preset,
+                    swap_a3_a4=True
+                )
+                st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+            except Exception as e:
+                st.sidebar.error(f"Rapid 변환 실패: {e}")
+
+        if st.session_state.get("rapid_text"):
+            base = st.session_state.get("base_name", "output")
+            st.sidebar.download_button(
+                "Rapid 저장 (.modx)",
+                st.session_state.rapid_text,
+                file_name=f"{base}.modx",
+                mime="text/plain",
+                use_container_width=True
+            )
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
 
@@ -1216,44 +1268,6 @@ if KEY_OK:
         
         # --- 사이드바에 표시 ---
         try:
-            with st.sidebar.expander("G-code Line Counts", expanded=True):
-                colA, colB = st.columns(2)
-                colA.metric("전체 줄수", f"{int(total_count):,}")
-                colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
-                ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
-                st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
-        except Exception as e:
-            st.sidebar.warning(f"줄수 계산 중 오류 발생: {e}")
-
-        
-        if gtxt is not None:
-            xyz_count = _extract_xyz_lines_count(gtxt)
-            total_count = len(gtxt.splitlines())
-            over = (xyz_count > MAX_LINES)
-        
-        # 🔎 사이드바에 두 카운트 표시 (G-code 전체줄수 / XYZ 이동줄수)
-        with st.sidebar.expander("G-code Line Counts", expanded=True):
-            colA, colB = st.columns(2)
-            colA.metric("전체 줄수", f"{total_count:,}")
-            colB.metric("XYZ 이동줄수", f"{xyz_count:,}")
-            ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0
-            st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
-
-
-    
-    # 🔎 사이드바에 두 카운트 표시 (expander + progress bar)
-    with st.sidebar.expander("G-code Line Counts", expanded=True):
-        colA, colB = st.columns(2)
-        colA.metric("전체 줄수", f"{total_count:,}")
-        colB.metric("XYZ 이동줄수", f"{xyz_count:,}")
-        ratio = min(xyz_count / float(MAX_LINES), 1.0)
-        st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
-
-
-        # === Rapid Save (.modx) ===
-        save_rapid_clicked = st.sidebar.button(
-            "Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None)
-        )
         if gtxt is None:
             st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
         elif over:
