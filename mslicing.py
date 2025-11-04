@@ -1223,9 +1223,32 @@ if KEY_OK:
 
 
         gtxt = st.session_state.get("gcode_text")
-        over = None
+        # --- 두 줄수 카운트 (안전 초기화 포함) ---
         xyz_count = 0
         total_count = 0
+        over = None
+        
+        if gtxt is not None and isinstance(gtxt, str):
+            try:
+                total_count = len(gtxt.splitlines())
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
+            except Exception:
+                xyz_count = 0
+                total_count = 0
+                over = None
+        
+        # --- 사이드바에 표시 ---
+        try:
+            with st.sidebar.expander("G-code Line Counts", expanded=True):
+                colA, colB = st.columns(2)
+                colA.metric("전체 줄수", f"{int(total_count):,}")
+                colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
+                ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
+                st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
+        except Exception as e:
+            st.sidebar.warning(f"줄수 계산 중 오류 발생: {e}")
+
         
         if gtxt is not None:
             xyz_count = _extract_xyz_lines_count(gtxt)
