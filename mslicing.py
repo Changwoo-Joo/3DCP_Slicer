@@ -147,29 +147,68 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
-def densify_segment_by_distance(segment: np.ndarray, gap_threshold: float = 40.0, step: float = 20.0) -> np.ndarray:
+def enforce_min_spacing(segment: np.ndarray, min_spacing: float, keep_ends: bool = True) -> np.ndarray:
     """
-    인접 포인트 간 XY 거리(gap)가 gap_threshold(기본 40)보다 크면,
-    매 'step'(기본 20)마다 중간점을 보간해 추가한다.
-    Z는 선형보간.
+    인접 점 간 XY 거리 >= min_spacing 를 보장하도록 다운샘플링.
+    첫 점은 항상 유지, 이후 누적 이동이 min_spacing 이상일 때만 점 채택.
+    keep_ends=True면 마지막 점은 항상 유지(잔여 구간이 min_spacing 미만이어도 끝점 보존).
     """
     pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2 or step <= 1e-9:
+    if len(pts) <= 2 or min_spacing <= 0:
         return pts
+
+    out = [pts[0].copy()]
+    acc = 0.0
+    for p_prev, p_cur in zip(pts[:-1], pts[1:]):
+        d = float(np.linalg.norm((p_cur - p_prev)[:2]))
+        acc += d
+        if acc + 1e-12 >= float(min_spacing):
+            out.append(p_cur.copy())
+            acc = 0.0
+
+    if keep_ends and not np.allclose(out[-1], pts[-1]):
+        out[-1] = pts[-1].copy()
+    return np.asarray(out, dtype=float)
+
+
+def densify_segment_by_distance(segment: np.ndarray,
+                                gap_threshold: float = 40.0,
+                                step: float = 20.0,
+                                min_spacing_floor: float = 0.0) -> np.ndarray:
+    """
+    인접 XY 거리가 gap_threshold보다 큰 구간만 등간격 보간.
+    - step은 min_spacing_floor보다 작아지지 않도록 보정
+    - 마지막 잔여 구간이 min_spacing_floor 미만으로 남지 않도록 분할 개수 n을 줄여서 잔여를 키움
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts
+
+    step = max(float(step), float(min_spacing_floor)) if min_spacing_floor > 0 else float(step)
 
     out = [pts[0].copy()]
     for p1, p2 in zip(pts[:-1], pts[1:]):
         d_xy = float(np.linalg.norm((p2 - p1)[:2]))
-        if d_xy > gap_threshold:
-            n = int(math.floor(d_xy / step))
+        if d_xy > gap_threshold and step > 1e-9:
+            # 기본 n
+            if min_spacing_floor > 0:
+                n = int(math.floor(d_xy / step))
+                # 잔여 = d_xy - n*step 가 min_spacing_floor 미만이면 n을 줄여서 잔여를 키움
+                while n > 0 and (d_xy - n*step) < min_spacing_floor:
+                    n -= 1
+            else:
+                n = int(math.floor(d_xy / step))
+
             for k in range(1, n + 1):
-                t = min(1.0, (k * step) / d_xy)
+                t = (k * step) / d_xy
+                if t > 1.0:
+                    t = 1.0
                 out.append(p1 + t * (p2 - p1))
-        # 마지막 점(p2)을 반드시 포함
+
         if not np.allclose(out[-1], p2):
             out.append(p2.copy())
-
     return np.asarray(out, dtype=float)
+
 
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
@@ -238,9 +277,15 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
+
+            # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
             simplified = simplify_segment(trimmed, min_spacing)
+
+            # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
             if st.session_state.get("densify_long_segments", False):
-                simplified = densify_segment_by_distance(simplified, 40.0, 20.0)
+                simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
+                    simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+
 
             if i_seg > 0:
                 s = simplified[0]
@@ -317,9 +362,15 @@ def compute_slice_paths_with_travel(
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
+
+            # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
             simplified = simplify_segment(trimmed, min_spacing)
+
+            # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
             if st.session_state.get("densify_long_segments", False):
-                simplified = densify_segment_by_distance(simplified, 40.0, 20.0)
+                simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
+                    simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
