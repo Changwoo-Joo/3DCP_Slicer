@@ -284,7 +284,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
             if st.session_state.get("densify_long_segments", False):
                 simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
-                    simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+                simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
 
 
             if i_seg > 0:
@@ -369,7 +369,7 @@ def compute_slice_paths_with_travel(
             # 길게 뜀뛴 구간만 보간하되, 마지막 꼬리가 min_spacing 미만으로 남지 않도록 보정
             if st.session_state.get("densify_long_segments", False):
                 simplified = densify_segment_by_distance(simplified, 40.0, 20.0, min_spacing_floor=min_spacing)
-                    simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+                simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
 
             layer_polys.append(simplified.copy())
             if i_seg == 0:
