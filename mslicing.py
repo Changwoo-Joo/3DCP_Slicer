@@ -1115,6 +1115,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
     return header + open_decl + body + close_decl
 
 # ---- 사이드바: Rapid UI ----
+# ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
@@ -1122,6 +1123,147 @@ if KEY_OK:
 
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
+            # --- 자세(Rx/Ry/Rz) 입력 ---
+            st.session_state.rapid_rx = st.number_input(
+                "Rx (deg)", value=float(st.session_state.get("rapid_rx", 0.0)), step=0.1, format="%.2f"
+            )
+            st.session_state.rapid_ry = st.number_input(
+                "Ry (deg)", value=float(st.session_state.get("rapid_ry", 0.0)), step=0.1, format="%.2f"
+            )
+            rz_preset = st.selectbox(
+                "Rz (deg) preset", options=[0.0, 90.0, -90.0],
+                index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0)
+            )
+            st.session_state.rapid_rz = float(rz_preset)
+
+            # --- G-code 줄수 계산 & RAPID 저장 UI (안전 초기화 포함) ---
+            gtxt = st.session_state.get("gcode_text")
+            xyz_count = 0
+            total_count = 0
+            over = None
+            if isinstance(gtxt, str):
+                try:
+                    total_count = len(gtxt.splitlines())
+                    xyz_count = _extract_xyz_lines_count(gtxt)
+                    over = (xyz_count > MAX_LINES)
+                except Exception as e:
+                    st.warning(f"줄수 계산 오류: {e}")
+                    total_count = 0
+                    xyz_count = 0
+                    over = None
+
+            with st.expander("G-code Line Counts", expanded=True):
+                colA, colB = st.columns(2)
+                colA.metric("전체 줄수", f"{int(total_count):,}")
+                colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
+                ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
+                st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
+
+            save_rapid_clicked = st.button(
+                "Save Rapid (.modx)", use_container_width=True,
+                disabled=(gtxt is None or (over is True))
+            )
+
+            if gtxt is None:
+                st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+            elif over:
+                st.error("G-code의 XYZ 이동 줄수가 64,000을 초과하여 Rapid 파일로 변환할 수 없습니다.")
+            elif save_rapid_clicked:
+                try:
+                    st.session_state.rapid_text = gcode_to_cone1500_module(
+                        gtxt,
+                        rx=st.session_state.rapid_rx,
+                        ry=st.session_state.rapid_ry,
+                        rz=st.session_state.rapid_rz,
+                        preset=st.session_state.mapping_preset,
+                        swap_a3_a4=True
+                    )
+                    st.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+                except Exception as e:
+                    st.error(f"Rapid 변환 실패: {e}")
+
+            if st.session_state.get("rapid_text"):
+                base = st.session_state.get("base_name", "output")
+                st.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+
+    # ---- Mapping Presets UI ----
+    with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
+        st.caption("각 Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A1/A2/A3/A4 출력 구간을 편집하세요.")
+
+        # 불러오기
+        up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
+        if up_json is not None:
+            try:
+                loaded = json.loads(up_json.read().decode("utf-8"))
+                if isinstance(loaded, dict) and all(k in loaded for k in ["0","90","-90"]):
+                    st.session_state.mapping_preset = loaded
+                    st.success("프리셋을 불러왔습니다.")
+                else:
+                    st.error("프리셋 형식이 올바르지 않습니다. (keys: '0','90','-90')")
+            except Exception as e:
+                st.error(f"프리셋 로드 실패: {e}")
+
+        # 편집 폼
+        def edit_axis(title_key: str, axis_key: str):
+            st.write(f"**Rz = {title_key}° — {axis_key}**")
+            cols = st.columns(4)
+            P = st.session_state.mapping_preset[title_key][axis_key]
+
+            # 입력 구간
+            in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(P["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
+            in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(P["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
+            P["in"] = [float(in0), float(in1)]
+
+            # 출력 (축별로 다름)
+            if axis_key == "X":
+                a1_0 = cols[2].number_input("A1_out[0]", value=float(P.get("A1_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
+                a1_1 = cols[3].number_input("A1_out[1]", value=float(P.get("A1_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
+                P["A1_out"] = [float(a1_0), float(a1_1)]
+
+                cols2 = st.columns(2)
+                a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
+                a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
+                if "A4_out" in P:
+                    P["A4_out"] = [float(a4_0), float(a4_1)]
+
+            elif axis_key == "Y":
+                a2_0 = cols[2].number_input("A2_out[0]", value=float(P.get("A2_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a20")
+                a2_1 = cols[3].number_input("A2_out[1]", value=float(P.get("A2_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a21")
+                P["A2_out"] = [float(a2_0), float(a2_1)]
+
+                cols2 = st.columns(2)
+                a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
+                a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
+                if "A4_out" in P:
+                    P["A4_out"] = [float(a4_0), float(a4_1)]
+
+            else:  # Z
+                a3_0 = cols[2].number_input("A3_out[0]", value=float(P.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
+                a3_1 = cols[3].number_input("A3_out[1]", value=float(P.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
+                P["A3_out"] = [float(a3_0), float(a3_1)]
+
+        for key_title in ["0", "90", "-90"]:
+            st.markdown(f"---\n**Rz = {key_title}°**")
+            edit_axis(key_title, "X")
+            edit_axis(key_title, "Y")
+            edit_axis(key_title, "Z")
+
+        # 저장(다운로드)
+        preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
+        st.download_button(
+            "Save preset JSON",
+            preset_json,
+            file_name="mapping_preset.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
 
         # ---- G-code 줄수 계산 & RAPID 저장 UI (안전 초기화 포함) ----
         gtxt = st.session_state.get("gcode_text")
@@ -1249,48 +1391,3 @@ if KEY_OK:
             st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
 
-
-        gtxt = st.session_state.get("gcode_text")
-        # --- 두 줄수 카운트 (안전 초기화 포함) ---
-        xyz_count = 0
-        total_count = 0
-        over = None
-        
-        if gtxt is not None and isinstance(gtxt, str):
-            try:
-                total_count = len(gtxt.splitlines())
-                xyz_count = _extract_xyz_lines_count(gtxt)
-                over = (xyz_count > MAX_LINES)
-            except Exception:
-                xyz_count = 0
-                total_count = 0
-                over = None
-        
-        # --- 사이드바에 표시 ---
-        try:
-        if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            st.session_state.rapid_text = gcode_to_cone1500_module(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=True,
-            )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
-
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True,
-            )
