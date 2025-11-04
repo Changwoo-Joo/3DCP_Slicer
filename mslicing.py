@@ -147,6 +147,30 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
+def densify_segment_by_distance(segment: np.ndarray, gap_threshold: float = 40.0, step: float = 20.0) -> np.ndarray:
+    """
+    인접 포인트 간 XY 거리(gap)가 gap_threshold(기본 40)보다 크면,
+    매 'step'(기본 20)마다 중간점을 보간해 추가한다.
+    Z는 선형보간.
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or step <= 1e-9:
+        return pts
+
+    out = [pts[0].copy()]
+    for p1, p2 in zip(pts[:-1], pts[1:]):
+        d_xy = float(np.linalg.norm((p2 - p1)[:2]))
+        if d_xy > gap_threshold:
+            n = int(math.floor(d_xy / step))
+            for k in range(1, n + 1):
+                t = min(1.0, (k * step) / d_xy)
+                out.append(p1 + t * (p2 - p1))
+        # 마지막 점(p2)을 반드시 포함
+        if not np.allclose(out[-1], p2):
+            out.append(p2.copy())
+
+    return np.asarray(out, dtype=float)
+
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -215,6 +239,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+            if st.session_state.get("densify_long_segments", False):
+                simplified = densify_segment_by_distance(simplified, 40.0, 20.0)
 
             if i_seg > 0:
                 s = simplified[0]
@@ -292,6 +318,8 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+            if st.session_state.get("densify_long_segments", False):
+                simplified = densify_segment_by_distance(simplified, 40.0, 20.0)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -697,6 +725,9 @@ e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on
 st.sidebar.subheader("Path processing")
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
+densify_on = st.sidebar.checkbox("Densify long segments (≥40 → every 20)", value=False,
+                                 help="인접 포인트 간 XY 거리가 40mm 이상이면 20mm 간격으로 중간 포인트를 보간")
+st.session_state.densify_long_segments = bool(densify_on)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
