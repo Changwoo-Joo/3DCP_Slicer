@@ -1220,14 +1220,28 @@ if KEY_OK:
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
             st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
-        # ---- 저장 버튼 ----
+
+
         gtxt = st.session_state.get("gcode_text")
         over = None
+        xyz_count = 0
+        total_count = 0
+        
         if gtxt is not None:
             xyz_count = _extract_xyz_lines_count(gtxt)
             total_count = len(gtxt.splitlines())
             over = (xyz_count > MAX_LINES)
+        
+        # 🔎 사이드바에 두 카운트 표시 (G-code 전체줄수 / XYZ 이동줄수)
+        with st.sidebar.expander("G-code Line Counts", expanded=True):
+            colA, colB = st.columns(2)
+            colA.metric("전체 줄수", f"{total_count:,}")
+            colB.metric("XYZ 이동줄수", f"{xyz_count:,}")
+            ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0
+            st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
 
+
+    
     # 🔎 사이드바에 두 카운트 표시 (expander + progress bar)
     with st.sidebar.expander("G-code Line Counts", expanded=True):
         colA, colB = st.columns(2)
