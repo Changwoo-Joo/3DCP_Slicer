@@ -316,30 +316,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 prev_start_xy = start[:2]
 
 
-            if i_seg > 0:
-                s = simplified[0]
-                g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
-
-            start = simplified[0]
-            g.append(f"G01 F{feed}")
-            if start_e_on:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
-            else:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
-
-            for p1, p2 in zip(simplified[:-1], simplified[1:]):
-                dist = np.linalg.norm(p2[:2] - p1[:2])
-                if e_on:
-                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
-                else:
-                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
-
-            if e0_on:
-                g.append("G01 E0")
-
-            if i_seg == 0:
-                prev_start_xy = start[:2]
-
     g.append(f"G01 F{feed}")
     if m30_on:
         g.append("M30")
