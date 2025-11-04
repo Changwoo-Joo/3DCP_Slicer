@@ -1,3 +1,5 @@
+
+나의 말:
 # -*- coding: utf-8 -*-
 import streamlit as st
 import numpy as np
@@ -147,69 +149,6 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
-def enforce_min_spacing(segment: np.ndarray, min_spacing: float, keep_ends: bool = True) -> np.ndarray:
-    """
-    인접 점 간 XY 거리 >= min_spacing 를 보장하도록 다운샘플링.
-    첫 점은 항상 유지, 이후 누적 이동이 min_spacing 이상일 때만 점 채택.
-    keep_ends=True면 마지막 점은 항상 유지(잔여 구간이 min_spacing 미만이어도 끝점 보존).
-    """
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) <= 2 or min_spacing <= 0:
-        return pts
-
-    out = [pts[0].copy()]
-    acc = 0.0
-    for p_prev, p_cur in zip(pts[:-1], pts[1:]):
-        d = float(np.linalg.norm((p_cur - p_prev)[:2]))
-        acc += d
-        if acc + 1e-12 >= float(min_spacing):
-            out.append(p_cur.copy())
-            acc = 0.0
-
-    if keep_ends and not np.allclose(out[-1], pts[-1]):
-        out[-1] = pts[-1].copy()
-    return np.asarray(out, dtype=float)
-
-
-def densify_segment_by_distance(segment: np.ndarray,
-                                gap_threshold: float = 40.0,
-                                step: float = 20.0,
-                                min_spacing_floor: float = 0.0) -> np.ndarray:
-    """
-    인접 XY 거리가 gap_threshold보다 큰 구간만 등간격 보간.
-    - step은 min_spacing_floor보다 작아지지 않도록 보정
-    - 마지막 잔여 구간이 min_spacing_floor 미만으로 남지 않도록 분할 개수 n을 줄여서 잔여를 키움
-    """
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2:
-        return pts
-
-    step = max(float(step), float(min_spacing_floor)) if min_spacing_floor > 0 else float(step)
-
-    out = [pts[0].copy()]
-    for p1, p2 in zip(pts[:-1], pts[1:]):
-        d_xy = float(np.linalg.norm((p2 - p1)[:2]))
-        if d_xy > gap_threshold and step > 1e-9:
-            # 기본 n
-            if min_spacing_floor > 0:
-                n = int(math.floor(d_xy / step))
-                # 잔여 = d_xy - n*step 가 min_spacing_floor 미만이면 n을 줄여서 잔여를 키움
-                while n > 0 and (d_xy - n*step) < min_spacing_floor:
-                    n -= 1
-            else:
-                n = int(math.floor(d_xy / step))
-
-            for k in range(1, n + 1):
-                t = (k * step) / d_xy
-                if t > 1.0:
-                    t = 1.0
-                out.append(p1 + t * (p2 - p1))
-
-        if not np.allclose(out[-1], p2):
-            out.append(p2.copy())
-    return np.asarray(out, dtype=float)
-
-
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -277,44 +216,31 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
-        
-            # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
-            # 1) 과밀 구간 정리(삭제)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
-        
-            # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
-            simplified = densify_segment_by_distance(
-                simplified,
-                gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
-                step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
-                min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
-            )
-        
+
             if i_seg > 0:
                 s = simplified[0]
                 g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
-        
+
             start = simplified[0]
             g.append(f"G01 F{feed}")
             if start_e_on:
                 g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
             else:
                 g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
-        
+
             for p1, p2 in zip(simplified[:-1], simplified[1:]):
                 dist = np.linalg.norm(p2[:2] - p1[:2])
                 if e_on:
                     g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
                 else:
                     g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
-        
+
             if e0_on:
                 g.append("G01 E0")
-        
+
             if i_seg == 0:
                 prev_start_xy = start[:2]
-
 
     g.append(f"G01 F{feed}")
     if m30_on:
@@ -367,24 +293,10 @@ def compute_slice_paths_with_travel(
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
-        
-            # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
-            # 1) 과밀 구간 정리(삭제)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
-        
-            # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
-            simplified = densify_segment_by_distance(
-                simplified,
-                gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
-                step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
-                min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
-            )
-        
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
-
 
         if not layer_polys:
             continue
@@ -787,9 +699,6 @@ e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on
 st.sidebar.subheader("Path processing")
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
-densify_on = st.sidebar.checkbox("Densify long segments (≥40 → every 20)", value=False,
-                                 help="인접 포인트 간 XY 거리가 40mm 이상이면 20mm 간격으로 중간 포인트를 보간")
-st.session_state.densify_long_segments = bool(densify_on)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
@@ -1115,7 +1024,6 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
     return header + open_decl + body + close_decl
 
 # ---- 사이드바: Rapid UI ----
-# ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
@@ -1123,199 +1031,6 @@ if KEY_OK:
 
     if st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid Settings", expanded=True):
-            # --- 자세(Rx/Ry/Rz) 입력 ---
-            st.session_state.rapid_rx = st.number_input(
-                "Rx (deg)", value=float(st.session_state.get("rapid_rx", 0.0)), step=0.1, format="%.2f"
-            )
-            st.session_state.rapid_ry = st.number_input(
-                "Ry (deg)", value=float(st.session_state.get("rapid_ry", 0.0)), step=0.1, format="%.2f"
-            )
-            rz_preset = st.selectbox(
-                "Rz (deg) preset", options=[0.0, 90.0, -90.0],
-                index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0)
-            )
-            st.session_state.rapid_rz = float(rz_preset)
-
-            # --- G-code 줄수 계산 & RAPID 저장 UI (안전 초기화 포함) ---
-            gtxt = st.session_state.get("gcode_text")
-            xyz_count = 0
-            total_count = 0
-            over = None
-            if isinstance(gtxt, str):
-                try:
-                    total_count = len(gtxt.splitlines())
-                    xyz_count = _extract_xyz_lines_count(gtxt)
-                    over = (xyz_count > MAX_LINES)
-                except Exception as e:
-                    st.warning(f"줄수 계산 오류: {e}")
-                    total_count = 0
-                    xyz_count = 0
-                    over = None
-
-            with st.expander("G-code Line Counts", expanded=True):
-                colA, colB = st.columns(2)
-                colA.metric("전체 줄수", f"{int(total_count):,}")
-                colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
-                ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
-                st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
-
-            save_rapid_clicked = st.button(
-                "Save Rapid (.modx)", use_container_width=True,
-                disabled=(gtxt is None or (over is True))
-            )
-
-            if gtxt is None:
-                st.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-            elif over:
-                st.error("G-code의 XYZ 이동 줄수가 64,000을 초과하여 Rapid 파일로 변환할 수 없습니다.")
-            elif save_rapid_clicked:
-                try:
-                    st.session_state.rapid_text = gcode_to_cone1500_module(
-                        gtxt,
-                        rx=st.session_state.rapid_rx,
-                        ry=st.session_state.rapid_ry,
-                        rz=st.session_state.rapid_rz,
-                        preset=st.session_state.mapping_preset,
-                        swap_a3_a4=True
-                    )
-                    st.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
-                except Exception as e:
-                    st.error(f"Rapid 변환 실패: {e}")
-
-            if st.session_state.get("rapid_text"):
-                base = st.session_state.get("base_name", "output")
-                st.download_button(
-                    "Rapid 저장 (.modx)",
-                    st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-
-    # ---- Mapping Presets UI ----
-    with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
-        st.caption("각 Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A1/A2/A3/A4 출력 구간을 편집하세요.")
-
-        # 불러오기
-        up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
-        if up_json is not None:
-            try:
-                loaded = json.loads(up_json.read().decode("utf-8"))
-                if isinstance(loaded, dict) and all(k in loaded for k in ["0","90","-90"]):
-                    st.session_state.mapping_preset = loaded
-                    st.success("프리셋을 불러왔습니다.")
-                else:
-                    st.error("프리셋 형식이 올바르지 않습니다. (keys: '0','90','-90')")
-            except Exception as e:
-                st.error(f"프리셋 로드 실패: {e}")
-
-        # 편집 폼
-        def edit_axis(title_key: str, axis_key: str):
-            st.write(f"**Rz = {title_key}° — {axis_key}**")
-            cols = st.columns(4)
-            P = st.session_state.mapping_preset[title_key][axis_key]
-
-            # 입력 구간
-            in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(P["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
-            in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(P["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
-            P["in"] = [float(in0), float(in1)]
-
-            # 출력 (축별로 다름)
-            if axis_key == "X":
-                a1_0 = cols[2].number_input("A1_out[0]", value=float(P.get("A1_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
-                a1_1 = cols[3].number_input("A1_out[1]", value=float(P.get("A1_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
-                P["A1_out"] = [float(a1_0), float(a1_1)]
-
-                cols2 = st.columns(2)
-                a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
-                a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
-                if "A4_out" in P:
-                    P["A4_out"] = [float(a4_0), float(a4_1)]
-
-            elif axis_key == "Y":
-                a2_0 = cols[2].number_input("A2_out[0]", value=float(P.get("A2_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a20")
-                a2_1 = cols[3].number_input("A2_out[1]", value=float(P.get("A2_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a21")
-                P["A2_out"] = [float(a2_0), float(a2_1)]
-
-                cols2 = st.columns(2)
-                a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(P.get("A4_out", [0.0,0.0])[0] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
-                a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(P.get("A4_out", [0.0,0.0])[1] if "A4_out" in P else 0.0), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
-                if "A4_out" in P:
-                    P["A4_out"] = [float(a4_0), float(a4_1)]
-
-            else:  # Z
-                a3_0 = cols[2].number_input("A3_out[0]", value=float(P.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
-                a3_1 = cols[3].number_input("A3_out[1]", value=float(P.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
-                P["A3_out"] = [float(a3_0), float(a3_1)]
-
-        for key_title in ["0", "90", "-90"]:
-            st.markdown(f"---\n**Rz = {key_title}°**")
-            edit_axis(key_title, "X")
-            edit_axis(key_title, "Y")
-            edit_axis(key_title, "Z")
-
-        # 저장(다운로드)
-        preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-        st.download_button(
-            "Save preset JSON",
-            preset_json,
-            file_name="mapping_preset.json",
-            mime="application/json",
-            use_container_width=True
-        )
-
-
-        # ---- G-code 줄수 계산 & RAPID 저장 UI (안전 초기화 포함) ----
-        gtxt = st.session_state.get("gcode_text")
-        xyz_count = 0
-        total_count = 0
-        over = None
-        if isinstance(gtxt, str):
-            try:
-                total_count = len(gtxt.splitlines())
-                xyz_count = _extract_xyz_lines_count(gtxt)
-                over = (xyz_count > MAX_LINES)
-            except Exception as e:
-                st.sidebar.warning(f"줄수 계산 오류: {e}")
-                total_count = 0
-                xyz_count = 0
-                over = None
-
-        with st.sidebar.expander("G-code Line Counts", expanded=True):
-            colA, colB = st.columns(2)
-            colA.metric("전체 줄수", f"{int(total_count):,}")
-            colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
-            ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
-            st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
-
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code의 XYZ 이동 줄수가 64,000을 초과하여 Rapid 파일로 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            try:
-                st.session_state.rapid_text = gcode_to_cone1500_module(
-                    gtxt,
-                    rx=st.session_state.rapid_rx,
-                    ry=st.session_state.rapid_ry,
-                    rz=st.session_state.rapid_rz,
-                    preset=st.session_state.mapping_preset,
-                    swap_a3_a4=True
-                )
-                st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
-            except Exception as e:
-                st.sidebar.error(f"Rapid 변환 실패: {e}")
-
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
-            )
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
 
@@ -1390,4 +1105,196 @@ if KEY_OK:
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
             st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
+        # ---- 저장 버튼 ----
+        gtxt = st.session_state.get("gcode_text")
+        over = None
+        if gtxt is not None:
+            xyz_count = _extract_xyz_lines_count(gtxt)
+            over = (xyz_count > MAX_LINES)
 
+        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
+        if gtxt is None:
+            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+        elif over:
+            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+        elif save_rapid_clicked:
+            st.session_state.rapid_text = gcode_to_cone1500_module(
+                gtxt,
+                rx=st.session_state.rapid_rx,
+                ry=st.session_state.rapid_ry,
+                rz=st.session_state.rapid_rz,
+                preset=st.session_state.mapping_preset, 
+                swap_a3_a4=True)
+            st.sidebar.success(
+                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
+            )
+
+        if st.session_state.get("rapid_text"):
+            base = st.session_state.get("base_name", "output")
+            st.sidebar.download_button(
+                "Rapid 저장 (.modx)",
+                st.session_state.rapid_text,
+                file_name=f"{base}.modx",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+# =========================
+# Layout (Center + Right)
+# =========================
+center_col, right_col = st.columns([14, 3], gap="large")
+
+segments = None
+total_segments = 0
+if st.session_state.get("paths_items") is not None:
+    segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
+    total_segments = len(segments)
+
+with right_col:
+    st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
+
+    if st.session_state.get("ui_banner"):
+        st.success(st.session_state.ui_banner)
+
+    st.subheader("View Options")
+    apply_offsets = st.checkbox(
+        "Apply layer width",
+        value=bool(st.session_state.get("apply_offsets_flag", False)),
+        help="Trim/Layer Width (mm)를 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
+        disabled=(segments is None)
+    )
+    st.session_state.apply_offsets_flag = bool(apply_offsets)
+
+    include_z_climb = st.checkbox(
+        "Include Z-climb offsets",
+        value=True,
+        help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
+        disabled=(segments is None or not apply_offsets)
+    )
+
+    emphasize_caps = st.checkbox(
+        "Emphasize caps",
+        value=False,
+        help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
+        disabled=(segments is None or not apply_offsets)
+    )
+
+    if e_on:
+        show_dotted = st.checkbox("Show dotted travel lines", value=True, disabled=(segments is None))
+        travel_mode = "dotted" if show_dotted else "hidden"
+    else:
+        st.checkbox("Show dotted travel lines", value=False, disabled=True,
+                    help="Insert E values OFF이면 travel은 실선으로 표기")
+        travel_mode = "solid"
+    prev_mode = st.session_state.get("paths_travel_mode", "solid")
+    st.session_state.paths_travel_mode = travel_mode
+
+    dims_placeholder = st.empty()
+    st.markdown("---")
+
+    if segments is None or total_segments == 0:
+        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
+        scrub = None
+        scrub_num = None
+    else:
+        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
+                          help="해당 세그먼트까지 누적 표시")
+        scrub_num = st.number_input("행 번호", 0, int(total_segments),
+                                    int(default_val), 1,
+                                    help="표시할 최종 세그먼트(행) 번호")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---- 계산/버퍼 구성 ----
+if segments is not None and total_segments > 0:
+    default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+    target = default_val
+    if 'scrub' in locals() and scrub is not None and scrub != default_val:
+        target = int(scrub)
+    if 'scrub_num' in locals() and scrub_num is not None and scrub_num != default_val:
+        target = int(scrub_num)
+    target = int(clamp(target, 0, total_segments))
+
+    DRAW_LIMIT = 15000
+    draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+
+    built = st.session_state.paths_anim_buf["built_upto"]
+    prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+    mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+
+    if mode_changed or (draw_stride != prev_stride) or (target < built):
+        rebuild_buffers_to(segments, target, stride=draw_stride)
+    elif target > built:
+        append_segments_to_buffers(segments, built, target, stride=draw_stride)
+
+    st.session_state.paths_scrub = target
+
+    if bool(st.session_state.get("apply_offsets_flag", False)):
+        half_w = float(trim_dist) * 0.5
+        compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
+        st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+        add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
+        bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
+        z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
+        dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
+        dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
+    else:
+        st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
+        st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
+        st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
+        emphasize_caps = False
+        dims_placeholder.markdown("_Offsets OFF_")
+
+# ---- 중앙: 탭 뷰어 ----
+with center_col:
+    tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
+
+    with tab_paths:
+        if segments is not None and total_segments > 0:
+            if "paths_base_fig" not in st.session_state:
+                st.session_state.paths_base_fig = make_base_fig(height=820)
+            fig = st.session_state.paths_base_fig
+            update_fig_with_buffers(
+                fig,
+                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
+                show_caps=bool(emphasize_caps)
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+            tm = st.session_state.paths_travel_mode
+            if not e_on:
+                travel_lbl = "Travel: solid (Insert E OFF)"
+            else:
+                travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
+            st.caption(
+                f"세ग먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
+                + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
+                + (" | Caps 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
+                + (f" | {travel_lbl}")
+                + (f" | Viz stride: ×{st.session_state.paths_anim_buf.get('stride',1)}"
+                   if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
+            )
+        else:
+            st.info("슬라이싱을 실행하세요.")
+
+    with tab_stl:
+        if st.session_state.get("mesh") is not None:
+            st.plotly_chart(
+                plot_trimesh(st.session_state.mesh, height=820),
+                use_container_width=True,
+                key="stl_chart",
+                config={"displayModeBar": False}
+            )
+        else:
+            st.info("STL을 업로드하세요.")
+
+    with tab_gcode:
+        if st.session_state.get("gcode_text"):
+            st.code(st.session_state.gcode_text, language="gcode")
+        else:
+            st.info("G-code를 생성하세요.")
+
+# 키가 없거나 만료 시 안내
+if not KEY_OK:
+    st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
