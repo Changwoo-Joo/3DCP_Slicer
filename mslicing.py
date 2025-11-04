@@ -277,20 +277,43 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
-
+        
             # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
             # 1) 과밀 구간 정리(삭제)
-
-        simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
-
-# 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
-        simplified = densify_segment_by_distance(
-            simplified,
-            gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
-            step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
-            min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
-        )
-
+            simplified = simplify_segment(trimmed, min_spacing)
+            simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+        
+            # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
+            simplified = densify_segment_by_distance(
+                simplified,
+                gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
+                step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
+                min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
+            )
+        
+            if i_seg > 0:
+                s = simplified[0]
+                g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
+        
+            start = simplified[0]
+            g.append(f"G01 F{feed}")
+            if start_e_on:
+                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
+            else:
+                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+        
+            for p1, p2 in zip(simplified[:-1], simplified[1:]):
+                dist = np.linalg.norm(p2[:2] - p1[:2])
+                if e_on:
+                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
+                else:
+                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
+        
+            if e0_on:
+                g.append("G01 E0")
+        
+            if i_seg == 0:
+                prev_start_xy = start[:2]
 
 
             if i_seg > 0:
@@ -368,23 +391,24 @@ def compute_slice_paths_with_travel(
             seg3d_no_dup = ensure_open_ring(seg3d)
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
-
+        
             # (선택) RDP 간소화: 너무 강하게 줄이지 않도록 min_spacing 그대로 사용
             # 1) 과밀 구간 정리(삭제)
-        simplified = simplify_segment(trimmed, min_spacing)
-        simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
-
-        # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
-        simplified = densify_segment_by_distance(
-            simplified,
-            gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
-            step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
-            min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
-        )
-
+            simplified = simplify_segment(trimmed, min_spacing)
+            simplified = enforce_min_spacing(simplified, min_spacing, keep_ends=True)
+        
+            # 2) 과대 구간 보정(삽입) — 항상 최대 간격 ≤ min_spacing
+            simplified = densify_segment_by_distance(
+                simplified,
+                gap_threshold=float(min_spacing) + 1e-9,  # 간격이 min_spacing 초과하면 삽입
+                step=float(min_spacing),                  # 정확히 min_spacing 간격으로 삽입
+                min_spacing_floor=float(min_spacing)      # 끝에 너무 짧은 꼬리 방지
+            )
+        
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
+
 
         if not layer_polys:
             continue
