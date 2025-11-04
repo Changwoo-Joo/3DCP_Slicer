@@ -1250,7 +1250,36 @@ if KEY_OK:
         st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
 
 
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
+        save_rapid_clicked = 
+# --- G-code Line Count & RAPID 제한 표시 (통합 버전) ---
+MAX_LINES = 64000
+gtxt = st.session_state.get("gcode_text")
+xyz_count = 0
+total_count = 0
+over = None
+
+if gtxt is not None and isinstance(gtxt, str):
+    try:
+        total_count = len(gtxt.splitlines())
+        xyz_count = len([l for l in gtxt.splitlines() if l.strip().startswith(("G0", "G1")) and any(c in l for c in "XYZ")])
+        over = (xyz_count > MAX_LINES)
+    except Exception:
+        xyz_count = 0
+        total_count = 0
+        over = None
+
+try:
+    with st.sidebar.expander("G-code Line Counts", expanded=True):
+        colA, colB = st.columns(2)
+        colA.metric("전체 줄수", f"{int(total_count):,}")
+        colB.metric("XYZ 이동줄수", f"{int(xyz_count):,}")
+        ratio = min(xyz_count / float(MAX_LINES), 1.0) if MAX_LINES > 0 else 0.0
+        st.progress(ratio, text=f"RAPID 제한 64,000 대비 {ratio*100:.1f}%")
+except Exception as e:
+    st.sidebar.warning(f"줄수 계산 중 오류 발생: {e}")
+
+
+st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
         if gtxt is None:
             st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
         elif over:
