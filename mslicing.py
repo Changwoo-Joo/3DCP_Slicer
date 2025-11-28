@@ -1290,6 +1290,15 @@ if segments is not None and total_segments > 0:
         z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
         dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
         dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
+        
+    if segments is not None and target > 0:
+        total_len = 0.0
+        for i in range(target):
+            p1, p2, is_travel, is_extruding = segments[i]
+            if is_extruding:  # E>0 구간만 길이로 인정
+                total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
+
+    st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
     else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
