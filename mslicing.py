@@ -1298,7 +1298,8 @@ if segments is not None and total_segments > 0:
             if is_extruding:  # E>0 구간만 길이로 인정
                 total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
 
-    st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
+        st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
+        
     else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
