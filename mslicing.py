@@ -1067,7 +1067,7 @@ if KEY_OK:
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
 
-            rz_preset = st.selectbox("Rz (deg) preset", options=[0.0, 90.0, -90.0],
+            rz_preset = st.selectbox("Rz (deg) preset", options=[0.00, 90.0, -90.0],
                                      index={0.0:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
