@@ -15,8 +15,6 @@ from pathlib import Path
 # =========================
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 
-
-
 # ── 전역 CSS (UI만 수정) ──
 st.markdown(
     """
@@ -344,6 +342,43 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 is_extruding = (not is_travel)
                 segs.append((p1, p2, is_travel, is_extruding))
     return segs
+
+# === (NEW) 현재 행 기준 레이어 전체 길이 계산 ===
+def compute_layer_length_for_index(
+    segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
+    upto_idx: int
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    upto_idx 번째 세그먼트까지 기준으로:
+      - 그 구간에서 마지막 '압출 세그먼트'가 속한 Z 레이어를 찾고
+      - 해당 Z 레이어 전체(모든 압출 세그먼트)의 XY 길이 합을 계산.
+    반환: (레이어 Z값, 전체 길이[mm]) / 없으면 (None, None)
+    """
+    if not segments or upto_idx <= 0:
+        return None, None
+
+    N = len(segments)
+    upto = min(max(int(upto_idx), 0), N)
+
+    # 1) upto 구간 내 마지막 압출 세그먼트의 레이어 Z 찾기
+    layer_z = None
+    for i in range(upto):
+        p1, p2, is_travel, is_extruding = segments[i]
+        if is_extruding:
+            layer_z = float((p1[2] + p2[2]) * 0.5)
+    if layer_z is None:
+        return None, None
+
+    # 2) 해당 레이어 Z의 전체 XY 길이 합산
+    total_len = 0.0
+    for p1, p2, is_travel, is_extruding in segments:
+        if not is_extruding:
+            continue
+        zmid = float((p1[2] + p2[2]) * 0.5)
+        if abs(zmid - layer_z) < 1e-6:
+            total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
+
+    return layer_z, total_len if total_len > 0 else None
 
 # === 누적 렌더 버퍼 ===
 def reset_anim_buffers():
@@ -1190,29 +1225,47 @@ with right_col:
     dims_placeholder = st.empty()
     st.markdown("---")
 
+    # 우측 슬라이더 / 행번호 + 레이어 길이 표시
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
         scrub = None
         scrub_num = None
     else:
+        # 현재 저장된 값 기준 default 지정
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+
         scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
                           help="해당 세그먼트까지 누적 표시")
         scrub_num = st.number_input("행 번호", 0, int(total_segments),
                                     int(default_val), 1,
                                     help="표시할 최종 세그먼트(행) 번호")
 
+        # 슬라이더/행번호 입력을 통합해서 target 결정
+        target = default_val
+        if scrub != default_val:
+            target = int(scrub)
+        if scrub_num != default_val:
+            target = int(scrub_num)
+
+        target = int(clamp(target, 0, total_segments))
+        st.session_state.paths_scrub = target
+
+        # ---- (NEW) 현재 행 기준 레이어 전체 길이 표시 ----
+        layer_z, layer_len = compute_layer_length_for_index(segments, target)
+        if layer_z is not None and layer_len is not None:
+            st.caption(
+                f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · "
+                f"{layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)"
+            )
+        else:
+            st.caption("현재 레이어 길이: -")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
-    default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    target = default_val
-    if 'scrub' in locals() and scrub is not None and scrub != default_val:
-        target = int(scrub)
-    if 'scrub_num' in locals() and scrub_num is not None and scrub_num != default_val:
-        target = int(scrub_num)
-    target = int(clamp(target, 0, total_segments))
+    # 위에서 결정된 값을 그대로 사용
+    target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
     DRAW_LIMIT = 15000
     draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
@@ -1266,7 +1319,7 @@ with center_col:
             else:
                 travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
             st.caption(
-                f"세ग먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
+                f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
                 + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
                 + (" | Caps 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
