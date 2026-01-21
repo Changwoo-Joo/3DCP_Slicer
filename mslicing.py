@@ -1226,8 +1226,8 @@ def gcode_to_cone1500_module(
             "x": float(xs_out[i]),
             "y": float(ys_out[i]),
             "z": float(zs_out[i]),
-            "a1": float(a1_arr[i]),
-            "a2": float(a2_arr[i]),
+            "a1": float(a1_des[i]),
+            "a2": float(a2_des[i]),
             "a3": float(a3_list[i]),
             "a4": float(a4_list[i]),
             "extr": bool(is_extruding_list[i]) if i < len(is_extruding_list) else False,
@@ -1492,7 +1492,7 @@ def gcode_to_cone1500_module(
             a3 = fraz(a3_v)
             a4 = fra4(a4_v)
 
-            lines_out.append(f'"{x},{y},{z},+000.00,+000.00,+090.00,{a1},{a2},{a3},{a4}",')
+            lines_out.append(f"{x},{y},{z},+000.00,+000.00,+090.00,{a1},{a2},{a3},{a4}")
 
         # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
         while len(lines_out) < MAX_LINES:
