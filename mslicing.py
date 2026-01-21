@@ -663,6 +663,16 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
+# --- (NEW) A1/A2 gap-profile settings ---
+if "a12_gap_profile_on" not in st.session_state:
+    st.session_state.a12_gap_profile_on = False
+if "a12_gap_mm" not in st.session_state:
+    st.session_state.a12_gap_mm = 100.0
+if "a12_apply_a1" not in st.session_state:
+    st.session_state.a12_apply_a1 = True
+if "a12_apply_a2" not in st.session_state:
+    st.session_state.a12_apply_a2 = True
+
 if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
@@ -899,8 +909,17 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
-                             preset: Dict[str, Any], swap_a3_a4: bool = False) -> str:
+def gcode_to_cone1500_module(
+    gcode_text: str,
+    rx: float, ry: float, rz: float,
+    preset: Dict[str, Any],
+    swap_a3_a4: bool = False,
+    # --- (NEW) A1/A2 gap-profile 옵션 ---
+    a12_gap_profile_on: bool = False,
+    a12_gap_mm: float = 100.0,
+    a12_apply_a1: bool = True,
+    a12_apply_a2: bool = True
+) -> str:
     """
     A4만 '비례 분해(증분 누적)'로 동작.
     추가: 출력 좌표 보정
@@ -908,6 +927,12 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
       - Rz=90:  Y' = Y - A4  (A2는 Y'로 산출)
       - Rz=0:   X' = X - A4  (A1은 X'로 산출)
       - Rz=-90: Y' = Y - (A4_max - A4)  (A2는 Y'로 산출; A4 범위 0~max 가정)
+
+    (NEW)
+      - A1/A2에 대해 "갭 거리(mm)" 기반 분담 프로파일 적용:
+        블록(연속 구간) 시작에서 gap_mm 만큼은 외부축 hold(출발 지연),
+        블록 끝에서 gap_mm 만큼은 외부축이 먼저 도착(정지 선행).
+      - 블록 경계는 'Z 토큰이 포함된 G0/G1 라인'을 만나면 flush (기존 파싱은 유지)
     """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -949,6 +974,49 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
             ext_part = -ext_part
         return ext_part
 
+    # --- (NEW) gap-profile helper ---
+    def _apply_gap_profile(vals_base: List[float], xy_pts: List[Tuple[float, float]], gap_mm: float, enabled: bool) -> List[float]:
+        if (not enabled) or (gap_mm is None) or (gap_mm <= 0) or (len(vals_base) < 2) or (len(xy_pts) < 2):
+            return vals_base
+
+        # cumulative distance
+        s_list = [0.0]
+        total = 0.0
+        for i in range(1, len(xy_pts)):
+            dx = float(xy_pts[i][0] - xy_pts[i-1][0])
+            dy = float(xy_pts[i][1] - xy_pts[i-1][1])
+            total += math.hypot(dx, dy)
+            s_list.append(total)
+
+        L = float(total)
+        if L <= 1e-9:
+            return vals_base
+
+        # adjust gap if too large
+        d = float(gap_mm)
+        max_d = max(0.0, (L * 0.5) - 1e-6)
+        if d > max_d:
+            d = max_d
+        if d <= 0.0:
+            return vals_base
+
+        start = float(vals_base[0])
+        end = float(vals_base[-1])
+        denom = float(L - 2.0 * d)
+
+        out = []
+        for s in s_list:
+            if s <= d:
+                g = 0.0
+            elif s >= (L - d):
+                g = 1.0
+            else:
+                g = (s - d) / denom if denom > 1e-12 else 0.0
+                if g < 0.0: g = 0.0
+                if g > 1.0: g = 1.0
+            out.append(start + g * (end - start))
+        return out
+
     lines_out = []
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
@@ -956,7 +1024,62 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
     prev_x = prev_y = prev_z = 0.0
     cur_a4 = 0.0  # 누적 A4
 
+    # --- (NEW) block buffer (포인트 단위) ---
+    block_pts: List[Dict[str, float]] = []
+    hit_limit = False
+
+    def _emit_block():
+        nonlocal hit_limit, lines_out, block_pts
+        if hit_limit or (not block_pts):
+            block_pts = []
+            return
+
+        # base lists
+        xs = [float(p["x_out"]) for p in block_pts]
+        ys = [float(p["y_out"]) for p in block_pts]
+        xy = list(zip(xs, ys))
+
+        a1_base_list = [float(p["a1_base"]) for p in block_pts]
+        a2_base_list = [float(p["a2_base"]) for p in block_pts]
+
+        use_profile = bool(a12_gap_profile_on) and (float(a12_gap_mm) > 0.0)
+
+        if use_profile:
+            if bool(a12_apply_a1):
+                a1_list = _apply_gap_profile(a1_base_list, xy, float(a12_gap_mm), True)
+            else:
+                a1_list = a1_base_list
+
+            if bool(a12_apply_a2):
+                a2_list = _apply_gap_profile(a2_base_list, xy, float(a12_gap_mm), True)
+            else:
+                a2_list = a2_base_list
+        else:
+            a1_list = a1_base_list
+            a2_list = a2_base_list
+
+        for i, p in enumerate(block_pts):
+            x_out = float(p["x_out"]); y_out = float(p["y_out"]); z_out = float(p["z_out"])
+            a3 = float(p["a3"]); a4 = float(p["a4"])
+            a1 = float(a1_list[i]); a2 = float(a2_list[i])
+
+            fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
+            fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
+            lines_out.append(
+                (f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}"
+                 if swap_a3_a4 else
+                 f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+            )
+
+            if len(lines_out) >= MAX_LINES:
+                hit_limit = True
+                break
+
+        block_pts = []
+
     for raw in gcode_text.splitlines():
+        if hit_limit:
+            break
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
@@ -964,6 +1087,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
         # 좌표 파싱(없으면 이전 유지)
         cx, cy, cz = prev_x, prev_y, prev_z
         has_any = False
+        has_z_tok = False
         for p in t.split():
             if p.startswith("X"):
                 try: cx = float(p[1:]); has_any = True
@@ -972,10 +1096,17 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
                 try: cy = float(p[1:]); has_any = True
                 except: pass
             elif p.startswith("Z"):
+                has_z_tok = True
                 try: cz = float(p[1:]); has_any = True
                 except: pass
         if not has_any:
             continue
+
+        # (NEW) Z 토큰 라인을 만나면 이전 블록 flush 후 새 블록 시작
+        if has_z_tok and len(block_pts) > 0:
+            _emit_block()
+            if hit_limit:
+                break
 
         # --- A3(절대) 먼저 산출 (원본 Z 기반) ---
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
@@ -1019,20 +1150,28 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
             a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
             y_out = cy - (a4_max - cur_a4)
 
-        # --- A1/A2는 보정된 축으로 계산, A3는 원본 Z 기반 값 유지 ---
-        a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
-        a2 = _linmap(y_out, y0, y1, a2_0, a2_1)
+        # --- A1/A2 base는 보정된 축으로 계산 ---
+        a1_base = _linmap(x_out, x0, x1, a1_0, a1_1)
+        a2_base = _linmap(y_out, y0, y1, a2_0, a2_1)
         a3 = a3_abs
         a4 = cur_a4
 
-        fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
-        fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-        lines_out.append((f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}" if swap_a3_a4 else f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}"))
-
-        if len(lines_out) >= MAX_LINES:
-            break
+        # 블록에 포인트 저장 (출력은 flush에서)
+        block_pts.append({
+            "x_out": float(x_out),
+            "y_out": float(y_out),
+            "z_out": float(z_out),
+            "a1_base": float(a1_base),
+            "a2_base": float(a2_base),
+            "a3": float(a3),
+            "a4": float(a4),
+        })
 
         prev_x, prev_y, prev_z = cx, cy, cz
+
+    # 마지막 블록 flush
+    if (not hit_limit) and len(block_pts) > 0:
+        _emit_block()
 
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
@@ -1045,6 +1184,7 @@ def gcode_to_cone1500_module(gcode_text: str, rx: float, ry: float, rz: float,
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
               "!*** A1/A2 from adjusted axes; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
+              "!*** (Option) A1/A2 gap-profile: hold at start/end by gap_mm (lead/lag).\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1070,6 +1210,32 @@ if KEY_OK:
             rz_preset = st.selectbox("Rz (deg) preset", options=[0.00, 90.0, -90.0],
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
+
+            # ---- (NEW) A1/A2 Gap Profile UI ----
+            st.markdown("---")
+            st.session_state.a12_gap_profile_on = st.checkbox(
+                "A1/A2 gap-profile (A축 출발 지연 + 도착 선행)",
+                value=bool(st.session_state.get("a12_gap_profile_on", False)),
+                help="블록(연속 구간)에서 시작 gap_mm 동안 A축 hold, 끝 gap_mm 전에 A축이 먼저 도착합니다."
+            )
+            st.session_state.a12_gap_mm = st.number_input(
+                "Gap distance (mm)",
+                min_value=0.0, max_value=100000.0,
+                value=float(st.session_state.get("a12_gap_mm", 100.0)),
+                step=10.0, format="%.1f",
+                disabled=not bool(st.session_state.a12_gap_profile_on)
+            )
+            cols_gap = st.columns(2)
+            st.session_state.a12_apply_a1 = cols_gap[0].checkbox(
+                "Apply to A1",
+                value=bool(st.session_state.get("a12_apply_a1", True)),
+                disabled=not bool(st.session_state.a12_gap_profile_on)
+            )
+            st.session_state.a12_apply_a2 = cols_gap[1].checkbox(
+                "Apply to A2",
+                value=bool(st.session_state.get("a12_apply_a2", True)),
+                disabled=not bool(st.session_state.a12_gap_profile_on)
+            )
 
         # ---- Mapping Presets UI ----
         with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
@@ -1156,8 +1322,14 @@ if KEY_OK:
                 rx=st.session_state.rapid_rx,
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset, 
-                swap_a3_a4=True)
+                preset=st.session_state.mapping_preset,
+                swap_a3_a4=True,
+                # --- (NEW) pass A1/A2 gap-profile settings ---
+                a12_gap_profile_on=bool(st.session_state.get("a12_gap_profile_on", False)),
+                a12_gap_mm=float(st.session_state.get("a12_gap_mm", 100.0)),
+                a12_apply_a1=bool(st.session_state.get("a12_apply_a1", True)),
+                a12_apply_a2=bool(st.session_state.get("a12_apply_a2", True)),
+            )
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
             )
@@ -1290,7 +1462,7 @@ if segments is not None and total_segments > 0:
         z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
         dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
         dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
-        
+
     if segments is not None and target > 0:
         total_len = 0.0
         for i in range(target):
@@ -1299,7 +1471,7 @@ if segments is not None and total_segments > 0:
                 total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
 
         st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
-        
+
     else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
