@@ -1202,7 +1202,13 @@ def gcode_to_cone1500_module(
                   "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
                   "!\n"
                   "!******************************************************************************************************************************\n")
-        cnt_str = str(len(lines_out))
+        # pad to fixed 64,000 lines (RAPID side expects fixed array size)
+        if len(lines_out) > MAX_LINES:
+            lines_out = lines_out[:MAX_LINES]
+        while len(lines_out) < MAX_LINES:
+            lines_out.append(PAD_LINE)
+
+        cnt_str = str(MAX_LINES)
         open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
         body = ""
         for i, ln in enumerate(lines_out):
@@ -1496,9 +1502,12 @@ def gcode_to_cone1500_module(
 
             lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
 
-        # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
-        # NOTE: do NOT pad to MAX_LINES; export only actual converted points (<= MAX_LINES).
+        # 라인 수가 MAX_LINES(64,000)보다 부족하면 PAD_LINE으로 채운다.
+        # (현장 파서/로봇쪽에서 배열 길이가 정확히 64,000이어야 하는 경우가 있음)
         if len(lines_out) == 0:
+            lines_out.append(PAD_LINE)
+
+        while len(lines_out) < MAX_LINES:
             lines_out.append(PAD_LINE)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
@@ -1510,7 +1519,7 @@ def gcode_to_cone1500_module(
               "!*** A1/A2 optional distance-profile(lead/lag) + deadband; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
-    cnt_str = str(len(lines_out))
+    cnt_str = str(MAX_LINES)
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
     body = ""
     for i, ln in enumerate(lines_out):
