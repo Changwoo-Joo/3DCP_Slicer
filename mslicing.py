@@ -663,16 +663,6 @@ if "rapid_rz" not in st.session_state:
 if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
-# --- (NEW) A1/A2 gap-profile settings ---
-if "a12_gap_profile_on" not in st.session_state:
-    st.session_state.a12_gap_profile_on = False
-if "a12_gap_mm" not in st.session_state:
-    st.session_state.a12_gap_mm = 100.0
-if "a12_apply_a1" not in st.session_state:
-    st.session_state.a12_apply_a1 = True
-if "a12_apply_a2" not in st.session_state:
-    st.session_state.a12_apply_a2 = True
-
 if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
@@ -680,6 +670,22 @@ if "paths_travel_mode" not in st.session_state:
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
+
+# --- (NEW) External axis profile defaults ---
+if "ext_profile_enable_a1" not in st.session_state:
+    st.session_state.ext_profile_enable_a1 = False
+if "ext_profile_enable_a2" not in st.session_state:
+    st.session_state.ext_profile_enable_a2 = False
+if "ext_profile_lead_start_mm" not in st.session_state:
+    st.session_state.ext_profile_lead_start_mm = 100.0
+if "ext_profile_lead_end_mm" not in st.session_state:
+    st.session_state.ext_profile_lead_end_mm = 100.0
+if "ext_profile_deadband_a1" not in st.session_state:
+    st.session_state.ext_profile_deadband_a1 = 0.0
+if "ext_profile_deadband_a2" not in st.session_state:
+    st.session_state.ext_profile_deadband_a2 = 0.0
+if "ext_profile_print_only" not in st.session_state:
+    st.session_state.ext_profile_print_only = False
 
 ensure_anim_buffers()
 
@@ -909,16 +915,114 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
+# =========================
+# (NEW) External axis helpers (A1/A2 lead/lag + deadband)
+# =========================
+def _apply_hysteresis_deadband(seq: List[float], db: float) -> List[float]:
+    """Deadband + hysteresis. db<=0이면 그대로 반환."""
+    if seq is None:
+        return []
+    if db is None or float(db) <= 0.0 or len(seq) == 0:
+        return list(seq)
+    db = float(db)
+    out = []
+    cmd = float(seq[0])
+    for v in seq:
+        v = float(v)
+        d = v - cmd
+        if abs(d) <= db:
+            out.append(cmd)
+        else:
+            cmd = v - (db if d > 0 else -db)
+            out.append(cmd)
+    return out
+
+def _timewarp_profile_by_distance(
+    s: np.ndarray,
+    v: np.ndarray,
+    lead_start_mm: float,
+    lead_end_mm: float
+) -> np.ndarray:
+    """
+    거리축 s(0..L)에서 값 v(s)를
+      - 초반 lead_start_mm 동안 v(0) hold
+      - 말단 lead_end_mm 동안 v(L) hold
+      - 중간은 s_eff로 time-warp 해서 v를 보존(형상 유지)
+    """
+    if s is None or v is None:
+        return v
+    if len(s) < 2:
+        return v
+    lead_start_mm = float(max(0.0, lead_start_mm))
+    lead_end_mm = float(max(0.0, lead_end_mm))
+    if (lead_start_mm + lead_end_mm) <= 1e-9:
+        return v
+
+    # s 단조 증가 보장(정지 점 포함 가능)
+    s = np.asarray(s, dtype=float)
+    v = np.asarray(v, dtype=float)
+    L = float(s[-1] - s[0])
+    if L <= 1e-9:
+        return v
+
+    D1 = min(lead_start_mm, L)
+    D2 = min(lead_end_mm, L)
+    if D1 + D2 >= 0.95 * L:
+        # 너무 크면 자동 축소
+        scale = (0.95 * L) / max(1e-9, (D1 + D2))
+        D1 *= scale
+        D2 *= scale
+
+    # s를 0 기준으로
+    s0 = s[0]
+    ss = s - s0
+    # s_eff 계산
+    denom = max(1e-9, (L - D1 - D2))
+    stretch = L / denom
+    s_eff = np.empty_like(ss)
+    for i, si in enumerate(ss):
+        if si <= D1:
+            s_eff[i] = 0.0
+        elif si >= (L - D2):
+            s_eff[i] = L
+        else:
+            s_eff[i] = (si - D1) * stretch
+
+    # np.interp는 x가 증가해야 함. ss는 증가(동일값 가능).
+    # 동일값이 있을 때 대비해 "유니크 ss"로 압축
+    ss_list = ss.tolist()
+    v_list = v.tolist()
+    ss_u = [ss_list[0]]
+    v_u = [v_list[0]]
+    for si, vi in zip(ss_list[1:], v_list[1:]):
+        if abs(si - ss_u[-1]) < 1e-12:
+            # 같은 s면 마지막 값으로 덮어쓰기
+            v_u[-1] = vi
+        else:
+            ss_u.append(si)
+            v_u.append(vi)
+    ss_u = np.asarray(ss_u, dtype=float)
+    v_u = np.asarray(v_u, dtype=float)
+
+    # s_eff도 0..L 범위로 클램프
+    s_eff = np.clip(s_eff, 0.0, float(ss_u[-1]))
+    return np.interp(s_eff, ss_u, v_u)
+
 def gcode_to_cone1500_module(
     gcode_text: str,
-    rx: float, ry: float, rz: float,
+    rx: float,
+    ry: float,
+    rz: float,
     preset: Dict[str, Any],
     swap_a3_a4: bool = False,
-    # --- (NEW) A1/A2 gap-profile 옵션 ---
-    a12_gap_profile_on: bool = False,
-    a12_gap_mm: float = 100.0,
-    a12_apply_a1: bool = True,
-    a12_apply_a2: bool = True
+    # --- (NEW) External axis profile options ---
+    enable_a1_profile: bool = False,
+    enable_a2_profile: bool = False,
+    lead_start_mm: float = 100.0,
+    lead_end_mm: float = 100.0,
+    deadband_a1: float = 0.0,
+    deadband_a2: float = 0.0,
+    profile_print_only: bool = False
 ) -> str:
     """
     A4만 '비례 분해(증분 누적)'로 동작.
@@ -928,11 +1032,9 @@ def gcode_to_cone1500_module(
       - Rz=0:   X' = X - A4  (A1은 X'로 산출)
       - Rz=-90: Y' = Y - (A4_max - A4)  (A2는 Y'로 산출; A4 범위 0~max 가정)
 
-    (NEW)
-      - A1/A2에 대해 "갭 거리(mm)" 기반 분담 프로파일 적용:
-        블록(연속 구간) 시작에서 gap_mm 만큼은 외부축 hold(출발 지연),
-        블록 끝에서 gap_mm 만큼은 외부축이 먼저 도착(정지 선행).
-      - 블록 경계는 'Z 토큰이 포함된 G0/G1 라인'을 만나면 flush (기존 파싱은 유지)
+    (NEW) External axis load reduction:
+      - A1/A2에 대해 "start hold / end hold(lead/lag)" 프로파일을 거리 기반 time-warp로 적용 가능
+      - A1/A2에 대해 deadband(+hysteresis)로 미세 지그재그 억제 가능
     """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -974,120 +1076,33 @@ def gcode_to_cone1500_module(
             ext_part = -ext_part
         return ext_part
 
-    # --- (NEW) gap-profile helper ---
-    def _apply_gap_profile(vals_base: List[float], xy_pts: List[Tuple[float, float]], gap_mm: float, enabled: bool) -> List[float]:
-        if (not enabled) or (gap_mm is None) or (gap_mm <= 0) or (len(vals_base) < 2) or (len(xy_pts) < 2):
-            return vals_base
-
-        # cumulative distance
-        s_list = [0.0]
-        total = 0.0
-        for i in range(1, len(xy_pts)):
-            dx = float(xy_pts[i][0] - xy_pts[i-1][0])
-            dy = float(xy_pts[i][1] - xy_pts[i-1][1])
-            total += math.hypot(dx, dy)
-            s_list.append(total)
-
-        L = float(total)
-        if L <= 1e-9:
-            return vals_base
-
-        # adjust gap if too large
-        d = float(gap_mm)
-        max_d = max(0.0, (L * 0.5) - 1e-6)
-        if d > max_d:
-            d = max_d
-        if d <= 0.0:
-            return vals_base
-
-        start = float(vals_base[0])
-        end = float(vals_base[-1])
-        denom = float(L - 2.0 * d)
-
-        out = []
-        for s in s_list:
-            if s <= d:
-                g = 0.0
-            elif s >= (L - d):
-                g = 1.0
-            else:
-                g = (s - d) / denom if denom > 1e-12 else 0.0
-                if g < 0.0: g = 0.0
-                if g > 1.0: g = 1.0
-            out.append(start + g * (end - start))
-        return out
-
-    lines_out = []
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
+    # ---- 1) G-code 파싱 & 1차 계산(원래 로직 유지) ----
     have_prev = False
     prev_x = prev_y = prev_z = 0.0
+    prev_e = None
     cur_a4 = 0.0  # 누적 A4
 
-    # --- (NEW) block buffer (포인트 단위) ---
-    block_pts: List[Dict[str, float]] = []
-    hit_limit = False
-
-    def _emit_block():
-        nonlocal hit_limit, lines_out, block_pts
-        if hit_limit or (not block_pts):
-            block_pts = []
-            return
-
-        # base lists
-        xs = [float(p["x_out"]) for p in block_pts]
-        ys = [float(p["y_out"]) for p in block_pts]
-        xy = list(zip(xs, ys))
-
-        a1_base_list = [float(p["a1_base"]) for p in block_pts]
-        a2_base_list = [float(p["a2_base"]) for p in block_pts]
-
-        use_profile = bool(a12_gap_profile_on) and (float(a12_gap_mm) > 0.0)
-
-        if use_profile:
-            if bool(a12_apply_a1):
-                a1_list = _apply_gap_profile(a1_base_list, xy, float(a12_gap_mm), True)
-            else:
-                a1_list = a1_base_list
-
-            if bool(a12_apply_a2):
-                a2_list = _apply_gap_profile(a2_base_list, xy, float(a12_gap_mm), True)
-            else:
-                a2_list = a2_base_list
-        else:
-            a1_list = a1_base_list
-            a2_list = a2_base_list
-
-        for i, p in enumerate(block_pts):
-            x_out = float(p["x_out"]); y_out = float(p["y_out"]); z_out = float(p["z_out"])
-            a3 = float(p["a3"]); a4 = float(p["a4"])
-            a1 = float(a1_list[i]); a2 = float(a2_list[i])
-
-            fx, fy, fz = _fmt_pos(x_out), _fmt_pos(y_out), _fmt_pos(z_out)
-            fa1, fa2, fa3, fa4 = _fmt_pos(a1), _fmt_pos(a2), _fmt_pos(a3), _fmt_pos(a4)
-            lines_out.append(
-                (f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}"
-                 if swap_a3_a4 else
-                 f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
-            )
-
-            if len(lines_out) >= MAX_LINES:
-                hit_limit = True
-                break
-
-        block_pts = []
+    # 저장 버퍼(후처리용)
+    xs_out: List[float] = []
+    ys_out: List[float] = []
+    zs_out: List[float] = []
+    a1_des: List[float] = []
+    a2_des: List[float] = []
+    a3_list: List[float] = []
+    a4_list: List[float] = []
+    is_extruding_list: List[bool] = []
 
     for raw in gcode_text.splitlines():
-        if hit_limit:
-            break
         t = raw.strip()
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
         # 좌표 파싱(없으면 이전 유지)
         cx, cy, cz = prev_x, prev_y, prev_z
+        ce = None
         has_any = False
-        has_z_tok = False
         for p in t.split():
             if p.startswith("X"):
                 try: cx = float(p[1:]); has_any = True
@@ -1096,17 +1111,22 @@ def gcode_to_cone1500_module(
                 try: cy = float(p[1:]); has_any = True
                 except: pass
             elif p.startswith("Z"):
-                has_z_tok = True
                 try: cz = float(p[1:]); has_any = True
                 except: pass
+            elif p.startswith("E"):
+                try: ce = float(p[1:])
+                except: ce = None
         if not has_any:
             continue
 
-        # (NEW) Z 토큰 라인을 만나면 이전 블록 flush 후 새 블록 시작
-        if has_z_tok and len(block_pts) > 0:
-            _emit_block()
-            if hit_limit:
-                break
+        # E 기반 extruding 판정(있을 때만)
+        is_extruding = False
+        if ce is not None and prev_e is not None:
+            if (ce - prev_e) > 1e-12:
+                is_extruding = True
+        # prev_e 업데이트는 모션라인 기준으로만
+        if ce is not None:
+            prev_e = ce
 
         # --- A3(절대) 먼저 산출 (원본 Z 기반) ---
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
@@ -1150,28 +1170,103 @@ def gcode_to_cone1500_module(
             a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
             y_out = cy - (a4_max - cur_a4)
 
-        # --- A1/A2 base는 보정된 축으로 계산 ---
-        a1_base = _linmap(x_out, x0, x1, a1_0, a1_1)
-        a2_base = _linmap(y_out, y0, y1, a2_0, a2_1)
+        # --- A1/A2는 보정된 축으로 계산, A3는 원본 Z 기반 값 유지 ---
+        a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
+        a2 = _linmap(y_out, y0, y1, a2_0, a2_1)
         a3 = a3_abs
         a4 = cur_a4
 
-        # 블록에 포인트 저장 (출력은 flush에서)
-        block_pts.append({
-            "x_out": float(x_out),
-            "y_out": float(y_out),
-            "z_out": float(z_out),
-            "a1_base": float(a1_base),
-            "a2_base": float(a2_base),
-            "a3": float(a3),
-            "a4": float(a4),
-        })
+        xs_out.append(float(x_out))
+        ys_out.append(float(y_out))
+        zs_out.append(float(z_out))
+        a1_des.append(float(a1))
+        a2_des.append(float(a2))
+        a3_list.append(float(a3))
+        a4_list.append(float(a4))
+        is_extruding_list.append(bool(is_extruding))
+
+        if len(xs_out) >= MAX_LINES:
+            break
 
         prev_x, prev_y, prev_z = cx, cy, cz
 
-    # 마지막 블록 flush
-    if (not hit_limit) and len(block_pts) > 0:
-        _emit_block()
+    # 모션이 없으면 패딩만
+    if len(xs_out) == 0:
+        lines_out = [PAD_LINE] * MAX_LINES
+        ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
+        header = ("MODULE Converted\n"
+                  "!******************************************************************************************************************************\n"
+                  "!*\n"
+                  f"!*** Generated {ts} by Gcode→RAPID converter.\n"
+                  "!\n"
+                  "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
+                  "!\n"
+                  "!******************************************************************************************************************************\n")
+        cnt_str = str(MAX_LINES)
+        open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
+        body = ""
+        for i, ln in enumerate(lines_out):
+            q = f'"{ln}"'
+            body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
+        close_decl = "];\nENDMODULE\n"
+        return header + open_decl + body + close_decl
+
+    # ---- 2) (NEW) A1/A2 lead/lag 프로파일(거리 기반 time-warp) ----
+    n = len(xs_out)
+    xs = np.asarray(xs_out, dtype=float)
+    ys = np.asarray(ys_out, dtype=float)
+    a1_arr = np.asarray(a1_des, dtype=float)
+    a2_arr = np.asarray(a2_des, dtype=float)
+    extr_mask = np.asarray(is_extruding_list, dtype=bool)
+
+    # 거리 누적(전체)
+    ds = np.sqrt(np.diff(xs)**2 + np.diff(ys)**2)
+    s_all = np.concatenate([[0.0], np.cumsum(ds)])
+
+    # 블록 마스크 선택(출력만 or 전체)
+    use_mask = extr_mask if bool(profile_print_only) else np.ones(n, dtype=bool)
+
+    def _apply_profile_to_axis(val_arr: np.ndarray, enable: bool) -> np.ndarray:
+        if not bool(enable):
+            return val_arr
+        out = val_arr.copy()
+        i = 0
+        while i < n:
+            if not use_mask[i]:
+                i += 1
+                continue
+            j = i + 1
+            while j < n and use_mask[j]:
+                j += 1
+            # block [i, j-1]
+            if (j - i) >= 2:
+                s_blk = s_all[i:j] - s_all[i]
+                v_blk = out[i:j]
+                out[i:j] = _timewarp_profile_by_distance(s_blk, v_blk, lead_start_mm, lead_end_mm)
+            i = j
+        return out
+
+    a1_prof = _apply_profile_to_axis(a1_arr, enable_a1_profile)
+    a2_prof = _apply_profile_to_axis(a2_arr, enable_a2_profile)
+
+    # ---- 3) (NEW) Deadband(+hysteresis)로 미세 지그재그 억제 ----
+    a1_final = np.asarray(_apply_hysteresis_deadband(a1_prof.tolist(), float(deadband_a1)), dtype=float)
+    a2_final = np.asarray(_apply_hysteresis_deadband(a2_prof.tolist(), float(deadband_a2)), dtype=float)
+
+    # ---- 4) 출력 문자열 생성 ----
+    lines_out: List[str] = []
+    for i in range(n):
+        fx, fy, fz = _fmt_pos(xs[i]), _fmt_pos(ys[i]), _fmt_pos(zs_out[i])
+        fa1, fa2 = _fmt_pos(a1_final[i]), _fmt_pos(a2_final[i])
+        fa3, fa4 = _fmt_pos(a3_list[i]), _fmt_pos(a4_list[i])
+
+        if swap_a3_a4:
+            lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}")
+        else:
+            lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+
+        if len(lines_out) >= MAX_LINES:
+            break
 
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
@@ -1183,8 +1278,7 @@ def gcode_to_cone1500_module(
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2 from adjusted axes; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
-              "!*** (Option) A1/A2 gap-profile: hold at start/end by gap_mm (lead/lag).\n"
+              "!*** A1/A2 optional distance-profile(lead/lag) + deadband; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1211,30 +1305,37 @@ if KEY_OK:
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-            # ---- (NEW) A1/A2 Gap Profile UI ----
-            st.markdown("---")
-            st.session_state.a12_gap_profile_on = st.checkbox(
-                "A1/A2 gap-profile (A축 출발 지연 + 도착 선행)",
-                value=bool(st.session_state.get("a12_gap_profile_on", False)),
-                help="블록(연속 구간)에서 시작 gap_mm 동안 A축 hold, 끝 gap_mm 전에 A축이 먼저 도착합니다."
+        # ---- (NEW) External Axis Profile UI ----
+        with st.sidebar.expander("External Axis Profile (A1/A2 부하완화)", expanded=False):
+            st.caption("A1/A2의 시작/정지 타이밍을 로봇과 분리(lead/lag)하고, 미세 지그재그를 deadband로 억제합니다.")
+            st.session_state.ext_profile_enable_a1 = st.checkbox(
+                "Enable A1 profile (lead/lag + deadband)",
+                value=bool(st.session_state.ext_profile_enable_a1),
             )
-            st.session_state.a12_gap_mm = st.number_input(
-                "Gap distance (mm)",
-                min_value=0.0, max_value=100000.0,
-                value=float(st.session_state.get("a12_gap_mm", 100.0)),
-                step=10.0, format="%.1f",
-                disabled=not bool(st.session_state.a12_gap_profile_on)
+            st.session_state.ext_profile_enable_a2 = st.checkbox(
+                "Enable A2 profile (lead/lag + deadband)",
+                value=bool(st.session_state.ext_profile_enable_a2),
             )
-            cols_gap = st.columns(2)
-            st.session_state.a12_apply_a1 = cols_gap[0].checkbox(
-                "Apply to A1",
-                value=bool(st.session_state.get("a12_apply_a1", True)),
-                disabled=not bool(st.session_state.a12_gap_profile_on)
+            st.session_state.ext_profile_lead_start_mm = st.number_input(
+                "Start hold (mm)  — 로봇이 먼저 움직이는 거리",
+                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_lead_start_mm), step=10.0, format="%.1f"
             )
-            st.session_state.a12_apply_a2 = cols_gap[1].checkbox(
-                "Apply to A2",
-                value=bool(st.session_state.get("a12_apply_a2", True)),
-                disabled=not bool(st.session_state.a12_gap_profile_on)
+            st.session_state.ext_profile_lead_end_mm = st.number_input(
+                "End hold (mm)  — 로봇이 멈추기 전에 외부축이 먼저 멈추는 거리",
+                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_lead_end_mm), step=10.0, format="%.1f"
+            )
+            st.session_state.ext_profile_deadband_a1 = st.number_input(
+                "A1 deadband (mm) — 이 범위 지그재그는 A1 고정",
+                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_deadband_a1), step=10.0, format="%.1f"
+            )
+            st.session_state.ext_profile_deadband_a2 = st.number_input(
+                "A2 deadband (mm) — 이 범위 지그재그는 A2 고정",
+                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_deadband_a2), step=10.0, format="%.1f"
+            )
+            st.session_state.ext_profile_print_only = st.checkbox(
+                "Apply profile only when E increases (printing only)",
+                value=bool(st.session_state.ext_profile_print_only),
+                help="G-code에 E가 있고, E가 증가하는 구간만 프로파일을 적용합니다. E가 없으면 적용 구간이 없을 수 있습니다."
             )
 
         # ---- Mapping Presets UI ----
@@ -1324,11 +1425,13 @@ if KEY_OK:
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
                 swap_a3_a4=True,
-                # --- (NEW) pass A1/A2 gap-profile settings ---
-                a12_gap_profile_on=bool(st.session_state.get("a12_gap_profile_on", False)),
-                a12_gap_mm=float(st.session_state.get("a12_gap_mm", 100.0)),
-                a12_apply_a1=bool(st.session_state.get("a12_apply_a1", True)),
-                a12_apply_a2=bool(st.session_state.get("a12_apply_a2", True)),
+                enable_a1_profile=bool(st.session_state.ext_profile_enable_a1),
+                enable_a2_profile=bool(st.session_state.ext_profile_enable_a2),
+                lead_start_mm=float(st.session_state.ext_profile_lead_start_mm),
+                lead_end_mm=float(st.session_state.ext_profile_lead_end_mm),
+                deadband_a1=float(st.session_state.ext_profile_deadband_a1),
+                deadband_a2=float(st.session_state.ext_profile_deadband_a2),
+                profile_print_only=bool(st.session_state.ext_profile_print_only),
             )
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
