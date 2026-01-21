@@ -1202,7 +1202,7 @@ def gcode_to_cone1500_module(
                   "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
                   "!\n"
                   "!******************************************************************************************************************************\n")
-        cnt_str = str(MAX_LINES)
+        cnt_str = str(len(lines_out))
         open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
         body = ""
         for i, ln in enumerate(lines_out):
@@ -1497,8 +1497,9 @@ def gcode_to_cone1500_module(
             lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
 
         # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
-        while len(lines_out) < MAX_LINES:
-            lines_out.append(lines_out[-1] if lines_out else PAD_LINE)
+        # NOTE: do NOT pad to MAX_LINES; export only actual converted points (<= MAX_LINES).
+        if len(lines_out) == 0:
+            lines_out.append(PAD_LINE)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!******************************************************************************************************************************\n"
@@ -1509,7 +1510,7 @@ def gcode_to_cone1500_module(
               "!*** A1/A2 optional distance-profile(lead/lag) + deadband; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
-    cnt_str = str(MAX_LINES)
+    cnt_str = str(len(lines_out))
     open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
     body = ""
     for i, ln in enumerate(lines_out):
