@@ -1211,66 +1211,292 @@ def gcode_to_cone1500_module(
         close_decl = "];\nENDMODULE\n"
         return header + open_decl + body + close_decl
 
-    # ---- 2) (NEW) A1/A2 lead/lag 프로파일(거리 기반 time-warp) ----
-    n = len(xs_out)
-    xs = np.asarray(xs_out, dtype=float)
-    ys = np.asarray(ys_out, dtype=float)
-    a1_arr = np.asarray(a1_des, dtype=float)
-    a2_arr = np.asarray(a2_des, dtype=float)
-    extr_mask = np.asarray(is_extruding_list, dtype=bool)
+    # ---- 2) (NEW) A1/A2 리드/래그 + "홀드 포인트(추가 라인)" 삽입 ----
+    #  - 축이 실제로 이동해야 하는 구간(해당 축 값이 유의미하게 단조 증가/감소)만 블록으로 잡고,
+    #    블록 시작/끝에서 lead_start_mm / lead_end_mm 만큼은 축을 고정(hold)하도록 축 값을 거리기반으로 재분배한다.
+    #  - 그리고 그 hold 경계가 실제 데이터 라인으로도 존재하도록, 폴리라인 중간에 보간 포인트를 삽입한다.
+    #    (즉, 로봇은 끝점까지 가지만 축은 '조금 일찍' 도착/출발하도록 시간차를 만든다.)
+    #  - print_only=True 이고 E 정보가 전혀 없는 파일은(모두 False) 전체를 printing으로 간주하여 적용한다.
 
-    # 거리 누적(전체)
-    ds = np.sqrt(np.diff(xs)**2 + np.diff(ys)**2)
-    s_all = np.concatenate([[0.0], np.cumsum(ds)])
+    # 2-0) 노드 리스트 구성
+    nodes = []
+    n0 = len(xs_out)
+    for i in range(n0):
+        nodes.append({
+            "x": float(xs_out[i]),
+            "y": float(ys_out[i]),
+            "z": float(zs_out[i]),
+            "a1": float(a1_arr[i]),
+            "a2": float(a2_arr[i]),
+            "a3": float(a3_list[i]),
+            "a4": float(a4_list[i]),
+            "extr": bool(is_extruding_list[i]) if i < len(is_extruding_list) else False,
+        })
 
-    # 블록 마스크 선택(출력만 or 전체)
-    use_mask = extr_mask if bool(profile_print_only) else np.ones(n, dtype=bool)
-
-    def _apply_profile_to_axis(val_arr: np.ndarray, enable: bool) -> np.ndarray:
-        if not bool(enable):
-            return val_arr
-        out = val_arr.copy()
-        i = 0
-        while i < n:
-            if not use_mask[i]:
-                i += 1
-                continue
-            j = i + 1
-            while j < n and use_mask[j]:
-                j += 1
-            # block [i, j-1]
-            if (j - i) >= 2:
-                s_blk = s_all[i:j] - s_all[i]
-                v_blk = out[i:j]
-                out[i:j] = _timewarp_profile_by_distance(s_blk, v_blk, lead_start_mm, lead_end_mm)
-            i = j
+    def _hysteresis_deadband(vals, band):
+        """이전 값 기준으로 band 이내 변화는 무시(히스테리시스)."""
+        if not vals:
+            return []
+        if band <= 0:
+            return list(vals)
+        out = [float(vals[0])]
+        last = out[0]
+        b = float(band)
+        for v in vals[1:]:
+            fv = float(v)
+            if abs(fv - last) >= b:
+                last = fv
+            out.append(last)
         return out
 
-    a1_prof = _apply_profile_to_axis(a1_arr, enable_a1_profile)
-    a2_prof = _apply_profile_to_axis(a2_arr, enable_a2_profile)
+    def _xy_dist(nA, nB):
+        dx = float(nB["x"]) - float(nA["x"])
+        dy = float(nB["y"]) - float(nA["y"])
+        return math.hypot(dx, dy)
 
-    # ---- 3) (NEW) Deadband(+hysteresis)로 미세 지그재그 억제 ----
-    a1_final = np.asarray(_apply_hysteresis_deadband(a1_prof.tolist(), float(deadband_a1)), dtype=float)
-    a2_final = np.asarray(_apply_hysteresis_deadband(a2_prof.tolist(), float(deadband_a2)), dtype=float)
+    def _interp_node(nA, nB, t):
+        """nA->nB 선형 보간 (모든 필드)."""
+        t = float(t)
+        u = 1.0 - t
+        return {
+            "x": u * float(nA["x"]) + t * float(nB["x"]),
+            "y": u * float(nA["y"]) + t * float(nB["y"]),
+            "z": u * float(nA["z"]) + t * float(nB["z"]),
+            "a1": u * float(nA["a1"]) + t * float(nB["a1"]),
+            "a2": u * float(nA["a2"]) + t * float(nB["a2"]),
+            "a3": u * float(nA["a3"]) + t * float(nB["a3"]),
+            "a4": u * float(nA["a4"]) + t * float(nB["a4"]),
+            "extr": bool(nA.get("extr", False)) or bool(nB.get("extr", False)),
+        }
+
+    def _split_at_distances(sub_nodes, s_targets, tol=1e-6):
+        """
+        sub_nodes(길이>=2) 폴리라인에서, 시작점으로부터 거리 s_targets(mm) 지점에 노드를 삽입하여 반환.
+        s_targets 는 오름차순 가정.
+        """
+        if len(sub_nodes) < 2:
+            return list(sub_nodes)
+
+        # 누적거리
+        s = [0.0]
+        for i in range(1, len(sub_nodes)):
+            s.append(s[-1] + _xy_dist(sub_nodes[i - 1], sub_nodes[i]))
+        L = s[-1]
+        if L <= 1e-9:
+            return list(sub_nodes)
+
+        # 기존 점과 너무 가까우면 삽입 안 함
+        targets = []
+        for st in s_targets:
+            st = float(st)
+            if st <= tol or st >= L - tol:
+                continue
+            # 기존 s와의 최소거리 체크
+            if min(abs(st - si) for si in s) <= tol:
+                continue
+            targets.append(st)
+        if not targets:
+            return list(sub_nodes)
+
+        out = []
+        ti = 0
+        for i in range(len(sub_nodes) - 1):
+            out.append(sub_nodes[i])
+            s0, s1 = s[i], s[i + 1]
+            segL = s1 - s0
+            if segL <= 1e-12:
+                continue
+            while ti < len(targets) and s0 < targets[ti] < s1:
+                t = (targets[ti] - s0) / segL
+                out.append(_interp_node(sub_nodes[i], sub_nodes[i + 1], t))
+                ti += 1
+        out.append(sub_nodes[-1])
+        return out
+
+    def _find_axis_blocks(nodes_local, axis_key, band, print_only):
+        """
+        axis_key 축 값이 '유의미하게' 단조 증가/감소하는 구간들을 (start_idx,end_idx) 로 반환.
+        """
+        n = len(nodes_local)
+        if n < 2:
+            return []
+
+        mask = [True] * n
+        if print_only:
+            mask = [bool(nd.get("extr", False)) for nd in nodes_local]
+            if not any(mask):
+                # E 정보가 없으면 전체를 printing으로 간주
+                mask = [True] * n
+
+        axis_vals = [float(nd[axis_key]) for nd in nodes_local]
+        base = _hysteresis_deadband(axis_vals, band if band > 0 else 0.0)
+
+        eps_move = max(0.01, float(band) * 0.5) if band > 0 else 0.01
+
+        blocks = []
+        i = 1
+        while i < n:
+            if not mask[i]:
+                i += 1
+                continue
+            da = base[i] - base[i - 1]
+            if abs(da) <= eps_move:
+                i += 1
+                continue
+
+            sign = 1 if da > 0 else -1
+            start = i - 1
+            j = i
+            while j < n:
+                if not mask[j]:
+                    break
+                daj = base[j] - base[j - 1]
+                if abs(daj) <= eps_move:
+                    break
+                if (daj > 0) != (sign > 0):
+                    # 방향 반전(지그재그) → 블록 종료
+                    break
+                j += 1
+
+            end = j - 1
+            if end > start:
+                blocks.append((start, end))
+            i = max(j, end + 1)
+
+        return blocks
+
+    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
+        """
+        축별 프로파일을 적용하고, lead_start/lead_end 경계에 포인트를 삽입하여 라인으로도 나타나게 함.
+        """
+        if not enable:
+            return nodes_local
+        if len(nodes_local) < 2:
+            return nodes_local
+
+        lead_start = max(0.0, float(lead_start))
+        lead_end = max(0.0, float(lead_end))
+
+        blocks = _find_axis_blocks(nodes_local, axis_key, band, print_only)
+        if not blocks:
+            return nodes_local
+
+        offset = 0
+        for (s_idx, e_idx) in blocks:
+            s2 = s_idx + offset
+            e2 = e_idx + offset
+            if e2 <= s2:
+                continue
+            sub = nodes_local[s2:e2 + 1]
+            if len(sub) < 2:
+                continue
+
+            # 블록 길이
+            s_cum = [0.0]
+            for k in range(1, len(sub)):
+                s_cum.append(s_cum[-1] + _xy_dist(sub[k - 1], sub[k]))
+            L = s_cum[-1]
+            if L <= 1e-9:
+                continue
+
+            # 너무 짧으면(lead_start+lead_end >= L) 프로파일/삽입 생략
+            core = L - lead_start - lead_end
+            if core <= 1e-6:
+                continue
+
+            # 삽입 대상 거리
+            targets = []
+            if lead_start > 0.0:
+                targets.append(lead_start)
+            if lead_end > 0.0:
+                targets.append(L - lead_end)
+            targets = sorted(set(targets))
+
+            v0 = float(sub[0][axis_key])
+            v1 = float(sub[-1][axis_key])
+
+            sub2 = _split_at_distances(sub, targets, tol=1e-4)
+
+            # 새 누적거리
+            s2_cum = [0.0]
+            for k in range(1, len(sub2)):
+                s2_cum.append(s2_cum[-1] + _xy_dist(sub2[k - 1], sub2[k]))
+            L2 = s2_cum[-1]
+            if L2 <= 1e-9:
+                continue
+
+            # (보정) 삽입 후에도 코어 길이는 동일 개념으로 사용
+            core2 = L2 - lead_start - lead_end
+            if core2 <= 1e-6:
+                core2 = 1e-6
+
+            # 축 값 할당(hold + linear)
+            for k, nd in enumerate(sub2):
+                sk = s2_cum[k]
+                if sk <= lead_start + 1e-9:
+                    nd[axis_key] = v0
+                elif sk >= (L2 - lead_end) - 1e-9:
+                    nd[axis_key] = v1
+                else:
+                    t = (sk - lead_start) / core2
+                    nd[axis_key] = v0 + t * (v1 - v0)
+
+            # 반영
+            nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
+            offset += (len(sub2) - len(sub))
+
+        return nodes_local
+
+    # A1 / A2 프로파일(+홀드포인트) 적용
+    nodes = _apply_axis_profile_with_inserts(
+        nodes, "a1", enable_a1_profile, lead_start_mm, lead_end_mm, deadband_a1, profile_print_only
+    )
+    nodes = _apply_axis_profile_with_inserts(
+        nodes, "a2", enable_a2_profile, lead_start_mm, lead_end_mm, deadband_a2, profile_print_only
+    )
+
+    # ---- 3) A1/A2 deadband (최종 히스테리시스) ----
+    if deadband_a1 > 0:
+        a1_vals = [nd["a1"] for nd in nodes]
+        a1_db = _hysteresis_deadband(a1_vals, deadband_a1)
+        for nd, vv in zip(nodes, a1_db):
+            nd["a1"] = vv
+
+    if deadband_a2 > 0:
+        a2_vals = [nd["a2"] for nd in nodes]
+        a2_db = _hysteresis_deadband(a2_vals, deadband_a2)
+        for nd, vv in zip(nodes, a2_db):
+            nd["a2"] = vv
 
     # ---- 4) 출력 문자열 생성 ----
-    lines_out: List[str] = []
-    for i in range(n):
-        fx, fy, fz = _fmt_pos(xs[i]), _fmt_pos(ys[i]), _fmt_pos(zs_out[i])
-        fa1, fa2 = _fmt_pos(a1_final[i]), _fmt_pos(a2_final[i])
-        fa3, fa4 = _fmt_pos(a3_list[i]), _fmt_pos(a4_list[i])
+    lines_out = []
+    if not nodes:
+        lines_out = [PAD_LINE] * MAX_LINES
+    else:
+        for nd in nodes:
+            if len(lines_out) >= MAX_LINES:
+                break
+            x = frx(nd["x"])
+            y = fry(nd["y"])
+            z = frz(nd["z"])
 
-        if swap_a3_a4:
-            lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa4},{fa3}")
-        else:
-            lines_out.append(f"{fx},{fy},{fz},{frx},{fry},{frz},{fa1},{fa2},{fa3},{fa4}")
+            if swap_a3_a4:
+                a3_v = nd["a4"]
+                a4_v = nd["a3"]
+            else:
+                a3_v = nd["a3"]
+                a4_v = nd["a4"]
 
-        if len(lines_out) >= MAX_LINES:
-            break
+            a1 = frax(nd["a1"])
+            a2 = fray(nd["a2"])
+            a3 = fraz(a3_v)
+            a4 = fra4(a4_v)
 
-    while len(lines_out) < MAX_LINES:
-        lines_out.append(PAD_LINE)
+            lines_out.append(f'"{x},{y},{z},+000.00,+000.00,+090.00,{a1},{a2},{a3},{a4}",')
 
+        # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
+        while len(lines_out) < MAX_LINES:
+            lines_out.append(lines_out[-1] if lines_out else PAD_LINE)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!******************************************************************************************************************************\n"
