@@ -1476,9 +1476,11 @@ def gcode_to_cone1500_module(
         for nd in nodes:
             if len(lines_out) >= MAX_LINES:
                 break
-            x = frx(nd["x"])
-            y = fry(nd["y"])
-            z = frz(nd["z"])
+            # NOTE: frx/fry/frz 변수는 위에서 각도 문자열(Rx/Ry/Rz)로 이미 사용 중이므로
+            #       여기서는 좌표/외부축 값을 _fmt_pos()로 포맷한다.
+            x = _fmt_pos(float(nd["x"]))
+            y = _fmt_pos(float(nd["y"]))
+            z = _fmt_pos(float(nd["z"]))
 
             if swap_a3_a4:
                 a3_v = nd["a4"]
@@ -1487,12 +1489,12 @@ def gcode_to_cone1500_module(
                 a3_v = nd["a3"]
                 a4_v = nd["a4"]
 
-            a1 = frax(nd["a1"])
-            a2 = fray(nd["a2"])
-            a3 = fraz(a3_v)
-            a4 = fra4(a4_v)
+            a1 = _fmt_pos(float(nd["a1"]))
+            a2 = _fmt_pos(float(nd["a2"]))
+            a3 = _fmt_pos(float(a3_v))
+            a4 = _fmt_pos(float(a4_v))
 
-            lines_out.append(f"{x},{y},{z},+000.00,+000.00,+090.00,{a1},{a2},{a3},{a4}")
+            lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
 
         # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
         while len(lines_out) < MAX_LINES:
