@@ -1372,133 +1372,86 @@ def gcode_to_cone1500_module(
         return blocks
 
     def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
-        """ 
-        외부축 '타이밍 분리(선행/후행)' 적용.
-
-        목표:
-          - 시작: 외부축(A1/A2)이 먼저 움직이고(로봇 XYZ는 시작점 고정) → 그 다음 로봇+외부축이 같이 진행
-          - 종료: 로봇이 먼저 멈추고(로봇 XYZ는 끝점 고정) → 외부축이 남은 만큼 마저 움직임
-
-        lead_start(mm): 블록 길이 L 기준, 외부축이 '미리' 진행할 거리(등가) [0..L]
-        lead_end(mm):   블록 길이 L 기준, 외부축이 '나중에' 진행할 거리(등가) [0..L]
-
-        구현:
-          v0 = 블록 시작 외부축 값, v1 = 블록 끝 외부축 값
-          v_pre  = v0 + (lead_start/L) * (v1-v0)
-          v_post = v0 + (1 - lead_end/L) * (v1-v0)
-          - 블록 시작에 (XYZ 동일, 외부축만 v0→v_pre) 포인트 삽입
-          - 메인 구간은 v_pre → v_post 선형
-          - 블록 끝에 (XYZ 동일, 외부축만 v_post→v1) 포인트 삽입
-
-        deadband(band): 블록 내 외부축 변화량이 band 이하면 외부축을 고정(지그재그 억제)
-        print_only: True면 extruding 구간에서만 적용
         """
-        if (not enable) or (nodes_local is None) or (len(nodes_local) < 2):
+        축별 프로파일을 적용하고, lead_start/lead_end 경계에 포인트를 삽입하여 라인으로도 나타나게 함.
+        """
+        if not enable:
+            return nodes_local
+        if len(nodes_local) < 2:
             return nodes_local
 
-        blocks = _find_axis_blocks(nodes_local, axis_key, deadband=band, print_only=print_only)
+        lead_start = max(0.0, float(lead_start))
+        lead_end = max(0.0, float(lead_end))
+
+        blocks = _find_axis_blocks(nodes_local, axis_key, band, print_only)
         if not blocks:
             return nodes_local
 
-        # 빠른 lookup
-        block_starts = {s: e for (s, e) in blocks}
-
-        out = []
-        i = 0
-        N = len(nodes_local)
-        EPS = 1e-12
-
-        while i < N:
-            if i not in block_starts:
-                out.append(nodes_local[i])
-                i += 1
+        offset = 0
+        for (s_idx, e_idx) in blocks:
+            s2 = s_idx + offset
+            e2 = e_idx + offset
+            if e2 <= s2:
                 continue
-
-            s = i
-            e = block_starts[i]
-            sub = nodes_local[s:e+1]
+            sub = nodes_local[s2:e2 + 1]
             if len(sub) < 2:
-                out.extend(sub)
-                i = e + 1
                 continue
 
-            # 블록 길이(로봇 XY 기준)
-            dist = [0.0]
-            for j in range(1, len(sub)):
-                dx = float(sub[j]["x"] - sub[j-1]["x"])
-                dy = float(sub[j]["y"] - sub[j-1]["y"])
-                dist.append(dist[-1] + (dx*dx + dy*dy) ** 0.5)
-            L = float(dist[-1])
+            # 블록 길이
+            s_cum = [0.0]
+            for k in range(1, len(sub)):
+                s_cum.append(s_cum[-1] + _xy_dist(sub[k - 1], sub[k]))
+            L = s_cum[-1]
+            if L <= 1e-9:
+                continue
+
+            # 너무 짧으면(lead_start+lead_end >= L) 프로파일/삽입 생략
+            core = L - lead_start - lead_end
+            if core <= 1e-6:
+                continue
+
+            # 삽입 대상 거리
+            targets = []
+            if lead_start > 0.0:
+                targets.append(lead_start)
+            if lead_end > 0.0:
+                targets.append(L - lead_end)
+            targets = sorted(set(targets))
 
             v0 = float(sub[0][axis_key])
             v1 = float(sub[-1][axis_key])
-            dv = v1 - v0
 
-            # 변화가 거의 없거나 길이가 0이면 그대로
-            if L <= EPS or abs(dv) <= EPS:
-                out.extend(sub)
-                i = e + 1
+            sub2 = _split_at_distances(sub, targets, tol=1e-4)
+
+            # 새 누적거리
+            s2_cum = [0.0]
+            for k in range(1, len(sub2)):
+                s2_cum.append(s2_cum[-1] + _xy_dist(sub2[k - 1], sub2[k]))
+            L2 = s2_cum[-1]
+            if L2 <= 1e-9:
                 continue
 
-            # deadband: 블록 전체 변화량이 band 이하면 고정
-            if band is not None:
-                try:
-                    if abs(dv) <= float(band) + 1e-9:
-                        fixed = []
-                        for node in sub:
-                            nd = dict(node)
-                            nd[axis_key] = float(v0)
-                            fixed.append(nd)
-                        out.extend(fixed)
-                        i = e + 1
-                        continue
-                except Exception:
-                    pass
+            # (보정) 삽입 후에도 코어 길이는 동일 개념으로 사용
+            core2 = L2 - lead_start - lead_end
+            if core2 <= 1e-6:
+                core2 = 1e-6
 
-            ls = float(lead_start) if lead_start is not None else 0.0
-            le = float(lead_end) if lead_end is not None else 0.0
-            ls = 0.0 if ls < 0.0 else ls
-            le = 0.0 if le < 0.0 else le
-            if ls > L: ls = L
-            if le > L: le = L
+            # 축 값 할당(hold + linear)
+            for k, nd in enumerate(sub2):
+                sk = s2_cum[k]
+                if sk <= lead_start + 1e-9:
+                    nd[axis_key] = v0
+                elif sk >= (L2 - lead_end) - 1e-9:
+                    nd[axis_key] = v1
+                else:
+                    t = (sk - lead_start) / core2
+                    nd[axis_key] = v0 + t * (v1 - v0)
 
-            r_pre = (ls / L) if L > EPS else 0.0
-            r_post = 1.0 - ((le / L) if L > EPS else 0.0)
+            # 반영
+            nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
+            offset += (len(sub2) - len(sub))
 
-            # lead_start + lead_end > L이면 중간에서 만나도록 압축
-            if r_post < r_pre:
-                mid = 0.5 * (r_pre + r_post)
-                r_pre = mid
-                r_post = mid
-
-            v_pre = v0 + r_pre * dv
-            v_post = v0 + r_post * dv
-
-            # 메인 구간: v_pre -> v_post 선형
-            main = []
-            for node, d in zip(sub, dist):
-                t = (d / L) if L > EPS else 0.0
-                nd = dict(node)
-                nd[axis_key] = float(v_pre + t * (v_post - v_pre))
-                main.append(nd)
-
-            # (1) 시작: 외부축 선행 이동 (XYZ 고정)
-            if ls > EPS and abs(v_pre - v0) > 1e-9:
-                nd0 = dict(sub[0])
-                nd0[axis_key] = float(v0)
-                out.append(nd0)
-            # 메인(첫 점은 v_pre)
-            out.extend(main)
-
-            # (2) 종료: 외부축 후행 이동 (XYZ 고정)
-            if le > EPS and abs(v1 - v_post) > 1e-9:
-                nd1 = dict(sub[-1])
-                nd1[axis_key] = float(v1)
-                out.append(nd1)
-
-            i = e + 1
-
-        return out
+        return nodes_local
 
     # A1 / A2 프로파일(+홀드포인트) 적용
     nodes = _apply_axis_profile_with_inserts(
