@@ -1370,144 +1370,194 @@ def gcode_to_cone1500_module(
             i = max(j, end + 1)
 
         return blocks
-
     def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
-        """
-        축별 프로파일을 적용하고, lead_start/lead_end 경계에 포인트를 삽입하여 라인으로도 나타나게 함.
+        """Apply slow-fast-slow profile to A1 (by X) / A2 (by Y).
+
+        요구사항:
+        - 시작 구간(lead_start)과 종료 구간(lead_end)에서는 축 변화율을 1/2(=0.5)로 '느리게'
+        - 중간 구간에서는 남은 변화를 모두 따라잡도록 자동으로 '빠르게' (연속/선형)
+        - X축은 A1, Y축은 A2에 각각 동일 로직 적용
+        - 기존 UI/나머지 로직은 그대로 두고, 축 값만 재분배
         """
         if not enable:
             return nodes_local
+
+        axis_key = str(axis_key).lower().strip()
+        if axis_key == "a1":
+            coord_key = "x"
+            end_target = float(a1_1)
+        elif axis_key == "a2":
+            coord_key = "y"
+            end_target = float(a2_1)
+        else:
+            return nodes_local
+
         if len(nodes_local) < 2:
             return nodes_local
 
-        lead_start = max(0.0, float(lead_start))
-        lead_end = max(0.0, float(lead_end))
+        # 파라미터 정리
+        lead_start = float(lead_start or 0.0)
+        lead_end = float(lead_end or 0.0)
+        if lead_start < 0:
+            lead_start = 0.0
+        if lead_end < 0:
+            lead_end = 0.0
 
-        blocks = _find_axis_blocks(nodes_local, axis_key, band, print_only)
+        SLOW_RATIO = 0.5  # 요청사항: 시작/끝 구간은 1/2 비율
+
+        # 프린트 전용 마스크(옵션)
+        mask = [True] * len(nodes_local)
+        if print_only:
+            mask = [bool(nd.get("printing", True)) for nd in nodes_local]
+
+        EPS = 1e-9
+
+        def _find_coord_blocks():
+            """연속적으로 coord_key가 같은 방향으로 움직이는 구간을 블록으로 잡음."""
+            blocks = []
+            n = len(nodes_local)
+            i = 1
+            while i < n:
+                if not (mask[i] and mask[i - 1]):
+                    i += 1
+                    continue
+                d = float(nodes_local[i][coord_key] - nodes_local[i - 1][coord_key])
+                if abs(d) <= EPS:
+                    i += 1
+                    continue
+                sgn = 1 if d > 0 else -1
+                start = i - 1
+                j = i
+                while j < n:
+                    if not (mask[j] and mask[j - 1]):
+                        break
+                    dj = float(nodes_local[j][coord_key] - nodes_local[j - 1][coord_key])
+                    if abs(dj) <= EPS:
+                        break
+                    if (dj > 0) != (sgn > 0):
+                        break
+                    j += 1
+                end = j - 1
+                if end > start:
+                    blocks.append((start, end))
+                i = max(j, end + 1)
+            return blocks
+
+        def _interp_node(n0, n1, t):
+            out = dict(n0)
+            for k, v0 in n0.items():
+                if k not in n1:
+                    continue
+                v1 = n1[k]
+                if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
+                    out[k] = float(v0) + (float(v1) - float(v0)) * t
+            # printing 플래그는 구간 성격 유지
+            if "printing" in n0 or "printing" in n1:
+                out["printing"] = bool(n0.get("printing", True) and n1.get("printing", True))
+            return out
+
+        def _split_at_axis_dists(sub, targets):
+            # coord 축 기준 누적거리(= abs(delta coord))로 target 위치에 노드 삽입
+            if len(sub) < 2:
+                return sub
+            # 누적거리
+            cum = [0.0]
+            for i in range(1, len(sub)):
+                cum.append(cum[-1] + abs(float(sub[i][coord_key] - sub[i - 1][coord_key])))
+            L = cum[-1]
+            if L <= EPS:
+                return sub
+            tgs = [float(t) for t in targets if EPS < float(t) < (L - EPS)]
+            if not tgs:
+                return sub
+            tgs = sorted(set(tgs))
+
+            out = []
+            tg_i = 0
+            for i in range(len(sub) - 1):
+                out.append(sub[i])
+                seg = abs(float(sub[i + 1][coord_key] - sub[i][coord_key]))
+                if seg <= EPS:
+                    continue
+                s0 = cum[i]
+                s1 = s0 + seg
+                while tg_i < len(tgs) and tgs[tg_i] <= s1 + EPS:
+                    tt = tgs[tg_i]
+                    if tt <= s0 + EPS:
+                        tg_i += 1
+                        continue
+                    t = (tt - s0) / seg
+                    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                    out.append(_interp_node(sub[i], sub[i + 1], t))
+                    tg_i += 1
+            out.append(sub[-1])
+            return out
+
+        blocks = _find_coord_blocks()
         if not blocks:
             return nodes_local
 
-        offset = 0
-        for (s_idx, e_idx) in blocks:
-            s2 = s_idx + offset
-            e2 = e_idx + offset
-            if e2 <= s2:
-                continue
-            sub = nodes_local[s2:e2 + 1]
-            if len(sub) < 2:
-                continue
+        # 뒤에서부터 처리(삽입으로 인덱스 변동 방지)
+        for s, e in reversed(blocks):
+            sub = nodes_local[s : e + 1]
 
-            # 블록 길이
-            s_cum = [0.0]
-            for k in range(1, len(sub)):
-                s_cum.append(s_cum[-1] + _xy_dist(sub[k - 1], sub[k]))
-            L = s_cum[-1]
-            if L <= 1e-9:
+            # 누적거리(= abs(delta coord))
+            cum = [0.0]
+            for i in range(1, len(sub)):
+                cum.append(cum[-1] + abs(float(sub[i][coord_key] - sub[i - 1][coord_key])))
+            L = cum[-1]
+            if L <= EPS:
                 continue
 
-            # 너무 짧으면(lead_start+lead_end >= L) 프로파일/삽입 생략
-            core = L - lead_start - lead_end
-            if core <= 1e-6:
+            D1 = min(lead_start, L)
+            D2 = min(lead_end, L - D1)
+
+            # 타깃 끝값(요청: 블록 끝에서 preset의 end로 도달)
+            v0 = float(sub[0].get(axis_key, 0.0))
+            v1 = end_target
+            dA = v1 - v0
+
+            # 블록이 너무 짧아서 3구간이 안 나오면 선형
+            core = L - D1 - D2
+            if core <= EPS or abs(dA) <= EPS:
+                # 단순 선형
+                for i, nd in enumerate(sub):
+                    t = cum[i] / L
+                    nd[axis_key] = v0 + dA * t
+                sub[-1][axis_key] = v1
+                nodes_local[s : e + 1] = sub
                 continue
 
-            # 삽입 대상 거리
-            targets = []
-            if lead_start > 0.0:
-                targets.append(lead_start)
-            if lead_end > 0.0:
-                targets.append(L - lead_end)
-            targets = sorted(set(targets))
+            # 시작/끝은 1/2 비율, 중간은 남은 변화량을 따라잡도록 자동 계산
+            slow_k = math.copysign(SLOW_RATIO, dA)  # mm(axis) per mm(coord)
+            fast_k = (dA - slow_k * (D1 + D2)) / core
 
-            v0 = float(sub[0][axis_key])
-            v1 = float(sub[-1][axis_key])
+            # D1, (L-D2) 지점에 노드가 없으면 삽입
+            sub2 = _split_at_axis_dists(sub, [D1, L - D2])
 
-            sub2 = _split_at_distances(sub, targets, tol=1e-4)
+            # 다시 누적거리 계산
+            cum2 = [0.0]
+            for i in range(1, len(sub2)):
+                cum2.append(cum2[-1] + abs(float(sub2[i][coord_key] - sub2[i - 1][coord_key])))
+            L2 = cum2[-1]
+            D1_2 = min(D1, L2)
+            D2_2 = min(D2, L2 - D1_2)
 
-            # 새 누적거리
-            s2_cum = [0.0]
-            for k in range(1, len(sub2)):
-                s2_cum.append(s2_cum[-1] + _xy_dist(sub2[k - 1], sub2[k]))
-            L2 = s2_cum[-1]
-            if L2 <= 1e-9:
-                continue
-
-            # (보정) 삽입 후에도 코어 길이는 동일 개념으로 사용
-            core2 = L2 - lead_start - lead_end
-            if core2 <= 1e-6:
-                core2 = 1e-6
-
-            # 축 값 할당(hold + linear)
-            # 축 값 할당: 감속(느림) → 가속(빠름) → 감속(느림) 3구간 프로파일
-            # 요구사항 해석:
-            #   - 시작/끝 구간에서는 |dA/dS| = 0.5 (S=이동거리[mm])로 "천천히" 이동
-            #   - 중간 구간은 전체 끝점(A_end)을 맞추기 위해 자동으로 더 빠르게/느리게 보정
-            #   - lead_start_mm / lead_end_mm 값을 각각 "느린 구간 길이"로 사용 (UI/인터페이스 변경 없음)
-            dA = float(v1 - v0)
-            if abs(dA) <= 1e-12:
-                # 변화가 거의 없으면 그대로 둠
-                pass
-            else:
-                SLOW_RATIO = 0.5  # "X(or Y) 이동의 1/2만 외부축이 따라가게" 요구에 대응
-                D1 = float(max(0.0, lead_start))
-                D2 = float(max(0.0, lead_end))
-
-                # 코어 길이가 너무 작으면 자동 축소
-                if (D1 + D2) >= 0.95 * L2:
-                    scale = (0.95 * L2) / max(1e-9, (D1 + D2))
-                    D1 *= scale
-                    D2 *= scale
-
-                core_len = float(L2 - D1 - D2)
-                if core_len <= 1e-9:
-                    # 너무 짧으면 프로파일 적용 생략
-                    pass
+            # 값 할당
+            for i, nd in enumerate(sub2):
+                sk = cum2[i]
+                if sk <= D1_2 + EPS:
+                    nd[axis_key] = v0 + slow_k * sk
+                elif sk <= (L2 - D2_2) + EPS:
+                    nd[axis_key] = v0 + slow_k * D1_2 + fast_k * (sk - D1_2)
                 else:
-                    # dA가 작아서 "느린 구간"만으로도 초과 이동될 수 있으면 D1/D2를 자동으로 축소(단조성 보호)
-                    need = abs(SLOW_RATIO) * (D1 + D2)
-                    if need > 1e-9 and abs(dA) < need:
-                        scale = abs(dA) / need
-                        D1 *= scale
-                        D2 *= scale
-                        core_len = float(L2 - D1 - D2)
-                        if core_len <= 1e-9:
-                            core_len = 0.0
+                    nd[axis_key] = v1 - slow_k * (L2 - sk)
 
-                    sgn = 1.0 if dA > 0 else -1.0
-                    slope1 = sgn * abs(SLOW_RATIO)
-                    slope3 = slope1
-
-                    if core_len <= 0.0:
-                        # 코어가 사라졌으면 시작/끝 느린 구간만으로 선형 진행
-                        for k, nd in enumerate(sub2):
-                            sk = float(s2_cum[k])
-                            nd[axis_key] = float(v0 + slope1 * sk)
-                        # 마지막 점 보정
-                        sub2[-1][axis_key] = float(v1)
-                    else:
-                        slope2 = (dA - slope1 * D1 - slope3 * D2) / core_len
-
-                        A_D1 = float(v0 + slope1 * D1)
-                        A_mid_end = float(A_D1 + slope2 * core_len)  # s = L2-D2 지점
-
-                        for k, nd in enumerate(sub2):
-                            sk = float(s2_cum[k])
-                            if sk <= D1 + 1e-9:
-                                nd[axis_key] = float(v0 + slope1 * sk)
-                            elif sk >= (L2 - D2) - 1e-9:
-                                nd[axis_key] = float(A_mid_end + slope3 * (sk - (L2 - D2)))
-                            else:
-                                nd[axis_key] = float(A_D1 + slope2 * (sk - D1))
-
-                        # 끝점 수치오차 보정
-                        sub2[0][axis_key] = float(v0)
-                        sub2[-1][axis_key] = float(v1)
-            # 반영
-            nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
-            offset += (len(sub2) - len(sub))
+            sub2[-1][axis_key] = v1  # 끝은 정확히 맞춤
+            nodes_local[s : e + 1] = sub2
 
         return nodes_local
 
-    # A1 / A2 프로파일(+홀드포인트) 적용
     nodes = _apply_axis_profile_with_inserts(
         nodes, "a1", enable_a1_profile, lead_start_mm, lead_end_mm, deadband_a1, profile_print_only
     )
