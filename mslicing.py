@@ -1700,6 +1700,11 @@ if KEY_OK:
 
     # RAPID 변환 + 저장(다운로드) — 입력이 바뀌면 자동으로 RAPID를 갱신해 둡니다.
     # (다운로드 버튼은 한 번 클릭하면 바로 .modx 파일이 내려받아집니다.)
+    # --- ensure local RX/RY/RZ variables exist (avoid NameError) ---
+    rx = float(st.session_state.get("rapid_rx", 0.0))
+    ry = float(st.session_state.get("rapid_ry", 0.0))
+    rz = float(st.session_state.get("rapid_rz", 0.0))
+
     params_json = {
         "rx": float(rx), "ry": float(ry), "rz": float(rz),
         "swap_a3_a4": bool(st.session_state.get("swap_a3_a4", False)),
