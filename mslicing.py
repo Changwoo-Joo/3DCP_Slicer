@@ -1372,210 +1372,136 @@ def gcode_to_cone1500_module(
 
         return blocks
 
-    
-def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
-    """외부축(A1/A2) 프로파일(감속-가속-감속) + 필요 시 경계점 삽입.
+    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
+        """ 
+        외부축 '타이밍 분리(선행/후행)' 적용.
 
-    - A1은 로봇 X 변화량을 '드라이버'로 사용, A2는 로봇 Y 변화량을 드라이버로 사용.
-    - start/end 구간(lead_start/lead_end mm)에서는 외부축 변화량이 드라이버 변화량의 1/2(RAMP_RATIO)만큼만 움직이도록
-      piecewise-linear(느림-빠름-느림) 프로파일을 적용함.
-    - middle 구간에서는 전체 목표값(v0->v1)에 맞춰 자동으로 더 빠르게 움직여 따라잡음.
-    - print_only=True면(그리고 실제로 extr 구간이 존재하면) extr=True 구간에만 적용.
-    - band(Deadband)가 설정되면 작은 지그재그(미세 진동)로 인한 외부축 흔들림을 억제함.
-    """
-    if (not enable) or (nodes_local is None) or (len(nodes_local) < 2):
-        return nodes_local
+        목표:
+          - 시작: 외부축(A1/A2)이 먼저 움직이고(로봇 XYZ는 시작점 고정) → 그 다음 로봇+외부축이 같이 진행
+          - 종료: 로봇이 먼저 멈추고(로봇 XYZ는 끝점 고정) → 외부축이 남은 만큼 마저 움직임
 
-    # A1은 X, A2는 Y를 드라이버로 사용
-    if axis_key == "a1":
-        driver_key = "x"
-    elif axis_key == "a2":
-        driver_key = "y"
-    else:
-        return nodes_local
+        lead_start(mm): 블록 길이 L 기준, 외부축이 '미리' 진행할 거리(등가) [0..L]
+        lead_end(mm):   블록 길이 L 기준, 외부축이 '나중에' 진행할 거리(등가) [0..L]
 
-    RAMP_RATIO = 0.5  # 'A축은 X/Y의 1/2' (mm/mm)
+        구현:
+          v0 = 블록 시작 외부축 값, v1 = 블록 끝 외부축 값
+          v_pre  = v0 + (lead_start/L) * (v1-v0)
+          v_post = v0 + (1 - lead_end/L) * (v1-v0)
+          - 블록 시작에 (XYZ 동일, 외부축만 v0→v_pre) 포인트 삽입
+          - 메인 구간은 v_pre → v_post 선형
+          - 블록 끝에 (XYZ 동일, 외부축만 v_post→v1) 포인트 삽입
 
-    # 적용 대상(출력 구간만 적용 옵션)
-    have_any_extr = any(bool(nd.get("extr", False)) for nd in nodes_local)
+        deadband(band): 블록 내 외부축 변화량이 band 이하면 외부축을 고정(지그재그 억제)
+        print_only: True면 extruding 구간에서만 적용
+        """
+        if (not enable) or (nodes_local is None) or (len(nodes_local) < 2):
+            return nodes_local
 
-    def _eligible(nd):
-        if print_only and have_any_extr:
-            return bool(nd.get("extr", False))
-        return True
+        blocks = _find_axis_blocks(nodes_local, axis_key, deadband=band, print_only=print_only)
+        if not blocks:
+            return nodes_local
 
-    # 1) Deadband 선적용(작은 변화는 고정)
-    last_v = None
-    if band and band > 0:
-        for nd in nodes_local:
-            if not _eligible(nd):
+        # 빠른 lookup
+        block_starts = {s: e for (s, e) in blocks}
+
+        out = []
+        i = 0
+        N = len(nodes_local)
+        EPS = 1e-12
+
+        while i < N:
+            if i not in block_starts:
+                out.append(nodes_local[i])
+                i += 1
                 continue
-            v = float(nd.get(axis_key, 0.0))
-            if last_v is None:
-                last_v = v
-            else:
-                if abs(v - last_v) < band:
-                    nd[axis_key] = last_v
-                else:
-                    last_v = v
 
-    def _lerp(a, b, t):
-        return a + (b - a) * t
+            s = i
+            e = block_starts[i]
+            sub = nodes_local[s:e+1]
+            if len(sub) < 2:
+                out.extend(sub)
+                i = e + 1
+                continue
 
-    def _interp_node(nd0, nd1, t):
-        """두 노드 사이에 선형 보간 노드 생성"""
-        out = dict(nd0)
-        for k in ("x", "y", "z", "a1", "a2", "a3", "a4"):
-            if (k in nd0) and (k in nd1):
-                out[k] = _lerp(float(nd0[k]), float(nd1[k]), t)
-        out["extr"] = bool(nd0.get("extr", False))
+            # 블록 길이(로봇 XY 기준)
+            dist = [0.0]
+            for j in range(1, len(sub)):
+                dx = float(sub[j]["x"] - sub[j-1]["x"])
+                dy = float(sub[j]["y"] - sub[j-1]["y"])
+                dist.append(dist[-1] + (dx*dx + dy*dy) ** 0.5)
+            L = float(dist[-1])
+
+            v0 = float(sub[0][axis_key])
+            v1 = float(sub[-1][axis_key])
+            dv = v1 - v0
+
+            # 변화가 거의 없거나 길이가 0이면 그대로
+            if L <= EPS or abs(dv) <= EPS:
+                out.extend(sub)
+                i = e + 1
+                continue
+
+            # deadband: 블록 전체 변화량이 band 이하면 고정
+            if band is not None:
+                try:
+                    if abs(dv) <= float(band) + 1e-9:
+                        fixed = []
+                        for node in sub:
+                            nd = dict(node)
+                            nd[axis_key] = float(v0)
+                            fixed.append(nd)
+                        out.extend(fixed)
+                        i = e + 1
+                        continue
+                except Exception:
+                    pass
+
+            ls = float(lead_start) if lead_start is not None else 0.0
+            le = float(lead_end) if lead_end is not None else 0.0
+            ls = 0.0 if ls < 0.0 else ls
+            le = 0.0 if le < 0.0 else le
+            if ls > L: ls = L
+            if le > L: le = L
+
+            r_pre = (ls / L) if L > EPS else 0.0
+            r_post = 1.0 - ((le / L) if L > EPS else 0.0)
+
+            # lead_start + lead_end > L이면 중간에서 만나도록 압축
+            if r_post < r_pre:
+                mid = 0.5 * (r_pre + r_post)
+                r_pre = mid
+                r_post = mid
+
+            v_pre = v0 + r_pre * dv
+            v_post = v0 + r_post * dv
+
+            # 메인 구간: v_pre -> v_post 선형
+            main = []
+            for node, d in zip(sub, dist):
+                t = (d / L) if L > EPS else 0.0
+                nd = dict(node)
+                nd[axis_key] = float(v_pre + t * (v_post - v_pre))
+                main.append(nd)
+
+            # (1) 시작: 외부축 선행 이동 (XYZ 고정)
+            if ls > EPS and abs(v_pre - v0) > 1e-9:
+                nd0 = dict(sub[0])
+                nd0[axis_key] = float(v0)
+                out.append(nd0)
+            # 메인(첫 점은 v_pre)
+            out.extend(main)
+
+            # (2) 종료: 외부축 후행 이동 (XYZ 고정)
+            if le > EPS and abs(v1 - v_post) > 1e-9:
+                nd1 = dict(sub[-1])
+                nd1[axis_key] = float(v1)
+                out.append(nd1)
+
+            i = e + 1
+
         return out
 
-    def _ensure_driver_point(run_nodes, target, tol=1e-6):
-        """run_nodes 안에 driver_key==target 위치의 노드가 없으면 삽입"""
-        for nd in run_nodes:
-            if abs(float(nd.get(driver_key, 0.0)) - target) <= tol:
-                return run_nodes
-
-        for j in range(1, len(run_nodes)):
-            d0 = float(run_nodes[j - 1].get(driver_key, 0.0))
-            d1 = float(run_nodes[j].get(driver_key, 0.0))
-            if abs(d1 - d0) < 1e-12:
-                continue
-            # target이 [d0,d1] 사이에 있으면 삽입
-            if (d0 - target) * (d1 - target) <= 0:
-                t = (target - d0) / (d1 - d0)
-                t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
-                new_nd = _interp_node(run_nodes[j - 1], run_nodes[j], t)
-                return run_nodes[:j] + [new_nd] + run_nodes[j:]
-        return run_nodes
-
-    out_nodes = []
-    i = 0
-    n = len(nodes_local)
-
-    while i < n:
-        # non-eligible는 그대로 복사
-        if not _eligible(nodes_local[i]):
-            out_nodes.append(nodes_local[i])
-            i += 1
-            continue
-
-        # eligible 구간(run) 수집: driver 방향이 바뀌면 분리
-        run = [nodes_local[i]]
-        i += 1
-        dir_sign = 0  # driver 방향(+1/-1)
-        while i < n and _eligible(nodes_local[i]):
-            prev = nodes_local[i - 1]
-            cur = nodes_local[i]
-            dd = float(cur.get(driver_key, 0.0)) - float(prev.get(driver_key, 0.0))
-            s = 0
-            if abs(dd) > 1e-9:
-                s = 1 if dd > 0 else -1
-
-            if s != 0 and dir_sign != 0 and s != dir_sign:
-                break  # 방향 전환 -> run 종료
-            if s != 0 and dir_sign == 0:
-                dir_sign = s
-
-            run.append(cur)
-            i += 1
-
-        if len(run) < 2:
-            out_nodes.extend(run)
-            continue
-
-        d0 = float(run[0].get(driver_key, 0.0))
-        d1 = float(run[-1].get(driver_key, 0.0))
-        v0 = float(run[0].get(axis_key, 0.0))
-        v1 = float(run[-1].get(axis_key, 0.0))
-
-        Ld = abs(d1 - d0)
-        dv = v1 - v0
-        if Ld < 1e-9 or abs(dv) < 1e-12:
-            out_nodes.extend(run)
-            continue
-
-        # start/end 램프 길이(mm) clamp
-        ds = float(lead_start) if lead_start else 0.0
-        de = float(lead_end) if lead_end else 0.0
-        ds = 0.0 if ds < 0 else ds
-        de = 0.0 if de < 0 else de
-
-        if ds + de > Ld:
-            if (ds + de) > 1e-9:
-                scale = max((Ld - 1e-6), 0.0) / (ds + de)
-                ds *= scale
-                de *= scale
-            else:
-                ds = 0.0
-                de = 0.0
-
-        # dv가 너무 작아 ds/de 램프만으로도 넘어가면 ratio를 자동 축소
-        sgn = 1.0 if dv >= 0 else -1.0
-        if (ds + de) > 1e-9:
-            ratio_eff = min(RAMP_RATIO, abs(dv) / (ds + de))
-        else:
-            ratio_eff = RAMP_RATIO
-
-        a_s = sgn * ds * ratio_eff
-        a_e = sgn * de * ratio_eff
-
-        # driver 진행 방향
-        dirx = 1.0 if (d1 - d0) >= 0 else -1.0
-
-        # 경계 driver 값
-        d_s = d0 + dirx * ds
-        d_e = d1 - dirx * de
-
-        run2 = run
-        # 경계점 삽입(필요 시)
-        if ds > 1e-9 and abs(d_s - d0) > 1e-9 and abs(d_s - d1) > 1e-9:
-            run2 = _ensure_driver_point(run2, d_s)
-        if de > 1e-9 and abs(d_e - d0) > 1e-9 and abs(d_e - d1) > 1e-9:
-            run2 = _ensure_driver_point(run2, d_e)
-
-        # 프로파일 적용
-        d0p = float(run2[0].get(driver_key, 0.0))
-        d1p = float(run2[-1].get(driver_key, 0.0))
-        Ldp = abs(d1p - d0p)
-        # (안전)
-        if Ldp < 1e-9:
-            out_nodes.extend(run2)
-            continue
-
-        Lm = max(Ldp - ds - de, 0.0)
-        v_s = v0 + a_s
-        v_e = v1 - a_e
-        dv_mid = v_e - v_s
-
-        for nd in run2:
-            u = (float(nd.get(driver_key, 0.0)) - d0p) * dirx  # 진행(mm)
-            if u < 0:
-                u = -u
-
-            if ds > 1e-9 and u <= ds + 1e-9:
-                # start 램프: 외부축 변화 = (driver 변화)*0.5
-                nd[axis_key] = v0 + sgn * (u * ratio_eff)
-            elif de > 1e-9 and u >= Ldp - de - 1e-9:
-                # end 램프: 외부축 변화 = (남은 driver)*0.5
-                u_end = Ldp - u
-                nd[axis_key] = v1 - sgn * (u_end * ratio_eff)
-            else:
-                # middle: 따라잡기 구간
-                if Lm > 1e-9:
-                    t = (u - ds) / Lm
-                    t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
-                    nd[axis_key] = v_s + t * dv_mid
-                else:
-                    # middle 없음 -> 단순 선형
-                    t = u / Ldp
-                    t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
-                    nd[axis_key] = v0 + t * dv
-
-        out_nodes.extend(run2)
-
-    return out_nodes
+    # A1 / A2 프로파일(+홀드포인트) 적용
     nodes = _apply_axis_profile_with_inserts(
         nodes, "a1", enable_a1_profile, lead_start_mm, lead_end_mm, deadband_a1, profile_print_only
     )
@@ -1772,69 +1698,66 @@ if KEY_OK:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > MAX_LINES)
 
-        if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        else:
-            # (NEW) 1-click 다운로드: Rapid 텍스트를 캐시해두고 download_button으로 바로 내려받기
-            base = st.session_state.get("base_name", "output")
+    # RAPID 변환 + 저장(다운로드) — 입력이 바뀌면 자동으로 RAPID를 갱신해 둡니다.
+    # (다운로드 버튼은 한 번 클릭하면 바로 .modx 파일이 내려받아집니다.)
+    params_json = {
+        "rx": float(rx), "ry": float(ry), "rz": float(rz),
+        "swap_a3_a4": bool(st.session_state.get("swap_a3_a4", False)),
+        "enable_a1_profile": bool(st.session_state.get("ext_profile_enable_a1", False)),
+        "enable_a2_profile": bool(st.session_state.get("ext_profile_enable_a2", False)),
+        "lead_start_mm": float(st.session_state.get("ext_profile_lead_start_mm", 100.0)),
+        "lead_end_mm": float(st.session_state.get("ext_profile_lead_end_mm", 100.0)),
+        "deadband_a1": float(st.session_state.get("ext_profile_deadband_a1", 0.0)),
+        "deadband_a2": float(st.session_state.get("ext_profile_deadband_a2", 0.0)),
+        "profile_print_only": bool(st.session_state.get("ext_profile_print_only", False)),
+    }
 
-            # 캐시 키(파라미터/프리셋/G-code 변경 감지)
-            try:
-                gtxt_md5 = hashlib.md5(gtxt.encode("utf-8", errors="ignore")).hexdigest()
-            except Exception:
-                gtxt_md5 = str(len(gtxt))
+    file_name = f"{base}.modx"
 
-            try:
-                preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, sort_keys=True)
-            except Exception:
-                preset_json = "{}"
+    if gtxt is None:
+        st.sidebar.info("G-code가 없습니다. 먼저 파일을 업로드하거나 텍스트를 입력하세요.")
+        st.sidebar.download_button("Save Rapid (.modx)", data="", file_name=file_name, mime="text/plain", disabled=True, use_container_width=True)
+    elif over:
+        st.sidebar.error(f"XYZ 라인 수가 {xyz_count:,}개입니다. (MAX {MAX_LINES:,}) — 변환을 중단했습니다.")
+        st.sidebar.download_button("Save Rapid (.modx)", data="", file_name=file_name, mime="text/plain", disabled=True, use_container_width=True)
+    else:
+        # 입력(G-code/옵션)이 바뀌었을 때만 RAPID를 재생성
+        try:
+            gtxt_sha1 = hashlib.sha1(gtxt.encode("utf-8")).hexdigest()
+            cfg = {
+                "gtxt_sha1": gtxt_sha1,
+                "preset": st.session_state.get("mapping_preset", {}),
+                **params_json,
+            }
+            cfg_hash = hashlib.sha1(json.dumps(cfg, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
-            params_json = json.dumps({
-                "rx": float(st.session_state.rapid_rx),
-                "ry": float(st.session_state.rapid_ry),
-                "rz": float(st.session_state.rapid_rz),
-                "swap_a3_a4": True,
-                "profile_enable": bool(st.session_state.get("ext_profile_enable", False)),
-                "profile_gap_mm": float(st.session_state.get("ext_profile_gap_mm", 0.0)),
-                "profile_hold_mm": float(st.session_state.get("ext_profile_hold_mm", 0.0)),
-                "profile_ratio": float(st.session_state.get("ext_profile_ratio", 0.5)),
-                "profile_deadband_mm": float(st.session_state.get("ext_profile_deadband_mm", 0.0)),
-                "profile_print_only": bool(st.session_state.get("ext_profile_print_only", True)),
-                "preset": preset_json,
-            }, ensure_ascii=False, sort_keys=True)
-
-            rapid_cache_key = hashlib.md5((gtxt_md5 + "|" + params_json).encode("utf-8", errors="ignore")).hexdigest()
-
-            if st.session_state.get("rapid_text") is None or st.session_state.get("rapid_cache_key") != rapid_cache_key:
-                with st.sidebar.spinner("Rapid(.modx) 변환 중..."):
-                    st.session_state.rapid_text = gcode_to_cone1500_module(
-                        gtxt,
-                        rx=st.session_state.rapid_rx,
-                        ry=st.session_state.rapid_ry,
-                        rz=st.session_state.rapid_rz,
-                        preset=st.session_state.mapping_preset,
-                        swap_a3_a4=True,
-                        profile_enable=bool(st.session_state.get("ext_profile_enable", False)),
-                        profile_gap_mm=float(st.session_state.get("ext_profile_gap_mm", 0.0)),
-                        profile_hold_mm=float(st.session_state.get("ext_profile_hold_mm", 0.0)),
-                        profile_ratio=float(st.session_state.get("ext_profile_ratio", 0.5)),
-                        profile_deadband_mm=float(st.session_state.get("ext_profile_deadband_mm", 0.0)),
-                        profile_print_only=bool(st.session_state.get("ext_profile_print_only", True)),
-                    )
-                    st.session_state.rapid_cache_key = rapid_cache_key
-
-            if st.session_state.get("rapid_text"):
-                st.sidebar.download_button(
-                    "Save Rapid (.modx)",
-                    st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
-                    mime="text/plain",
-                    use_container_width=True
+            if st.session_state.get("rapid_hash") != cfg_hash or not st.session_state.get("rapid_text"):
+                st.session_state.rapid_text = gcode_to_cone1500_module(
+                    gtxt,
+                    rx=params_json["rx"],
+                    ry=params_json["ry"],
+                    rz=params_json["rz"],
+                    preset=st.session_state.get("mapping_preset", {}),
+                    swap_a3_a4=params_json["swap_a3_a4"],
+                    enable_a1_profile=params_json["enable_a1_profile"],
+                    enable_a2_profile=params_json["enable_a2_profile"],
+                    lead_start_mm=params_json["lead_start_mm"],
+                    lead_end_mm=params_json["lead_end_mm"],
+                    deadband_a1=params_json["deadband_a1"],
+                    deadband_a2=params_json["deadband_a2"],
+                    profile_print_only=params_json["profile_print_only"],
                 )
-            else:
-                st.sidebar.error("Rapid 변환 결과가 비어있습니다. (G-code/프리셋/옵션을 확인하세요.)")
+                st.session_state.rapid_hash = cfg_hash
+                st.session_state.rapid_error = ""
+        except Exception as e:
+            st.session_state.rapid_error = f"{type(e).__name__}: {e}"
+
+        if st.session_state.get("rapid_error"):
+            st.sidebar.error("RAPID 변환 실패: " + st.session_state.rapid_error)
+            st.sidebar.download_button("Save Rapid (.modx)", data="", file_name=file_name, mime="text/plain", disabled=True, use_container_width=True)
+        else:
+            st.sidebar.caption("아래 버튼을 누르면 브라우저 다운로드 폴더에 .modx 파일이 저장됩니다.")
+            st.sidebar.download_button("Save Rapid (.modx)", st.session_state.get("rapid_text", ""), file_name=file_name, mime="text/plain", use_container_width=True)
 
 # =========================
 # Layout (Center + Right)
