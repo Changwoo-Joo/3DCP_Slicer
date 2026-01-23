@@ -1437,70 +1437,70 @@ def gcode_to_cone1500_module(
                 core2 = 1e-6
 
             # 축 값 할당(hold + linear)
-      # 축 값 할당: 감속(느림) → 가속(빠름) → 감속(느림) 3구간 프로파일
-      # 요구사항 해석:
-      #   - 시작/끝 구간에서는 |dA/dS| = 0.5 (S=이동거리[mm])로 "천천히" 이동
-      #   - 중간 구간은 전체 끝점(A_end)을 맞추기 위해 자동으로 더 빠르게/느리게 보정
-      #   - lead_start_mm / lead_end_mm 값을 각각 "느린 구간 길이"로 사용 (UI/인터페이스 변경 없음)
-      dA = float(v1 - v0)
-      if abs(dA) <= 1e-12:
-          # 변화가 거의 없으면 그대로 둠
-          pass
-      else:
-          SLOW_RATIO = 0.5  # "X(or Y) 이동의 1/2만 외부축이 따라가게" 요구에 대응
-          D1 = float(max(0.0, lead_start))
-          D2 = float(max(0.0, lead_end))
+            # 축 값 할당: 감속(느림) → 가속(빠름) → 감속(느림) 3구간 프로파일
+            # 요구사항 해석:
+            #   - 시작/끝 구간에서는 |dA/dS| = 0.5 (S=이동거리[mm])로 "천천히" 이동
+            #   - 중간 구간은 전체 끝점(A_end)을 맞추기 위해 자동으로 더 빠르게/느리게 보정
+            #   - lead_start_mm / lead_end_mm 값을 각각 "느린 구간 길이"로 사용 (UI/인터페이스 변경 없음)
+            dA = float(v1 - v0)
+            if abs(dA) <= 1e-12:
+                # 변화가 거의 없으면 그대로 둠
+                pass
+            else:
+                SLOW_RATIO = 0.5  # "X(or Y) 이동의 1/2만 외부축이 따라가게" 요구에 대응
+                D1 = float(max(0.0, lead_start))
+                D2 = float(max(0.0, lead_end))
 
-          # 코어 길이가 너무 작으면 자동 축소
-          if (D1 + D2) >= 0.95 * L2:
-              scale = (0.95 * L2) / max(1e-9, (D1 + D2))
-              D1 *= scale
-              D2 *= scale
+                # 코어 길이가 너무 작으면 자동 축소
+                if (D1 + D2) >= 0.95 * L2:
+                    scale = (0.95 * L2) / max(1e-9, (D1 + D2))
+                    D1 *= scale
+                    D2 *= scale
 
-          core_len = float(L2 - D1 - D2)
-          if core_len <= 1e-9:
-              # 너무 짧으면 프로파일 적용 생략
-              pass
-          else:
-              # dA가 작아서 "느린 구간"만으로도 초과 이동될 수 있으면 D1/D2를 자동으로 축소(단조성 보호)
-              need = abs(SLOW_RATIO) * (D1 + D2)
-              if need > 1e-9 and abs(dA) < need:
-                  scale = abs(dA) / need
-                  D1 *= scale
-                  D2 *= scale
-                  core_len = float(L2 - D1 - D2)
-                  if core_len <= 1e-9:
-                      core_len = 0.0
+                core_len = float(L2 - D1 - D2)
+                if core_len <= 1e-9:
+                    # 너무 짧으면 프로파일 적용 생략
+                    pass
+                else:
+                    # dA가 작아서 "느린 구간"만으로도 초과 이동될 수 있으면 D1/D2를 자동으로 축소(단조성 보호)
+                    need = abs(SLOW_RATIO) * (D1 + D2)
+                    if need > 1e-9 and abs(dA) < need:
+                        scale = abs(dA) / need
+                        D1 *= scale
+                        D2 *= scale
+                        core_len = float(L2 - D1 - D2)
+                        if core_len <= 1e-9:
+                            core_len = 0.0
 
-              sgn = 1.0 if dA > 0 else -1.0
-              slope1 = sgn * abs(SLOW_RATIO)
-              slope3 = slope1
+                    sgn = 1.0 if dA > 0 else -1.0
+                    slope1 = sgn * abs(SLOW_RATIO)
+                    slope3 = slope1
 
-              if core_len <= 0.0:
-                  # 코어가 사라졌으면 시작/끝 느린 구간만으로 선형 진행
-                  for k, nd in enumerate(sub2):
-                      sk = float(s2_cum[k])
-                      nd[axis_key] = float(v0 + slope1 * sk)
-                  # 마지막 점 보정
-                  sub2[-1][axis_key] = float(v1)
-              else:
-                  slope2 = (dA - slope1 * D1 - slope3 * D2) / core_len
+                    if core_len <= 0.0:
+                        # 코어가 사라졌으면 시작/끝 느린 구간만으로 선형 진행
+                        for k, nd in enumerate(sub2):
+                            sk = float(s2_cum[k])
+                            nd[axis_key] = float(v0 + slope1 * sk)
+                        # 마지막 점 보정
+                        sub2[-1][axis_key] = float(v1)
+                    else:
+                        slope2 = (dA - slope1 * D1 - slope3 * D2) / core_len
 
-                  A_D1 = float(v0 + slope1 * D1)
-                  A_mid_end = float(A_D1 + slope2 * core_len)  # s = L2-D2 지점
+                        A_D1 = float(v0 + slope1 * D1)
+                        A_mid_end = float(A_D1 + slope2 * core_len)  # s = L2-D2 지점
 
-                  for k, nd in enumerate(sub2):
-                      sk = float(s2_cum[k])
-                      if sk <= D1 + 1e-9:
-                          nd[axis_key] = float(v0 + slope1 * sk)
-                      elif sk >= (L2 - D2) - 1e-9:
-                          nd[axis_key] = float(A_mid_end + slope3 * (sk - (L2 - D2)))
-                      else:
-                          nd[axis_key] = float(A_D1 + slope2 * (sk - D1))
+                        for k, nd in enumerate(sub2):
+                            sk = float(s2_cum[k])
+                            if sk <= D1 + 1e-9:
+                                nd[axis_key] = float(v0 + slope1 * sk)
+                            elif sk >= (L2 - D2) - 1e-9:
+                                nd[axis_key] = float(A_mid_end + slope3 * (sk - (L2 - D2)))
+                            else:
+                                nd[axis_key] = float(A_D1 + slope2 * (sk - D1))
 
-                  # 끝점 수치오차 보정
-                  sub2[0][axis_key] = float(v0)
-                  sub2[-1][axis_key] = float(v1)
+                        # 끝점 수치오차 보정
+                        sub2[0][axis_key] = float(v0)
+                        sub2[-1][axis_key] = float(v1)
             # 반영
             nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
             offset += (len(sub2) - len(sub))
