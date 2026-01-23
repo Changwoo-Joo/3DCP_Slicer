@@ -814,9 +814,21 @@ if st.session_state.get("gcode_text"):
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
 def _fmt_pos(v: float) -> str:
-    s = f"{v:+.1f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(4); return f"{sign}{intpart}.{dec}"
+    if abs(v) < 5e-5:  # avoid "-0000.0"
+        v = 0.0
+    s = f"{v:+.1f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(4)
+    return f"{sign}{intpart}.{dec}"
 def _fmt_ang(v: float) -> str:
-    s = f"{v:+.2f}"; sign = s[0]; intpart, dec = s[1:].split("."); intpart = intpart.zfill(3); return f"{sign}{intpart}.{dec}"
+    if abs(v) < 5e-5:  # avoid "-000.00"
+        v = 0.0
+    s = f"{v:+.2f}"
+    sign = s[0]
+    intpart, dec = s[1:].split(".")
+    intpart = intpart.zfill(3)
+    return f"{sign}{intpart}.{dec}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
     if abs(a1 - a0) < 1e-12:
@@ -1514,7 +1526,9 @@ def gcode_to_cone1500_module(
 
             # 타깃 끝값(요청: 블록 끝에서 preset의 end로 도달)
             v0 = float(sub[0].get(axis_key, 0.0))
-            v1 = end_target
+            # IMPORTANT: v1 must come from this block's last node.
+            # Using a global/preset 'end_target' breaks reverse-direction moves (e.g., X: 5000→0).
+            v1 = float(sub[-1].get(axis_key, end_target))
             dA = v1 - v0
 
             # 블록이 너무 짧아서 3구간이 안 나오면 선형
