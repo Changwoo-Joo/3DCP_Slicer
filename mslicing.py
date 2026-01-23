@@ -1320,7 +1320,7 @@ def gcode_to_cone1500_module(
         out.append(sub_nodes[-1])
         return out
 
-    def _find_axis_blocks(nodes_local, axis_key, band, print_only):
+    def _find_axis_blocks(nodes_local, axis_key, deadband=0.0, print_only=False):
         """
         axis_key 축 값이 '유의미하게' 단조 증가/감소하는 구간들을 (start_idx,end_idx) 로 반환.
         """
@@ -1336,9 +1336,9 @@ def gcode_to_cone1500_module(
                 mask = [True] * n
 
         axis_vals = [float(nd[axis_key]) for nd in nodes_local]
-        base = _hysteresis_deadband(axis_vals, band if band > 0 else 0.0)
+        base = _hysteresis_deadband(axis_vals, float(deadband) if float(deadband) > 0 else 0.0)
 
-        eps_move = max(0.01, float(band) * 0.5) if band > 0 else 0.01
+        eps_move = max(0.01, float(deadband) * 0.5) if float(deadband) > 0 else 0.01
 
         blocks = []
         i = 1
