@@ -1385,8 +1385,10 @@ def gcode_to_cone1500_module(
         axis_key = str(axis_key).lower().strip()
         if axis_key == "a1":
             coord_key = "x"
+            end_target = float(a1_1)
         elif axis_key == "a2":
             coord_key = "y"
+            end_target = float(a2_1)
         else:
             return nodes_local
 
@@ -1564,13 +1566,13 @@ def gcode_to_cone1500_module(
     )
 
     # ---- 3) A1/A2 deadband (최종 히스테리시스) ----
-    if deadband_a1 > 0 and not enable_a1_profile:
+    if deadband_a1 > 0:
         a1_vals = [nd["a1"] for nd in nodes]
         a1_db = _hysteresis_deadband(a1_vals, deadband_a1)
         for nd, vv in zip(nodes, a1_db):
             nd["a1"] = vv
 
-    if deadband_a2 > 0 and not enable_a2_profile:
+    if deadband_a2 > 0:
         a2_vals = [nd["a2"] for nd in nodes]
         a2_db = _hysteresis_deadband(a2_vals, deadband_a2)
         for nd, vv in zip(nodes, a2_db):
