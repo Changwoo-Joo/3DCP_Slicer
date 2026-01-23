@@ -3,6 +3,7 @@ import streamlit as st
 import numpy as np
 import math
 import json
+import hashlib
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -1771,40 +1772,69 @@ if KEY_OK:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > MAX_LINES)
 
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
         if gtxt is None:
             st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
         elif over:
             st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            st.session_state.rapid_text = gcode_to_cone1500_module(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=True,
-                enable_a1_profile=bool(st.session_state.ext_profile_enable_a1),
-                enable_a2_profile=bool(st.session_state.ext_profile_enable_a2),
-                lead_start_mm=float(st.session_state.ext_profile_lead_start_mm),
-                lead_end_mm=float(st.session_state.ext_profile_lead_end_mm),
-                deadband_a1=float(st.session_state.ext_profile_deadband_a1),
-                deadband_a2=float(st.session_state.ext_profile_deadband_a2),
-                profile_print_only=bool(st.session_state.ext_profile_print_only),
-            )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
-
-        if st.session_state.get("rapid_text"):
+        else:
+            # (NEW) 1-click 다운로드: Rapid 텍스트를 캐시해두고 download_button으로 바로 내려받기
             base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
-            )
+
+            # 캐시 키(파라미터/프리셋/G-code 변경 감지)
+            try:
+                gtxt_md5 = hashlib.md5(gtxt.encode("utf-8", errors="ignore")).hexdigest()
+            except Exception:
+                gtxt_md5 = str(len(gtxt))
+
+            try:
+                preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                preset_json = "{}"
+
+            params_json = json.dumps({
+                "rx": float(st.session_state.rapid_rx),
+                "ry": float(st.session_state.rapid_ry),
+                "rz": float(st.session_state.rapid_rz),
+                "swap_a3_a4": True,
+                "profile_enable": bool(st.session_state.get("ext_profile_enable", False)),
+                "profile_gap_mm": float(st.session_state.get("ext_profile_gap_mm", 0.0)),
+                "profile_hold_mm": float(st.session_state.get("ext_profile_hold_mm", 0.0)),
+                "profile_ratio": float(st.session_state.get("ext_profile_ratio", 0.5)),
+                "profile_deadband_mm": float(st.session_state.get("ext_profile_deadband_mm", 0.0)),
+                "profile_print_only": bool(st.session_state.get("ext_profile_print_only", True)),
+                "preset": preset_json,
+            }, ensure_ascii=False, sort_keys=True)
+
+            rapid_cache_key = hashlib.md5((gtxt_md5 + "|" + params_json).encode("utf-8", errors="ignore")).hexdigest()
+
+            if st.session_state.get("rapid_text") is None or st.session_state.get("rapid_cache_key") != rapid_cache_key:
+                with st.sidebar.spinner("Rapid(.modx) 변환 중..."):
+                    st.session_state.rapid_text = gcode_to_cone1500_module(
+                        gtxt,
+                        rx=st.session_state.rapid_rx,
+                        ry=st.session_state.rapid_ry,
+                        rz=st.session_state.rapid_rz,
+                        preset=st.session_state.mapping_preset,
+                        swap_a3_a4=True,
+                        profile_enable=bool(st.session_state.get("ext_profile_enable", False)),
+                        profile_gap_mm=float(st.session_state.get("ext_profile_gap_mm", 0.0)),
+                        profile_hold_mm=float(st.session_state.get("ext_profile_hold_mm", 0.0)),
+                        profile_ratio=float(st.session_state.get("ext_profile_ratio", 0.5)),
+                        profile_deadband_mm=float(st.session_state.get("ext_profile_deadband_mm", 0.0)),
+                        profile_print_only=bool(st.session_state.get("ext_profile_print_only", True)),
+                    )
+                    st.session_state.rapid_cache_key = rapid_cache_key
+
+            if st.session_state.get("rapid_text"):
+                st.sidebar.download_button(
+                    "Save Rapid (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            else:
+                st.sidebar.error("Rapid 변환 결과가 비어있습니다. (G-code/프리셋/옵션을 확인하세요.)")
 
 # =========================
 # Layout (Center + Right)
