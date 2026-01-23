@@ -1371,89 +1371,210 @@ def gcode_to_cone1500_module(
 
         return blocks
 
-    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
-        """
-        축별 프로파일을 적용하고, lead_start/lead_end 경계에 포인트를 삽입하여 라인으로도 나타나게 함.
-        """
-        if not enable:
-            return nodes_local
-        if len(nodes_local) < 2:
-            return nodes_local
+    
+def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
+    """외부축(A1/A2) 프로파일(감속-가속-감속) + 필요 시 경계점 삽입.
 
-        lead_start = max(0.0, float(lead_start))
-        lead_end = max(0.0, float(lead_end))
-
-        blocks = _find_axis_blocks(nodes_local, axis_key, band, print_only)
-        if not blocks:
-            return nodes_local
-
-        offset = 0
-        for (s_idx, e_idx) in blocks:
-            s2 = s_idx + offset
-            e2 = e_idx + offset
-            if e2 <= s2:
-                continue
-            sub = nodes_local[s2:e2 + 1]
-            if len(sub) < 2:
-                continue
-
-            # 블록 길이
-            s_cum = [0.0]
-            for k in range(1, len(sub)):
-                s_cum.append(s_cum[-1] + _xy_dist(sub[k - 1], sub[k]))
-            L = s_cum[-1]
-            if L <= 1e-9:
-                continue
-
-            # 너무 짧으면(lead_start+lead_end >= L) 프로파일/삽입 생략
-            core = L - lead_start - lead_end
-            if core <= 1e-6:
-                continue
-
-            # 삽입 대상 거리
-            targets = []
-            if lead_start > 0.0:
-                targets.append(lead_start)
-            if lead_end > 0.0:
-                targets.append(L - lead_end)
-            targets = sorted(set(targets))
-
-            v0 = float(sub[0][axis_key])
-            v1 = float(sub[-1][axis_key])
-
-            sub2 = _split_at_distances(sub, targets, tol=1e-4)
-
-            # 새 누적거리
-            s2_cum = [0.0]
-            for k in range(1, len(sub2)):
-                s2_cum.append(s2_cum[-1] + _xy_dist(sub2[k - 1], sub2[k]))
-            L2 = s2_cum[-1]
-            if L2 <= 1e-9:
-                continue
-
-            # (보정) 삽입 후에도 코어 길이는 동일 개념으로 사용
-            core2 = L2 - lead_start - lead_end
-            if core2 <= 1e-6:
-                core2 = 1e-6
-
-            # 축 값 할당(hold + linear)
-            for k, nd in enumerate(sub2):
-                sk = s2_cum[k]
-                if sk <= lead_start + 1e-9:
-                    nd[axis_key] = v0
-                elif sk >= (L2 - lead_end) - 1e-9:
-                    nd[axis_key] = v1
-                else:
-                    t = (sk - lead_start) / core2
-                    nd[axis_key] = v0 + t * (v1 - v0)
-
-            # 반영
-            nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
-            offset += (len(sub2) - len(sub))
-
+    - A1은 로봇 X 변화량을 '드라이버'로 사용, A2는 로봇 Y 변화량을 드라이버로 사용.
+    - start/end 구간(lead_start/lead_end mm)에서는 외부축 변화량이 드라이버 변화량의 1/2(RAMP_RATIO)만큼만 움직이도록
+      piecewise-linear(느림-빠름-느림) 프로파일을 적용함.
+    - middle 구간에서는 전체 목표값(v0->v1)에 맞춰 자동으로 더 빠르게 움직여 따라잡음.
+    - print_only=True면(그리고 실제로 extr 구간이 존재하면) extr=True 구간에만 적용.
+    - band(Deadband)가 설정되면 작은 지그재그(미세 진동)로 인한 외부축 흔들림을 억제함.
+    """
+    if (not enable) or (nodes_local is None) or (len(nodes_local) < 2):
         return nodes_local
 
-    # A1 / A2 프로파일(+홀드포인트) 적용
+    # A1은 X, A2는 Y를 드라이버로 사용
+    if axis_key == "a1":
+        driver_key = "x"
+    elif axis_key == "a2":
+        driver_key = "y"
+    else:
+        return nodes_local
+
+    RAMP_RATIO = 0.5  # 'A축은 X/Y의 1/2' (mm/mm)
+
+    # 적용 대상(출력 구간만 적용 옵션)
+    have_any_extr = any(bool(nd.get("extr", False)) for nd in nodes_local)
+
+    def _eligible(nd):
+        if print_only and have_any_extr:
+            return bool(nd.get("extr", False))
+        return True
+
+    # 1) Deadband 선적용(작은 변화는 고정)
+    last_v = None
+    if band and band > 0:
+        for nd in nodes_local:
+            if not _eligible(nd):
+                continue
+            v = float(nd.get(axis_key, 0.0))
+            if last_v is None:
+                last_v = v
+            else:
+                if abs(v - last_v) < band:
+                    nd[axis_key] = last_v
+                else:
+                    last_v = v
+
+    def _lerp(a, b, t):
+        return a + (b - a) * t
+
+    def _interp_node(nd0, nd1, t):
+        """두 노드 사이에 선형 보간 노드 생성"""
+        out = dict(nd0)
+        for k in ("x", "y", "z", "a1", "a2", "a3", "a4"):
+            if (k in nd0) and (k in nd1):
+                out[k] = _lerp(float(nd0[k]), float(nd1[k]), t)
+        out["extr"] = bool(nd0.get("extr", False))
+        return out
+
+    def _ensure_driver_point(run_nodes, target, tol=1e-6):
+        """run_nodes 안에 driver_key==target 위치의 노드가 없으면 삽입"""
+        for nd in run_nodes:
+            if abs(float(nd.get(driver_key, 0.0)) - target) <= tol:
+                return run_nodes
+
+        for j in range(1, len(run_nodes)):
+            d0 = float(run_nodes[j - 1].get(driver_key, 0.0))
+            d1 = float(run_nodes[j].get(driver_key, 0.0))
+            if abs(d1 - d0) < 1e-12:
+                continue
+            # target이 [d0,d1] 사이에 있으면 삽입
+            if (d0 - target) * (d1 - target) <= 0:
+                t = (target - d0) / (d1 - d0)
+                t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
+                new_nd = _interp_node(run_nodes[j - 1], run_nodes[j], t)
+                return run_nodes[:j] + [new_nd] + run_nodes[j:]
+        return run_nodes
+
+    out_nodes = []
+    i = 0
+    n = len(nodes_local)
+
+    while i < n:
+        # non-eligible는 그대로 복사
+        if not _eligible(nodes_local[i]):
+            out_nodes.append(nodes_local[i])
+            i += 1
+            continue
+
+        # eligible 구간(run) 수집: driver 방향이 바뀌면 분리
+        run = [nodes_local[i]]
+        i += 1
+        dir_sign = 0  # driver 방향(+1/-1)
+        while i < n and _eligible(nodes_local[i]):
+            prev = nodes_local[i - 1]
+            cur = nodes_local[i]
+            dd = float(cur.get(driver_key, 0.0)) - float(prev.get(driver_key, 0.0))
+            s = 0
+            if abs(dd) > 1e-9:
+                s = 1 if dd > 0 else -1
+
+            if s != 0 and dir_sign != 0 and s != dir_sign:
+                break  # 방향 전환 -> run 종료
+            if s != 0 and dir_sign == 0:
+                dir_sign = s
+
+            run.append(cur)
+            i += 1
+
+        if len(run) < 2:
+            out_nodes.extend(run)
+            continue
+
+        d0 = float(run[0].get(driver_key, 0.0))
+        d1 = float(run[-1].get(driver_key, 0.0))
+        v0 = float(run[0].get(axis_key, 0.0))
+        v1 = float(run[-1].get(axis_key, 0.0))
+
+        Ld = abs(d1 - d0)
+        dv = v1 - v0
+        if Ld < 1e-9 or abs(dv) < 1e-12:
+            out_nodes.extend(run)
+            continue
+
+        # start/end 램프 길이(mm) clamp
+        ds = float(lead_start) if lead_start else 0.0
+        de = float(lead_end) if lead_end else 0.0
+        ds = 0.0 if ds < 0 else ds
+        de = 0.0 if de < 0 else de
+
+        if ds + de > Ld:
+            if (ds + de) > 1e-9:
+                scale = max((Ld - 1e-6), 0.0) / (ds + de)
+                ds *= scale
+                de *= scale
+            else:
+                ds = 0.0
+                de = 0.0
+
+        # dv가 너무 작아 ds/de 램프만으로도 넘어가면 ratio를 자동 축소
+        sgn = 1.0 if dv >= 0 else -1.0
+        if (ds + de) > 1e-9:
+            ratio_eff = min(RAMP_RATIO, abs(dv) / (ds + de))
+        else:
+            ratio_eff = RAMP_RATIO
+
+        a_s = sgn * ds * ratio_eff
+        a_e = sgn * de * ratio_eff
+
+        # driver 진행 방향
+        dirx = 1.0 if (d1 - d0) >= 0 else -1.0
+
+        # 경계 driver 값
+        d_s = d0 + dirx * ds
+        d_e = d1 - dirx * de
+
+        run2 = run
+        # 경계점 삽입(필요 시)
+        if ds > 1e-9 and abs(d_s - d0) > 1e-9 and abs(d_s - d1) > 1e-9:
+            run2 = _ensure_driver_point(run2, d_s)
+        if de > 1e-9 and abs(d_e - d0) > 1e-9 and abs(d_e - d1) > 1e-9:
+            run2 = _ensure_driver_point(run2, d_e)
+
+        # 프로파일 적용
+        d0p = float(run2[0].get(driver_key, 0.0))
+        d1p = float(run2[-1].get(driver_key, 0.0))
+        Ldp = abs(d1p - d0p)
+        # (안전)
+        if Ldp < 1e-9:
+            out_nodes.extend(run2)
+            continue
+
+        Lm = max(Ldp - ds - de, 0.0)
+        v_s = v0 + a_s
+        v_e = v1 - a_e
+        dv_mid = v_e - v_s
+
+        for nd in run2:
+            u = (float(nd.get(driver_key, 0.0)) - d0p) * dirx  # 진행(mm)
+            if u < 0:
+                u = -u
+
+            if ds > 1e-9 and u <= ds + 1e-9:
+                # start 램프: 외부축 변화 = (driver 변화)*0.5
+                nd[axis_key] = v0 + sgn * (u * ratio_eff)
+            elif de > 1e-9 and u >= Ldp - de - 1e-9:
+                # end 램프: 외부축 변화 = (남은 driver)*0.5
+                u_end = Ldp - u
+                nd[axis_key] = v1 - sgn * (u_end * ratio_eff)
+            else:
+                # middle: 따라잡기 구간
+                if Lm > 1e-9:
+                    t = (u - ds) / Lm
+                    t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
+                    nd[axis_key] = v_s + t * dv_mid
+                else:
+                    # middle 없음 -> 단순 선형
+                    t = u / Ldp
+                    t = 0.0 if t < 0 else (1.0 if t > 1.0 else t)
+                    nd[axis_key] = v0 + t * dv
+
+        out_nodes.extend(run2)
+
+    return out_nodes
     nodes = _apply_axis_profile_with_inserts(
         nodes, "a1", enable_a1_profile, lead_start_mm, lead_end_mm, deadband_a1, profile_print_only
     )
