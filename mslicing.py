@@ -3,7 +3,6 @@ import streamlit as st
 import numpy as np
 import math
 import json
-import hashlib
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -70,36 +69,6 @@ def clamp(v, lo, hi):
         return lo if v < lo else hi if v > hi else v
     except Exception:
         return lo
-
-
-def _cumulative_dist_xy(nodes: list) -> list:
-    """Return cumulative XY distance list for a sequence of node dicts or Nx? arrays.
-    Accepts:
-      - list of dicts with keys 'x','y'
-      - numpy array/list with columns [x,y,...]
-    """
-    if nodes is None:
-        return []
-    # dict nodes
-    try:
-        if len(nodes) == 0:
-            return []
-    except Exception:
-        return []
-    d = [0.0]
-    # Determine accessor
-    is_dict = isinstance(nodes[0], dict)
-    for i in range(1, len(nodes)):
-        if is_dict:
-            x0, y0 = float(nodes[i-1].get("x", 0.0)), float(nodes[i-1].get("y", 0.0))
-            x1, y1 = float(nodes[i].get("x", 0.0)), float(nodes[i].get("y", 0.0))
-        else:
-            x0, y0 = float(nodes[i-1][0]), float(nodes[i-1][1])
-            x1, y1 = float(nodes[i][0]), float(nodes[i][1])
-        dx, dy = (x1 - x0), (y1 - y0)
-        d.append(d[-1] + (dx*dx + dy*dy) ** 0.5)
-    return d
-
 
 # =========================
 # Helpers (연산 로직)
@@ -1233,6 +1202,12 @@ def gcode_to_cone1500_module(
                   "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
                   "!\n"
                   "!******************************************************************************************************************************\n")
+        # pad to fixed 64,000 lines (RAPID side expects fixed array size)
+        if len(lines_out) > MAX_LINES:
+            lines_out = lines_out[:MAX_LINES]
+        while len(lines_out) < MAX_LINES:
+            lines_out.append(PAD_LINE)
+
         cnt_str = str(MAX_LINES)
         open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
         body = ""
@@ -1396,171 +1371,85 @@ def gcode_to_cone1500_module(
 
         return blocks
 
-    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enabled, lead_start, lead_end, band, print_only):
+    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
         """
-        External axis 부하완화 프로파일(lead/lag + deadband).
-
-        - deadband(band) 이하의 미세 지그재그는 외부축을 고정(축 부하 감소).
-        - 큰 이동(블록)에서는 경로 길이 기준으로 3구간(초기/중간/말기)으로 분할하여
-          외부축이 '감속 → 가속 → 감속' 형태로 움직이도록 축 이동량을 재분배.
-          (초기/말기 구간의 축 이동량은 중간 구간 대비 0.5배로 설정)
-
-        lead_start, lead_end:
-          - 경로의 시작/끝에서 프로파일을 적용할 구간 길이(mm). (예: 500mm)
-          - 이 구간 경계 지점에 holdpoint 역할의 보조 점을 삽입하여 RAPID 라인이 분리되도록 함.
+        축별 프로파일을 적용하고, lead_start/lead_end 경계에 포인트를 삽입하여 라인으로도 나타나게 함.
         """
-        if (not enabled) or (lead_start <= 0 and lead_end <= 0 and (band is None or band <= 0)):
+        if not enable:
             return nodes_local
         if len(nodes_local) < 2:
             return nodes_local
 
-        EDGE_GAIN = 0.5  # 초기/말기 구간 축 이동량 비율 (중간 대비)
-        EPS = 1e-9
-        TOL = 1e-6
+        lead_start = max(0.0, float(lead_start))
+        lead_end = max(0.0, float(lead_end))
 
-        def _lerp(a, b, t):
-            return a + (b - a) * t
-
-        def _interp_node_at_dist(sub_nodes, sub_dist, d):
-            """sub_dist(누적거리) 상의 d 위치에서 노드를 선형 보간."""
-            if d <= 0:
-                return dict(sub_nodes[0])
-            L = sub_dist[-1]
-            if d >= L:
-                return dict(sub_nodes[-1])
-
-            # 이진 탐색으로 구간 찾기
-            import bisect
-            j = bisect.bisect_left(sub_dist, d)
-            if j <= 0:
-                return dict(sub_nodes[0])
-            if j >= len(sub_dist):
-                return dict(sub_nodes[-1])
-
-            d0 = sub_dist[j - 1]
-            d1 = sub_dist[j]
-            if abs(d1 - d0) <= EPS:
-                return dict(sub_nodes[j])
-
-            t = (d - d0) / (d1 - d0)
-            n0 = sub_nodes[j - 1]
-            n1 = sub_nodes[j]
-
-            out = dict(n0)
-            # 숫자형 키들만 보간
-            for k, v1 in n1.items():
-                v0 = n0.get(k, None)
-                if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
-                    out[k] = _lerp(float(v0), float(v1), t)
-                elif k not in out:
-                    out[k] = v1
-            return out
-
-        def _axis_profile_value(d, L, v0, v1):
-            """거리 d(0..L)에서의 축 값."""
-            dv = v1 - v0
-            if abs(dv) <= (band or 0.0):
-                return v0
-
-            ls = max(0.0, min(float(lead_start), L))
-            le = max(0.0, min(float(lead_end), L))
-            # 프로파일 적용 불가(너무 짧음)면 선형
-            if (ls + le) >= (L - EPS):
-                u = 0.0 if L <= EPS else (d / L)
-                return v0 + dv * u
-
-            Lmid = L - ls - le
-            if Lmid <= EPS:
-                u = 0.0 if L <= EPS else (d / L)
-                return v0 + dv * u
-
-            # 초기/말기 구간에서의 축 이동량을 중간 대비 EDGE_GAIN 배로 설정
-            dv_pre = dv * EDGE_GAIN * (ls / Lmid) if ls > EPS else 0.0
-            dv_post = dv * EDGE_GAIN * (le / Lmid) if le > EPS else 0.0
-
-            v_ls = v0 + dv_pre               # d = ls 에서의 축 값
-            v_le = v1 - dv_post              # d = L - le 에서의 축 값
-            dv_mid = dv - dv_pre - dv_post   # 중간 구간 축 이동량
-
-            if d < ls - EPS and ls > EPS:
-                return v0 + dv_pre * (d / ls)
-            if d <= (L - le) + EPS:
-                # 중간 구간(또는 경계)
-                u = 0.0 if Lmid <= EPS else ((d - ls) / Lmid)
-                u = max(0.0, min(1.0, u))
-                return v_ls + dv_mid * u
-            # 말기 구간
-            if le > EPS:
-                u = (d - (L - le)) / le
-                u = max(0.0, min(1.0, u))
-                return v_le + dv_post * u
-            return v1
-
-        blocks = _find_axis_blocks(nodes_local, axis_key, (band or 0.0), print_only)
+        blocks = _find_axis_blocks(nodes_local, axis_key, band, print_only)
         if not blocks:
             return nodes_local
 
         offset = 0
-        for s, e in blocks:
-            s2 = s + offset
-            e2 = e + offset
-            if s2 < 0 or e2 >= len(nodes_local) or e2 <= s2:
+        for (s_idx, e_idx) in blocks:
+            s2 = s_idx + offset
+            e2 = e_idx + offset
+            if e2 <= s2:
                 continue
-
             sub = nodes_local[s2:e2 + 1]
-            dist = _cumulative_dist_xy(sub)
-            L = float(dist[-1]) if dist else 0.0
-            if L <= EPS:
-                # 거리 0이면 값만 선형 보정
-                v0 = float(sub[0].get(axis_key, 0.0))
-                v1 = float(sub[-1].get(axis_key, v0))
-                for i, nd in enumerate(sub):
-                    u = 0.0 if len(sub) <= 1 else (i / (len(sub) - 1))
-                    nd[axis_key] = v0 + (v1 - v0) * u
-                nodes_local[s2:e2 + 1] = sub
+            if len(sub) < 2:
                 continue
 
-            v0 = float(sub[0].get(axis_key, 0.0))
-            v1 = float(sub[-1].get(axis_key, v0))
-            dv = v1 - v0
-            if abs(dv) <= (band or 0.0):
-                # deadband 내면 전체 고정 (삽입 없이)
-                for nd in sub:
+            # 블록 길이
+            s_cum = [0.0]
+            for k in range(1, len(sub)):
+                s_cum.append(s_cum[-1] + _xy_dist(sub[k - 1], sub[k]))
+            L = s_cum[-1]
+            if L <= 1e-9:
+                continue
+
+            # 너무 짧으면(lead_start+lead_end >= L) 프로파일/삽입 생략
+            core = L - lead_start - lead_end
+            if core <= 1e-6:
+                continue
+
+            # 삽입 대상 거리
+            targets = []
+            if lead_start > 0.0:
+                targets.append(lead_start)
+            if lead_end > 0.0:
+                targets.append(L - lead_end)
+            targets = sorted(set(targets))
+
+            v0 = float(sub[0][axis_key])
+            v1 = float(sub[-1][axis_key])
+
+            sub2 = _split_at_distances(sub, targets, tol=1e-4)
+
+            # 새 누적거리
+            s2_cum = [0.0]
+            for k in range(1, len(sub2)):
+                s2_cum.append(s2_cum[-1] + _xy_dist(sub2[k - 1], sub2[k]))
+            L2 = s2_cum[-1]
+            if L2 <= 1e-9:
+                continue
+
+            # (보정) 삽입 후에도 코어 길이는 동일 개념으로 사용
+            core2 = L2 - lead_start - lead_end
+            if core2 <= 1e-6:
+                core2 = 1e-6
+
+            # 축 값 할당(hold + linear)
+            for k, nd in enumerate(sub2):
+                sk = s2_cum[k]
+                if sk <= lead_start + 1e-9:
                     nd[axis_key] = v0
-                nodes_local[s2:e2 + 1] = sub
-                continue
+                elif sk >= (L2 - lead_end) - 1e-9:
+                    nd[axis_key] = v1
+                else:
+                    t = (sk - lead_start) / core2
+                    nd[axis_key] = v0 + t * (v1 - v0)
 
-            # 삽입할 경계 거리들(구간 내부에만)
-            targets = list(dist)  # 기존 점들
-            ls = max(0.0, min(float(lead_start), L))
-            le = max(0.0, min(float(lead_end), L))
-            dA = ls
-            dB = L - le
-
-            for d_ins in (dA, dB):
-                if d_ins <= TOL or d_ins >= (L - TOL):
-                    continue
-                # 이미 근처에 점이 있으면 삽입 안 함
-                if any(abs(d_ins - d0) <= TOL for d0 in targets):
-                    continue
-                targets.append(d_ins)
-
-            targets = sorted(targets)
-
-            # 중복 거리 제거(동일 좌표/반복 라인 방지)
-            uniq = []
-            for d0 in targets:
-                if not uniq or abs(d0 - uniq[-1]) > TOL:
-                    uniq.append(d0)
-
-            new_sub = []
-            for d0 in uniq:
-                nd = _interp_node_at_dist(sub, dist, d0)
-                nd[axis_key] = _axis_profile_value(d0, L, v0, v1)
-                new_sub.append(nd)
-
-            nodes_local = nodes_local[:s2] + new_sub + nodes_local[e2 + 1:]
-            offset += len(new_sub) - len(sub)
+            # 반영
+            nodes_local = nodes_local[:s2] + sub2 + nodes_local[e2 + 1:]
+            offset += (len(sub2) - len(sub))
 
         return nodes_local
 
@@ -1593,9 +1482,11 @@ def gcode_to_cone1500_module(
         for nd in nodes:
             if len(lines_out) >= MAX_LINES:
                 break
-            x = frx(nd["x"])
-            y = fry(nd["y"])
-            z = frz(nd["z"])
+            # NOTE: frx/fry/frz 변수는 위에서 각도 문자열(Rx/Ry/Rz)로 이미 사용 중이므로
+            #       여기서는 좌표/외부축 값을 _fmt_pos()로 포맷한다.
+            x = _fmt_pos(float(nd["x"]))
+            y = _fmt_pos(float(nd["y"]))
+            z = _fmt_pos(float(nd["z"]))
 
             if swap_a3_a4:
                 a3_v = nd["a4"]
@@ -1604,14 +1495,18 @@ def gcode_to_cone1500_module(
                 a3_v = nd["a3"]
                 a4_v = nd["a4"]
 
-            a1 = frax(nd["a1"])
-            a2 = fray(nd["a2"])
-            a3 = fraz(a3_v)
-            a4 = fra4(a4_v)
+            a1 = _fmt_pos(float(nd["a1"]))
+            a2 = _fmt_pos(float(nd["a2"]))
+            a3 = _fmt_pos(float(a3_v))
+            a4 = _fmt_pos(float(a4_v))
 
-            lines_out.append(f"{x},{y},{z},+000.00,+000.00,+090.00,{a1},{a2},{a3},{a4}")
+            lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
 
-        # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
+        # 라인 수가 MAX_LINES(64,000)보다 부족하면 PAD_LINE으로 채운다.
+        # (현장 파서/로봇쪽에서 배열 길이가 정확히 64,000이어야 하는 경우가 있음)
+        if len(lines_out) == 0:
+            lines_out.append(PAD_LINE)
+
         while len(lines_out) < MAX_LINES:
             lines_out.append(PAD_LINE)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
@@ -1755,65 +1650,40 @@ if KEY_OK:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > MAX_LINES)
 
-        # ✅ 원클릭 다운로드를 위해: 입력/설정이 바뀌었을 때만 rapid_text를 자동 갱신
-        if (gtxt is not None) and (not over):
-            try:
-                _payload = {
-                    "rx": float(st.session_state.get("rapid_rx", 0.0)),
-                    "ry": float(st.session_state.get("rapid_ry", 0.0)),
-                    "rz": float(st.session_state.get("rapid_rz", 0.0)),
-                    "preset": st.session_state.get("mapping_preset", "cone1500"),
-                    "swap_a3_a4": True,
-                    "enable_a1_profile": bool(st.session_state.get("ext_profile_enable_a1", False)),
-                    "enable_a2_profile": bool(st.session_state.get("ext_profile_enable_a2", False)),
-                    "lead_start_mm": float(st.session_state.get("ext_profile_lead_start_mm", 0.0)),
-                    "lead_end_mm": float(st.session_state.get("ext_profile_lead_end_mm", 0.0)),
-                    "deadband_a1": float(st.session_state.get("ext_profile_deadband_a1", 0.0)),
-                    "deadband_a2": float(st.session_state.get("ext_profile_deadband_a2", 0.0)),
-                    "profile_print_only": bool(st.session_state.get("ext_profile_print_only", True)),
-                }
-                _payload["gtxt_hash"] = hashlib.md5((gtxt or "").encode("utf-8", errors="ignore")).hexdigest()
-                _k = hashlib.md5(json.dumps(_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-
-                if (st.session_state.get("_rapid_cache_key") != _k) or (st.session_state.get("rapid_text") is None):
-                    st.session_state.rapid_text = gcode_to_cone1500_module(
-                        gtxt,
-                        rx=float(st.session_state.get("rapid_rx", 0.0)),
-                        ry=float(st.session_state.get("rapid_ry", 0.0)),
-                        rz=float(st.session_state.get("rapid_rz", 0.0)),
-                        preset=st.session_state.get("mapping_preset", "cone1500"),
-                        swap_a3_a4=True,
-                        enable_a1_profile=bool(st.session_state.get("ext_profile_enable_a1", False)),
-                        enable_a2_profile=bool(st.session_state.get("ext_profile_enable_a2", False)),
-                        lead_start_mm=float(st.session_state.get("ext_profile_lead_start_mm", 0.0)),
-                        lead_end_mm=float(st.session_state.get("ext_profile_lead_end_mm", 0.0)),
-                        deadband_a1=float(st.session_state.get("ext_profile_deadband_a1", 0.0)),
-                        deadband_a2=float(st.session_state.get("ext_profile_deadband_a2", 0.0)),
-                        profile_print_only=bool(st.session_state.get("ext_profile_print_only", True)),
-                    )
-                    st.session_state._rapid_cache_key = _k
-            except Exception as e:
-                st.sidebar.error(f"RAPID 변환 실패: {e}")
-                st.session_state.rapid_text = None
-
-        # 상태 메시지
+        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
         if gtxt is None:
-            st.sidebar.info("먼저 G-code를 생성/업로드한 뒤 저장하세요.")
+            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
         elif over:
-            st.sidebar.error(f"라인수 초과: XYZ 라인 {xyz_count} > {MAX_LINES}. 먼저 점간격/옵션을 조정하세요.")
-        elif st.session_state.get("rapid_text") is None:
-            st.sidebar.warning("RAPID 생성에 실패했습니다. 설정값/입력 G-code를 확인하세요.")
+            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+        elif save_rapid_clicked:
+            st.session_state.rapid_text = gcode_to_cone1500_module(
+                gtxt,
+                rx=st.session_state.rapid_rx,
+                ry=st.session_state.rapid_ry,
+                rz=st.session_state.rapid_rz,
+                preset=st.session_state.mapping_preset,
+                swap_a3_a4=True,
+                enable_a1_profile=bool(st.session_state.ext_profile_enable_a1),
+                enable_a2_profile=bool(st.session_state.ext_profile_enable_a2),
+                lead_start_mm=float(st.session_state.ext_profile_lead_start_mm),
+                lead_end_mm=float(st.session_state.ext_profile_lead_end_mm),
+                deadband_a1=float(st.session_state.ext_profile_deadband_a1),
+                deadband_a2=float(st.session_state.ext_profile_deadband_a2),
+                profile_print_only=bool(st.session_state.ext_profile_print_only),
+            )
+            st.sidebar.success(
+                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
+            )
 
-        # ✅ 이 버튼이 바로 다운로드 버튼입니다 (두 번 클릭 필요 없음)
-        st.sidebar.download_button(
-            "Save Rapid (.modx)",
-            data=st.session_state.get("rapid_text") or "",
-            file_name=f"{st.session_state.get('base_name','output')}.modx",
-            mime="text/plain",
-            disabled=(st.session_state.get("rapid_text") is None),
-            use_container_width=True,
-        )
-
+        if st.session_state.get("rapid_text"):
+            base = st.session_state.get("base_name", "output")
+            st.sidebar.download_button(
+                "Rapid 저장 (.modx)",
+                st.session_state.rapid_text,
+                file_name=f"{base}.modx",
+                mime="text/plain",
+                use_container_width=True
+            )
 
 # =========================
 # Layout (Center + Right)
