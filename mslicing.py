@@ -3,6 +3,7 @@ import streamlit as st
 import numpy as np
 import math
 import json
+import hashlib
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -69,6 +70,36 @@ def clamp(v, lo, hi):
         return lo if v < lo else hi if v > hi else v
     except Exception:
         return lo
+
+
+def _cumulative_dist_xy(nodes: list) -> list:
+    """Return cumulative XY distance list for a sequence of node dicts or Nx? arrays.
+    Accepts:
+      - list of dicts with keys 'x','y'
+      - numpy array/list with columns [x,y,...]
+    """
+    if nodes is None:
+        return []
+    # dict nodes
+    try:
+        if len(nodes) == 0:
+            return []
+    except Exception:
+        return []
+    d = [0.0]
+    # Determine accessor
+    is_dict = isinstance(nodes[0], dict)
+    for i in range(1, len(nodes)):
+        if is_dict:
+            x0, y0 = float(nodes[i-1].get("x", 0.0)), float(nodes[i-1].get("y", 0.0))
+            x1, y1 = float(nodes[i].get("x", 0.0)), float(nodes[i].get("y", 0.0))
+        else:
+            x0, y0 = float(nodes[i-1][0]), float(nodes[i-1][1])
+            x1, y1 = float(nodes[i][0]), float(nodes[i][1])
+        dx, dy = (x1 - x0), (y1 - y0)
+        d.append(d[-1] + (dx*dx + dy*dy) ** 0.5)
+    return d
+
 
 # =========================
 # Helpers (연산 로직)
@@ -1582,7 +1613,7 @@ def gcode_to_cone1500_module(
 
         # 라인 수 부족 시 마지막 라인으로 패딩(로봇 재생/슬라이더용)
         while len(lines_out) < MAX_LINES:
-            lines_out.append(lines_out[-1] if lines_out else PAD_LINE)
+            lines_out.append(PAD_LINE)
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!******************************************************************************************************************************\n"
@@ -1724,40 +1755,65 @@ if KEY_OK:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > MAX_LINES)
 
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            st.session_state.rapid_text = gcode_to_cone1500_module(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=True,
-                enable_a1_profile=bool(st.session_state.ext_profile_enable_a1),
-                enable_a2_profile=bool(st.session_state.ext_profile_enable_a2),
-                lead_start_mm=float(st.session_state.ext_profile_lead_start_mm),
-                lead_end_mm=float(st.session_state.ext_profile_lead_end_mm),
-                deadband_a1=float(st.session_state.ext_profile_deadband_a1),
-                deadband_a2=float(st.session_state.ext_profile_deadband_a2),
-                profile_print_only=bool(st.session_state.ext_profile_print_only),
-            )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
+        # ✅ 원클릭 다운로드를 위해: 입력/설정이 바뀌었을 때만 rapid_text를 자동 갱신
+        if (gtxt is not None) and (not over):
+            try:
+                _payload = {
+                    "rx": float(st.session_state.get("rapid_rx", 0.0)),
+                    "ry": float(st.session_state.get("rapid_ry", 0.0)),
+                    "rz": float(st.session_state.get("rapid_rz", 0.0)),
+                    "preset": st.session_state.get("mapping_preset", "cone1500"),
+                    "swap_a3_a4": True,
+                    "enable_a1_profile": bool(st.session_state.get("ext_profile_enable_a1", False)),
+                    "enable_a2_profile": bool(st.session_state.get("ext_profile_enable_a2", False)),
+                    "lead_start_mm": float(st.session_state.get("ext_profile_lead_start_mm", 0.0)),
+                    "lead_end_mm": float(st.session_state.get("ext_profile_lead_end_mm", 0.0)),
+                    "deadband_a1": float(st.session_state.get("ext_profile_deadband_a1", 0.0)),
+                    "deadband_a2": float(st.session_state.get("ext_profile_deadband_a2", 0.0)),
+                    "profile_print_only": bool(st.session_state.get("ext_profile_print_only", True)),
+                }
+                _payload["gtxt_hash"] = hashlib.md5((gtxt or "").encode("utf-8", errors="ignore")).hexdigest()
+                _k = hashlib.md5(json.dumps(_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
-            )
+                if (st.session_state.get("_rapid_cache_key") != _k) or (st.session_state.get("rapid_text") is None):
+                    st.session_state.rapid_text = gcode_to_cone1500_module(
+                        gtxt,
+                        rx=float(st.session_state.get("rapid_rx", 0.0)),
+                        ry=float(st.session_state.get("rapid_ry", 0.0)),
+                        rz=float(st.session_state.get("rapid_rz", 0.0)),
+                        preset=st.session_state.get("mapping_preset", "cone1500"),
+                        swap_a3_a4=True,
+                        enable_a1_profile=bool(st.session_state.get("ext_profile_enable_a1", False)),
+                        enable_a2_profile=bool(st.session_state.get("ext_profile_enable_a2", False)),
+                        lead_start_mm=float(st.session_state.get("ext_profile_lead_start_mm", 0.0)),
+                        lead_end_mm=float(st.session_state.get("ext_profile_lead_end_mm", 0.0)),
+                        deadband_a1=float(st.session_state.get("ext_profile_deadband_a1", 0.0)),
+                        deadband_a2=float(st.session_state.get("ext_profile_deadband_a2", 0.0)),
+                        profile_print_only=bool(st.session_state.get("ext_profile_print_only", True)),
+                    )
+                    st.session_state._rapid_cache_key = _k
+            except Exception as e:
+                st.sidebar.error(f"RAPID 변환 실패: {e}")
+                st.session_state.rapid_text = None
+
+        # 상태 메시지
+        if gtxt is None:
+            st.sidebar.info("먼저 G-code를 생성/업로드한 뒤 저장하세요.")
+        elif over:
+            st.sidebar.error(f"라인수 초과: XYZ 라인 {xyz_count} > {MAX_LINES}. 먼저 점간격/옵션을 조정하세요.")
+        elif st.session_state.get("rapid_text") is None:
+            st.sidebar.warning("RAPID 생성에 실패했습니다. 설정값/입력 G-code를 확인하세요.")
+
+        # ✅ 이 버튼이 바로 다운로드 버튼입니다 (두 번 클릭 필요 없음)
+        st.sidebar.download_button(
+            "Save Rapid (.modx)",
+            data=st.session_state.get("rapid_text") or "",
+            file_name=f"{st.session_state.get('base_name','output')}.modx",
+            mime="text/plain",
+            disabled=(st.session_state.get("rapid_text") is None),
+            use_container_width=True,
+        )
+
 
 # =========================
 # Layout (Center + Right)
