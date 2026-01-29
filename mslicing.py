@@ -671,21 +671,21 @@ if "paths_travel_mode" not in st.session_state:
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
-# --- (NEW) External axis profile defaults ---
-if "ext_profile_enable_a1" not in st.session_state:
-    st.session_state.ext_profile_enable_a1 = False
-if "ext_profile_enable_a2" not in st.session_state:
-    st.session_state.ext_profile_enable_a2 = False
-if "ext_profile_lead_start_mm" not in st.session_state:
-    st.session_state.ext_profile_lead_start_mm = 100.0
-if "ext_profile_lead_end_mm" not in st.session_state:
-    st.session_state.ext_profile_lead_end_mm = 100.0
-if "ext_profile_deadband_a1" not in st.session_state:
-    st.session_state.ext_profile_deadband_a1 = 0.0
-if "ext_profile_deadband_a2" not in st.session_state:
-    st.session_state.ext_profile_deadband_a2 = 0.0
-if "ext_profile_print_only" not in st.session_state:
-    st.session_state.ext_profile_print_only = False
+# --- (NEW) A1 time-sync defaults ---
+if "a1_time_sync_enable" not in st.session_state:
+    st.session_state.a1_time_sync_enable = False
+if "a1_time_sync_start" not in st.session_state:
+    st.session_state.a1_time_sync_start = 0.0
+if "a1_time_sync_end" not in st.session_state:
+    st.session_state.a1_time_sync_end = 4000.0
+if "a1_time_sync_speed" not in st.session_state:
+    st.session_state.a1_time_sync_speed = 200.0  # mm/s (사용자가 말한 200)
+if "a1_time_sync_div" not in st.session_state:
+    st.session_state.a1_time_sync_div = 10
+if "a1_time_sync_smooth" not in st.session_state:
+    st.session_state.a1_time_sync_smooth = True
+if "a1_time_sync_print_only" not in st.session_state:
+    st.session_state.a1_time_sync_print_only = False
 
 ensure_anim_buffers()
 
@@ -821,6 +821,7 @@ def _fmt_pos(v: float) -> str:
     intpart, dec = s[1:].split(".")
     intpart = intpart.zfill(4)
     return f"{sign}{intpart}.{dec}"
+
 def _fmt_ang(v: float) -> str:
     if abs(v) < 5e-5:  # avoid "-000.00"
         v = 0.0
@@ -866,53 +867,6 @@ def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-def map_axes_from_xyz_with_preset(x: float, y: float, z: float, rz: float, preset: Dict[str, Any]):
-    """A4_out 이 어느 축(X/Y)에 있든 해당 축 입력구간으로 선형 매핑."""
-    key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
-    if key is None or key not in preset:
-        return 0.0, 0.0, 0.0, 0.0
-    P = preset[key]
-
-    def gi(d: Dict[str, Any], path: List[Any], default: float) -> float:
-        cur = d
-        try:
-            for k in path[:-1]:
-                cur = cur[k]
-            return float(cur[path[-1]])
-        except Exception:
-            return float(default)
-
-    # 입력 구간
-    x0 = gi(P, ["X", "in", 0], 0.0); x1 = gi(P, ["X", "in", 1], 1.0)
-    y0 = gi(P, ["Y", "in", 0], 0.0); y1 = gi(P, ["Y", "in", 1], 1.0)
-    z0 = gi(P, ["Z", "in", 0], 0.0); z1 = gi(P, ["Z", "in", 1], 1.0)
-
-    # 출력 구간
-    a1_0 = gi(P, ["X", "A1_out", 0], 0.0); a1_1 = gi(P, ["X", "A1_out", 1], 0.0)
-    a2_0 = gi(P, ["Y", "A2_out", 0], 0.0); a2_1 = gi(P, ["Y", "A2_out", 1], 0.0)
-    a3_0 = gi(P, ["Z", "A3_out", 0], 0.0); a3_1 = gi(P, ["Z", "A3_out", 1], 0.0)
-
-    # A4는 X 또는 Y 중 "A4_out"이 존재하는 축을 자동 선택
-    a4_axis = None
-    if "A4_out" in P.get("Y", {}):
-        a4_axis = ("Y", y, y0, y1, gi(P, ["Y", "A4_out", 0], 0.0), gi(P, ["Y", "A4_out", 1], 0.0))
-    elif "A4_out" in P.get("X", {}):
-        a4_axis = ("X", x, x0, x1, gi(P, ["X", "A4_out", 0], 0.0), gi(P, ["X", "A4_out", 1], 0.0))
-
-    a1 = _linmap(x, x0, x1, a1_0, a1_1)
-    a2 = _linmap(y, y0, y1, a2_0, a2_1)
-    a3 = _linmap(z, z0, z1, a3_0, a3_1)
-    if a4_axis is None:
-        a4 = 0.0
-    else:
-        _, val, i0, i1, o0, o1 = a4_axis
-        a4 = _linmap(val, i0, i1, o0, o1)
-        # A4 절대 매핑 값도 범위 클램프 (안전)
-        lo, hi = (o0, o1) if o0 <= o1 else (o1, o0)
-        a4 = lo if a4 < lo else hi if a4 > hi else a4
-
-    return a1, a2, a3, a4
-
 PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
 MAX_LINES = 64000
 
@@ -927,98 +881,32 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-# =========================
-# (NEW) External axis helpers (A1/A2 lead/lag + deadband)
-# =========================
-def _apply_hysteresis_deadband(seq: List[float], db: float) -> List[float]:
-    """Deadband + hysteresis. db<=0이면 그대로 반환."""
-    if seq is None:
-        return []
-    if db is None or float(db) <= 0.0 or len(seq) == 0:
-        return list(seq)
-    db = float(db)
-    out = []
-    cmd = float(seq[0])
-    for v in seq:
-        v = float(v)
-        d = v - cmd
-        if abs(d) <= db:
-            out.append(cmd)
-        else:
-            cmd = v - (db if d > 0 else -db)
-            out.append(cmd)
-    return out
+# -------------------------
+# A1 time-sync smoothing helper
+# -------------------------
+def _smootherstep(x: float) -> float:
+    x = 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
+    # 6x^5 - 15x^4 + 10x^3
+    return x*x*x*(x*(x*6.0 - 15.0) + 10.0)
 
-def _timewarp_profile_by_distance(
-    s: np.ndarray,
-    v: np.ndarray,
-    lead_start_mm: float,
-    lead_end_mm: float
-) -> np.ndarray:
+def _smooth_progress_quantized(p: float, div_n: int) -> float:
     """
-    거리축 s(0..L)에서 값 v(s)를
-      - 초반 lead_start_mm 동안 v(0) hold
-      - 말단 lead_end_mm 동안 v(L) hold
-      - 중간은 s_eff로 time-warp 해서 v를 보존(형상 유지)
+    p(0..1)을 smootherstep으로 변환하되,
+    '전체 이동을 N으로 나눈다' 요구에 맞춰 N분할 테이블로 근사(선형보간)한다.
+    N이 커질수록 더 연속적인 smootherstep에 가까워짐.
     """
-    if s is None or v is None:
-        return v
-    if len(s) < 2:
-        return v
-    lead_start_mm = float(max(0.0, lead_start_mm))
-    lead_end_mm = float(max(0.0, lead_end_mm))
-    if (lead_start_mm + lead_end_mm) <= 1e-9:
-        return v
-
-    # s 단조 증가 보장(정지 점 포함 가능)
-    s = np.asarray(s, dtype=float)
-    v = np.asarray(v, dtype=float)
-    L = float(s[-1] - s[0])
-    if L <= 1e-9:
-        return v
-
-    D1 = min(lead_start_mm, L)
-    D2 = min(lead_end_mm, L)
-    if D1 + D2 >= 0.95 * L:
-        # 너무 크면 자동 축소
-        scale = (0.95 * L) / max(1e-9, (D1 + D2))
-        D1 *= scale
-        D2 *= scale
-
-    # s를 0 기준으로
-    s0 = s[0]
-    ss = s - s0
-    # s_eff 계산
-    denom = max(1e-9, (L - D1 - D2))
-    stretch = L / denom
-    s_eff = np.empty_like(ss)
-    for i, si in enumerate(ss):
-        if si <= D1:
-            s_eff[i] = 0.0
-        elif si >= (L - D2):
-            s_eff[i] = L
-        else:
-            s_eff[i] = (si - D1) * stretch
-
-    # np.interp는 x가 증가해야 함. ss는 증가(동일값 가능).
-    # 동일값이 있을 때 대비해 "유니크 ss"로 압축
-    ss_list = ss.tolist()
-    v_list = v.tolist()
-    ss_u = [ss_list[0]]
-    v_u = [v_list[0]]
-    for si, vi in zip(ss_list[1:], v_list[1:]):
-        if abs(si - ss_u[-1]) < 1e-12:
-            # 같은 s면 마지막 값으로 덮어쓰기
-            v_u[-1] = vi
-        else:
-            ss_u.append(si)
-            v_u.append(vi)
-    ss_u = np.asarray(ss_u, dtype=float)
-    v_u = np.asarray(v_u, dtype=float)
-
-    # s_eff도 0..L 범위로 클램프
-    s_eff = np.clip(s_eff, 0.0, float(ss_u[-1]))
-    return np.interp(s_eff, ss_u, v_u)
+    p = 0.0 if p < 0.0 else 1.0 if p > 1.0 else float(p)
+    n = int(max(2, int(div_n)))
+    # segment index
+    i = int(min(n - 1, max(0, math.floor(p * n))))
+    p0 = i / n
+    p1 = (i + 1) / n
+    q0 = _smootherstep(p0)
+    q1 = _smootherstep(p1)
+    if p1 - p0 <= 1e-12:
+        return q0
+    t = (p - p0) / (p1 - p0)
+    return q0 + (q1 - q0) * t
 
 def gcode_to_cone1500_module(
     gcode_text: str,
@@ -1027,14 +915,14 @@ def gcode_to_cone1500_module(
     rz: float,
     preset: Dict[str, Any],
     swap_a3_a4: bool = False,
-    # --- (NEW) External axis profile options ---
-    enable_a1_profile: bool = False,
-    enable_a2_profile: bool = False,
-    lead_start_mm: float = 100.0,
-    lead_end_mm: float = 100.0,
-    deadband_a1: float = 0.0,
-    deadband_a2: float = 0.0,
-    profile_print_only: bool = False
+    # --- (NEW) A1 time-sync options ---
+    a1_time_sync_enable: bool = False,
+    a1_time_sync_start: float = 0.0,
+    a1_time_sync_end: float = 4000.0,
+    a1_time_sync_speed: float = 200.0,     # mm/s (TCP 속도)
+    a1_time_sync_div: int = 10,            # 전체 이동 N분할
+    a1_time_sync_smooth: bool = True,      # 시작/끝 스무스 가속/감속
+    a1_time_sync_print_only: bool = False  # E 증가(출력) 구간만 시간축에 포함
 ) -> str:
     """
     A4만 '비례 분해(증분 누적)'로 동작.
@@ -1044,9 +932,12 @@ def gcode_to_cone1500_module(
       - Rz=0:   X' = X - A4  (A1은 X'로 산출)
       - Rz=-90: Y' = Y - (A4_max - A4)  (A2는 Y'로 산출; A4 범위 0~max 가정)
 
-    (NEW) External axis load reduction:
-      - A1/A2에 대해 "start hold / end hold(lead/lag)" 프로파일을 거리 기반 time-warp로 적용 가능
-      - A1/A2에 대해 deadband(+hysteresis)로 미세 지그재그 억제 가능
+    (NEW) A1 Time-Sync:
+      - A1을 좌표(X) 비례가 아니라 "TCP 이동시간"에 따라 0..A1_end 로 진행되게 생성
+      - TCP 이동시간은 각 구간 XY거리 / (사용자 입력 속도 mm/s)
+      - 시작/끝은 smootherstep(S-curve)로 가속/감속(속도 0에서 시작/종료)
+      - '전체 이동을 N으로 나눈다'는 요청에 맞춰 smootherstep을 N분할 테이블로 근사 가능
+      - 기존 히스테리시스/데드밴드 로직은 제거(사용 안함)
     """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -1182,7 +1073,7 @@ def gcode_to_cone1500_module(
             a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
             y_out = cy - (a4_max - cur_a4)
 
-        # --- A1/A2는 보정된 축으로 계산, A3는 원본 Z 기반 값 유지 ---
+        # --- A1/A2는 보정된 축으로 계산(기본) ---
         a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
         a2 = _linmap(y_out, y0, y1, a2_0, a2_1)
         a3 = a3_abs
@@ -1214,7 +1105,6 @@ def gcode_to_cone1500_module(
                   "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
                   "!\n"
                   "!******************************************************************************************************************************\n")
-        # pad to fixed 64,000 lines (RAPID side expects fixed array size)
         if len(lines_out) > MAX_LINES:
             lines_out = lines_out[:MAX_LINES]
         while len(lines_out) < MAX_LINES:
@@ -1229,404 +1119,82 @@ def gcode_to_cone1500_module(
         close_decl = "];\nENDMODULE\n"
         return header + open_decl + body + close_decl
 
-    # ---- 2) (NEW) A1/A2 리드/래그 + "홀드 포인트(추가 라인)" 삽입 ----
-    #  - 축이 실제로 이동해야 하는 구간(해당 축 값이 유의미하게 단조 증가/감소)만 블록으로 잡고,
-    #    블록 시작/끝에서 lead_start_mm / lead_end_mm 만큼은 축을 고정(hold)하도록 축 값을 거리기반으로 재분배한다.
-    #  - 그리고 그 hold 경계가 실제 데이터 라인으로도 존재하도록, 폴리라인 중간에 보간 포인트를 삽입한다.
-    #    (즉, 로봇은 끝점까지 가지만 축은 '조금 일찍' 도착/출발하도록 시간차를 만든다.)
-    #  - print_only=True 이고 E 정보가 전혀 없는 파일은(모두 False) 전체를 printing으로 간주하여 적용한다.
+    # ---- 2) (NEW) A1 Time-Sync 적용: A1을 TCP 이동시간 기반으로 생성 ----
+    if bool(a1_time_sync_enable) and len(xs_out) >= 2:
+        speed = float(a1_time_sync_speed) if float(a1_time_sync_speed) > 1e-9 else 200.0
 
-    # 2-0) 노드 리스트 구성
-    nodes = []
-    n0 = len(xs_out)
-    for i in range(n0):
-        nodes.append({
-            "x": float(xs_out[i]),
-            "y": float(ys_out[i]),
-            "z": float(zs_out[i]),
-            "a1": float(a1_des[i]),
-            "a2": float(a2_des[i]),
-            "a3": float(a3_list[i]),
-            "a4": float(a4_list[i]),
-            "extr": bool(is_extruding_list[i]) if i < len(is_extruding_list) else False,
-        })
-
-    def _hysteresis_deadband(vals, band):
-        """이전 값 기준으로 band 이내 변화는 무시(히스테리시스)."""
-        if not vals:
-            return []
-        if band <= 0:
-            return list(vals)
-        out = [float(vals[0])]
-        last = out[0]
-        b = float(band)
-        for v in vals[1:]:
-            fv = float(v)
-            if abs(fv - last) >= b:
-                last = fv
-            out.append(last)
-        return out
-
-    def _xy_dist(nA, nB):
-        dx = float(nB["x"]) - float(nA["x"])
-        dy = float(nB["y"]) - float(nA["y"])
-        return math.hypot(dx, dy)
-
-    def _interp_node(nA, nB, t):
-        """nA->nB 선형 보간 (모든 필드)."""
-        t = float(t)
-        u = 1.0 - t
-        return {
-            "x": u * float(nA["x"]) + t * float(nB["x"]),
-            "y": u * float(nA["y"]) + t * float(nB["y"]),
-            "z": u * float(nA["z"]) + t * float(nB["z"]),
-            "a1": u * float(nA["a1"]) + t * float(nB["a1"]),
-            "a2": u * float(nA["a2"]) + t * float(nB["a2"]),
-            "a3": u * float(nA["a3"]) + t * float(nB["a3"]),
-            "a4": u * float(nA["a4"]) + t * float(nB["a4"]),
-            "extr": bool(nA.get("extr", False)) or bool(nB.get("extr", False)),
-        }
-
-    def _split_at_distances(sub_nodes, s_targets, tol=1e-6):
-        """
-        sub_nodes(길이>=2) 폴리라인에서, 시작점으로부터 거리 s_targets(mm) 지점에 노드를 삽입하여 반환.
-        s_targets 는 오름차순 가정.
-        """
-        if len(sub_nodes) < 2:
-            return list(sub_nodes)
-
-        # 누적거리
-        s = [0.0]
-        for i in range(1, len(sub_nodes)):
-            s.append(s[-1] + _xy_dist(sub_nodes[i - 1], sub_nodes[i]))
-        L = s[-1]
-        if L <= 1e-9:
-            return list(sub_nodes)
-
-        # 기존 점과 너무 가까우면 삽입 안 함
-        targets = []
-        for st in s_targets:
-            st = float(st)
-            if st <= tol or st >= L - tol:
-                continue
-            # 기존 s와의 최소거리 체크
-            if min(abs(st - si) for si in s) <= tol:
-                continue
-            targets.append(st)
-        if not targets:
-            return list(sub_nodes)
-
-        out = []
-        ti = 0
-        for i in range(len(sub_nodes) - 1):
-            out.append(sub_nodes[i])
-            s0, s1 = s[i], s[i + 1]
-            segL = s1 - s0
-            if segL <= 1e-12:
-                continue
-            while ti < len(targets) and s0 < targets[ti] < s1:
-                t = (targets[ti] - s0) / segL
-                out.append(_interp_node(sub_nodes[i], sub_nodes[i + 1], t))
-                ti += 1
-        out.append(sub_nodes[-1])
-        return out
-
-    def _find_axis_blocks(nodes_local, axis_key, band, print_only):
-        """
-        axis_key 축 값이 '유의미하게' 단조 증가/감소하는 구간들을 (start_idx,end_idx) 로 반환.
-        """
-        n = len(nodes_local)
-        if n < 2:
-            return []
-
-        mask = [True] * n
-        if print_only:
-            mask = [bool(nd.get("extr", False)) for nd in nodes_local]
-            if not any(mask):
-                # E 정보가 없으면 전체를 printing으로 간주
-                mask = [True] * n
-
-        axis_vals = [float(nd[axis_key]) for nd in nodes_local]
-        base = _hysteresis_deadband(axis_vals, band if band > 0 else 0.0)
-
-        eps_move = max(0.01, float(band) * 0.5) if band > 0 else 0.01
-
-        blocks = []
-        i = 1
-        while i < n:
-            if not mask[i]:
-                i += 1
-                continue
-            da = base[i] - base[i - 1]
-            if abs(da) <= eps_move:
-                i += 1
-                continue
-
-            sign = 1 if da > 0 else -1
-            start = i - 1
-            j = i
-            while j < n:
-                if not mask[j]:
-                    break
-                daj = base[j] - base[j - 1]
-                if abs(daj) <= eps_move:
-                    break
-                if (daj > 0) != (sign > 0):
-                    # 방향 반전(지그재그) → 블록 종료
-                    break
-                j += 1
-
-            end = j - 1
-            if end > start:
-                blocks.append((start, end))
-            i = max(j, end + 1)
-
-        return blocks
-    def _apply_axis_profile_with_inserts(nodes_local, axis_key, enable, lead_start, lead_end, band, print_only):
-        """Apply slow-fast-slow profile to A1 (by X) / A2 (by Y).
-
-        요구사항:
-        - 시작 구간(lead_start)과 종료 구간(lead_end)에서는 축 변화율을 1/2(=0.5)로 '느리게'
-        - 중간 구간에서는 남은 변화를 모두 따라잡도록 자동으로 '빠르게' (연속/선형)
-        - X축은 A1, Y축은 A2에 각각 동일 로직 적용
-        - 기존 UI/나머지 로직은 그대로 두고, 축 값만 재분배
-        """
-        if not enable:
-            return nodes_local
-
-        axis_key = str(axis_key).lower().strip()
-        if axis_key == "a1":
-            coord_key = "x"
-            end_target = float(a1_1)
-        elif axis_key == "a2":
-            coord_key = "y"
-            end_target = float(a2_1)
-        else:
-            return nodes_local
-
-        if len(nodes_local) < 2:
-            return nodes_local
-
-        # 파라미터 정리
-        lead_start = float(lead_start or 0.0)
-        lead_end = float(lead_end or 0.0)
-        if lead_start < 0:
-            lead_start = 0.0
-        if lead_end < 0:
-            lead_end = 0.0
-
-        SLOW_RATIO = 0.5  # 요청사항: 시작/끝 구간은 1/2 비율
-
-        # 프린트 전용 마스크(옵션)
-        mask = [True] * len(nodes_local)
-        if print_only:
-            mask = [bool(nd.get("printing", True)) for nd in nodes_local]
-
-        EPS = 1e-9
-
-        def _find_coord_blocks():
-            """연속적으로 coord_key가 같은 방향으로 움직이는 구간을 블록으로 잡음."""
-            blocks = []
-            n = len(nodes_local)
-            i = 1
-            while i < n:
-                if not (mask[i] and mask[i - 1]):
-                    i += 1
-                    continue
-                d = float(nodes_local[i][coord_key] - nodes_local[i - 1][coord_key])
-                if abs(d) <= EPS:
-                    i += 1
-                    continue
-                sgn = 1 if d > 0 else -1
-                start = i - 1
-                j = i
-                while j < n:
-                    if not (mask[j] and mask[j - 1]):
-                        break
-                    dj = float(nodes_local[j][coord_key] - nodes_local[j - 1][coord_key])
-                    if abs(dj) <= EPS:
-                        break
-                    if (dj > 0) != (sgn > 0):
-                        break
-                    j += 1
-                end = j - 1
-                if end > start:
-                    blocks.append((start, end))
-                i = max(j, end + 1)
-            return blocks
-
-        def _interp_node(n0, n1, t):
-            out = dict(n0)
-            for k, v0 in n0.items():
-                if k not in n1:
-                    continue
-                v1 = n1[k]
-                if isinstance(v0, (int, float)) and isinstance(v1, (int, float)):
-                    out[k] = float(v0) + (float(v1) - float(v0)) * t
-            # printing 플래그는 구간 성격 유지
-            if "printing" in n0 or "printing" in n1:
-                out["printing"] = bool(n0.get("printing", True) and n1.get("printing", True))
-            return out
-
-        def _split_at_axis_dists(sub, targets):
-            # coord 축 기준 누적거리(= abs(delta coord))로 target 위치에 노드 삽입
-            if len(sub) < 2:
-                return sub
-            # 누적거리
-            cum = [0.0]
-            for i in range(1, len(sub)):
-                cum.append(cum[-1] + abs(float(sub[i][coord_key] - sub[i - 1][coord_key])))
-            L = cum[-1]
-            if L <= EPS:
-                return sub
-            tgs = [float(t) for t in targets if EPS < float(t) < (L - EPS)]
-            if not tgs:
-                return sub
-            tgs = sorted(set(tgs))
-
-            out = []
-            tg_i = 0
-            for i in range(len(sub) - 1):
-                out.append(sub[i])
-                seg = abs(float(sub[i + 1][coord_key] - sub[i][coord_key]))
-                if seg <= EPS:
-                    continue
-                s0 = cum[i]
-                s1 = s0 + seg
-                while tg_i < len(tgs) and tgs[tg_i] <= s1 + EPS:
-                    tt = tgs[tg_i]
-                    if tt <= s0 + EPS:
-                        tg_i += 1
-                        continue
-                    t = (tt - s0) / seg
-                    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-                    out.append(_interp_node(sub[i], sub[i + 1], t))
-                    tg_i += 1
-            out.append(sub[-1])
-            return out
-
-        blocks = _find_coord_blocks()
-        if not blocks:
-            return nodes_local
-
-        # 뒤에서부터 처리(삽입으로 인덱스 변동 방지)
-        for s, e in reversed(blocks):
-            sub = nodes_local[s : e + 1]
-
-            # 누적거리(= abs(delta coord))
-            cum = [0.0]
-            for i in range(1, len(sub)):
-                cum.append(cum[-1] + abs(float(sub[i][coord_key] - sub[i - 1][coord_key])))
-            L = cum[-1]
-            if L <= EPS:
-                continue
-
-            D1 = min(lead_start, L)
-            D2 = min(lead_end, L - D1)
-
-            # 타깃 끝값(요청: 블록 끝에서 preset의 end로 도달)
-            v0 = float(sub[0].get(axis_key, 0.0))
-            # IMPORTANT: v1 must come from this block's last node.
-            # Using a global/preset 'end_target' breaks reverse-direction moves (e.g., X: 5000→0).
-            v1 = float(sub[-1].get(axis_key, end_target))
-            dA = v1 - v0
-
-            # 블록이 너무 짧아서 3구간이 안 나오면 선형
-            core = L - D1 - D2
-            if core <= EPS or abs(dA) <= EPS:
-                # 단순 선형
-                for i, nd in enumerate(sub):
-                    t = cum[i] / L
-                    nd[axis_key] = v0 + dA * t
-                sub[-1][axis_key] = v1
-                nodes_local[s : e + 1] = sub
-                continue
-
-            # 시작/끝은 1/2 비율, 중간은 남은 변화량을 따라잡도록 자동 계산
-            slow_k = math.copysign(SLOW_RATIO, dA)  # mm(axis) per mm(coord)
-            fast_k = (dA - slow_k * (D1 + D2)) / core
-
-            # D1, (L-D2) 지점에 노드가 없으면 삽입
-            sub2 = _split_at_axis_dists(sub, [D1, L - D2])
-
-            # 다시 누적거리 계산
-            cum2 = [0.0]
-            for i in range(1, len(sub2)):
-                cum2.append(cum2[-1] + abs(float(sub2[i][coord_key] - sub2[i - 1][coord_key])))
-            L2 = cum2[-1]
-            D1_2 = min(D1, L2)
-            D2_2 = min(D2, L2 - D1_2)
-
-            # 값 할당
-            for i, nd in enumerate(sub2):
-                sk = cum2[i]
-                if sk <= D1_2 + EPS:
-                    nd[axis_key] = v0 + slow_k * sk
-                elif sk <= (L2 - D2_2) + EPS:
-                    nd[axis_key] = v0 + slow_k * D1_2 + fast_k * (sk - D1_2)
-                else:
-                    nd[axis_key] = v1 - slow_k * (L2 - sk)
-
-            sub2[-1][axis_key] = v1  # 끝은 정확히 맞춤
-            nodes_local[s : e + 1] = sub2
-
-        return nodes_local
-
-    nodes = _apply_axis_profile_with_inserts(
-        nodes, "a1", enable_a1_profile, lead_start_mm, lead_end_mm, deadband_a1, profile_print_only
-    )
-    nodes = _apply_axis_profile_with_inserts(
-        nodes, "a2", enable_a2_profile, lead_start_mm, lead_end_mm, deadband_a2, profile_print_only
-    )
-
-    # ---- 3) A1/A2 deadband (최종 히스테리시스) ----
-    if deadband_a1 > 0:
-        a1_vals = [nd["a1"] for nd in nodes]
-        a1_db = _hysteresis_deadband(a1_vals, deadband_a1)
-        for nd, vv in zip(nodes, a1_db):
-            nd["a1"] = vv
-
-    if deadband_a2 > 0:
-        a2_vals = [nd["a2"] for nd in nodes]
-        a2_db = _hysteresis_deadband(a2_vals, deadband_a2)
-        for nd, vv in zip(nodes, a2_db):
-            nd["a2"] = vv
-
-    # ---- 4) 출력 문자열 생성 ----
-    lines_out = []
-    if not nodes:
-        lines_out = [PAD_LINE] * MAX_LINES
-    else:
-        for nd in nodes:
-            if len(lines_out) >= MAX_LINES:
-                break
-            # NOTE: frx/fry/frz 변수는 위에서 각도 문자열(Rx/Ry/Rz)로 이미 사용 중이므로
-            #       여기서는 좌표/외부축 값을 _fmt_pos()로 포맷한다.
-            x = _fmt_pos(float(nd["x"]))
-            y = _fmt_pos(float(nd["y"]))
-            z = _fmt_pos(float(nd["z"]))
-
-            if swap_a3_a4:
-                a3_v = nd["a4"]
-                a4_v = nd["a3"]
+        # print-only 옵션 처리: E가 전혀 없으면(모두 False) 전체를 printing으로 간주
+        seg_print_mask = []
+        any_extr = any(bool(v) for v in is_extruding_list)
+        for i in range(len(xs_out)):
+            # 노드 i가 "출력 중"인지 의미: 이 노드로 오는 모션이 출력인지로 판단하는 게 가장 안전
+            # 첫 노드는 기준 노드이므로 True 처리(시간 계산에서 제외될 수 있음)
+            if i == 0:
+                seg_print_mask.append(True)
             else:
-                a3_v = nd["a3"]
-                a4_v = nd["a4"]
+                seg_print_mask.append(bool(is_extruding_list[i]) if any_extr else True)
 
-            a1 = _fmt_pos(float(nd["a1"]))
-            a2 = _fmt_pos(float(nd["a2"]))
-            a3 = _fmt_pos(float(a3_v))
-            a4 = _fmt_pos(float(a4_v))
+        # 누적 시간 계산
+        t_cum = [0.0]
+        for i in range(1, len(xs_out)):
+            dx = xs_out[i] - xs_out[i - 1]
+            dy = ys_out[i] - ys_out[i - 1]
+            dist = math.hypot(dx, dy)
 
-            lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
+            use_seg = True
+            if bool(a1_time_sync_print_only):
+                use_seg = bool(seg_print_mask[i])
 
-        # 라인 수가 MAX_LINES(64,000)보다 부족하면 PAD_LINE으로 채운다.
-        # (현장 파서/로봇쪽에서 배열 길이가 정확히 64,000이어야 하는 경우가 있음)
-        if len(lines_out) == 0:
-            lines_out.append(PAD_LINE)
+            dt = (dist / speed) if (use_seg and dist > 1e-12) else 0.0
+            t_cum.append(t_cum[-1] + dt)
 
-        while len(lines_out) < MAX_LINES:
-            lines_out.append(PAD_LINE)
+        total_t = float(t_cum[-1])
+        if total_t > 1e-9:
+            a_start = float(a1_time_sync_start)
+            a_end = float(a1_time_sync_end)
+            a_span = a_end - a_start
+            div_n = int(max(2, int(a1_time_sync_div)))
+            do_smooth = bool(a1_time_sync_smooth)
+
+            new_a1 = []
+            for ti in t_cum:
+                p = float(ti / total_t) if total_t > 0 else 0.0
+                if do_smooth:
+                    p2 = _smooth_progress_quantized(p, div_n)
+                else:
+                    p2 = p
+                new_a1.append(a_start + a_span * p2)
+
+            # A1 override
+            a1_des = new_a1
+
+    # ---- 3) 출력 문자열 생성 ----
+    lines_out = []
+    for i in range(min(len(xs_out), MAX_LINES)):
+        x = _fmt_pos(float(xs_out[i]))
+        y = _fmt_pos(float(ys_out[i]))
+        z = _fmt_pos(float(zs_out[i]))
+
+        if swap_a3_a4:
+            a3_v = a4_list[i]
+            a4_v = a3_list[i]
+        else:
+            a3_v = a3_list[i]
+            a4_v = a4_list[i]
+
+        a1s = _fmt_pos(float(a1_des[i]))
+        a2s = _fmt_pos(float(a2_des[i]))
+        a3s = _fmt_pos(float(a3_v))
+        a4s = _fmt_pos(float(a4_v))
+
+        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s}")
+
+    if len(lines_out) == 0:
+        lines_out.append(PAD_LINE)
+
+    while len(lines_out) < MAX_LINES:
+        lines_out.append(PAD_LINE)
+
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n"
               "!******************************************************************************************************************************\n"
@@ -1634,7 +1202,8 @@ def gcode_to_cone1500_module(
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2 optional distance-profile(lead/lag) + deadband; A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
+              "!*** A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
+              "!*** A1 option: Time-Sync (TCP distance / speed) + S-curve accel/decel at start/end.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1661,37 +1230,39 @@ if KEY_OK:
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-        # ---- (NEW) External Axis Profile UI ----
-        with st.sidebar.expander("External Axis Profile (A1/A2 부하완화)", expanded=False):
-            st.caption("A1/A2의 시작/정지 타이밍을 로봇과 분리(lead/lag)하고, 미세 지그재그를 deadband로 억제합니다.")
-            st.session_state.ext_profile_enable_a1 = st.checkbox(
-                "Enable A1 profile (lead/lag + deadband)",
-                value=bool(st.session_state.ext_profile_enable_a1),
+        # ---- (NEW) A1 Time-Sync UI ----
+        with st.sidebar.expander("A1 Time-Sync (부가축 A1 시간동기)", expanded=False):
+            st.caption("A1을 X좌표 비례가 아니라, TCP 이동시간(거리/속도)에 맞춰 0→End로 진행시킵니다. 시작/끝은 S-curve로 가속/감속됩니다.")
+            st.session_state.a1_time_sync_enable = st.checkbox(
+                "Enable A1 time-sync (override A1 mapping)",
+                value=bool(st.session_state.a1_time_sync_enable),
             )
-            st.session_state.ext_profile_enable_a2 = st.checkbox(
-                "Enable A2 profile (lead/lag + deadband)",
-                value=bool(st.session_state.ext_profile_enable_a2),
+            st.session_state.a1_time_sync_start = st.number_input(
+                "A1 start (mm)", value=float(st.session_state.a1_time_sync_start),
+                step=50.0, format="%.1f"
             )
-            st.session_state.ext_profile_lead_start_mm = st.number_input(
-                "Start hold (mm)  — 로봇이 먼저 움직이는 거리",
-                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_lead_start_mm), step=10.0, format="%.1f"
+            st.session_state.a1_time_sync_end = st.number_input(
+                "A1 end (mm)", value=float(st.session_state.a1_time_sync_end),
+                step=50.0, format="%.1f"
             )
-            st.session_state.ext_profile_lead_end_mm = st.number_input(
-                "End hold (mm)  — 로봇이 멈추기 전에 외부축이 먼저 멈추는 거리",
-                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_lead_end_mm), step=10.0, format="%.1f"
+            st.session_state.a1_time_sync_speed = st.number_input(
+                "TCP speed for time (mm/s)", min_value=0.1, max_value=100000.0,
+                value=float(st.session_state.a1_time_sync_speed), step=10.0, format="%.1f",
+                help="예: 200이면 이동시간 = (TCP XY거리)/200 (초)"
             )
-            st.session_state.ext_profile_deadband_a1 = st.number_input(
-                "A1 deadband (mm) — 이 범위 지그재그는 A1 고정",
-                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_deadband_a1), step=10.0, format="%.1f"
+            st.session_state.a1_time_sync_div = st.number_input(
+                "Divide N (전체 이동 N분할)", min_value=2, max_value=100000,
+                value=int(st.session_state.a1_time_sync_div), step=1,
+                help="요청하신 '전체 이동을 10(또는 20)으로 나누기' 개념을 반영. (S-curve를 N분할 테이블로 근사)"
             )
-            st.session_state.ext_profile_deadband_a2 = st.number_input(
-                "A2 deadband (mm) — 이 범위 지그재그는 A2 고정",
-                min_value=0.0, max_value=100000.0, value=float(st.session_state.ext_profile_deadband_a2), step=10.0, format="%.1f"
+            st.session_state.a1_time_sync_smooth = st.checkbox(
+                "Smooth accel/decel at start/end (S-curve)",
+                value=bool(st.session_state.a1_time_sync_smooth),
             )
-            st.session_state.ext_profile_print_only = st.checkbox(
-                "Apply profile only when E increases (printing only)",
-                value=bool(st.session_state.ext_profile_print_only),
-                help="G-code에 E가 있고, E가 증가하는 구간만 프로파일을 적용합니다. E가 없으면 적용 구간이 없을 수 있습니다."
+            st.session_state.a1_time_sync_print_only = st.checkbox(
+                "Time based only on printing moves (E increases only)",
+                value=bool(st.session_state.a1_time_sync_print_only),
+                help="E가 증가하는 구간만 시간축에 포함합니다. E가 없으면 전체 구간을 출력으로 간주합니다."
             )
 
         # ---- Mapping Presets UI ----
@@ -1781,13 +1352,13 @@ if KEY_OK:
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
                 swap_a3_a4=True,
-                enable_a1_profile=bool(st.session_state.ext_profile_enable_a1),
-                enable_a2_profile=bool(st.session_state.ext_profile_enable_a2),
-                lead_start_mm=float(st.session_state.ext_profile_lead_start_mm),
-                lead_end_mm=float(st.session_state.ext_profile_lead_end_mm),
-                deadband_a1=float(st.session_state.ext_profile_deadband_a1),
-                deadband_a2=float(st.session_state.ext_profile_deadband_a2),
-                profile_print_only=bool(st.session_state.ext_profile_print_only),
+                a1_time_sync_enable=bool(st.session_state.a1_time_sync_enable),
+                a1_time_sync_start=float(st.session_state.a1_time_sync_start),
+                a1_time_sync_end=float(st.session_state.a1_time_sync_end),
+                a1_time_sync_speed=float(st.session_state.a1_time_sync_speed),
+                a1_time_sync_div=int(st.session_state.a1_time_sync_div),
+                a1_time_sync_smooth=bool(st.session_state.a1_time_sync_smooth),
+                a1_time_sync_print_only=bool(st.session_state.a1_time_sync_print_only),
             )
             st.sidebar.success(
                 f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
@@ -1862,7 +1433,6 @@ with right_col:
         scrub = None
         scrub_num = None
     else:
-        # 현재 저장된 값 기준 default 지정
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
         scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
@@ -1871,7 +1441,6 @@ with right_col:
                                     int(default_val), 1,
                                     help="표시할 최종 세그먼트(행) 번호")
 
-        # 슬라이더/행번호 입력을 통합해서 target 결정
         target = default_val
         if scrub != default_val:
             target = int(scrub)
@@ -1881,7 +1450,6 @@ with right_col:
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
 
-        # ---- (NEW) 현재 행 기준 레이어 전체 길이 표시 ----
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
         if layer_z is not None and layer_len is not None:
             st.caption(
@@ -1895,7 +1463,6 @@ with right_col:
 
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
-    # 위에서 결정된 값을 그대로 사용
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
     DRAW_LIMIT = 15000
@@ -1926,11 +1493,9 @@ if segments is not None and total_segments > 0:
         total_len = 0.0
         for i in range(target):
             p1, p2, is_travel, is_extruding = segments[i]
-            if is_extruding:  # E>0 구간만 길이로 인정
+            if is_extruding:
                 total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
-
         st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
-
     else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
