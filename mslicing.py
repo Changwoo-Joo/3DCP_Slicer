@@ -15,7 +15,7 @@ from pathlib import Path
 # =========================
 st.set_page_config(page_title="3DCP Slicer", layout="wide")
 
-# ── 전역 CSS (UI만 수정) ──
+# ── 전역 CSS ──
 st.markdown(
     """
     <style>
@@ -348,19 +348,12 @@ def compute_layer_length_for_index(
     segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
     upto_idx: int
 ) -> Tuple[Optional[float], Optional[float]]:
-    """
-    upto_idx 번째 세그먼트까지 기준으로:
-      - 그 구간에서 마지막 '압출 세그먼트'가 속한 Z 레이어를 찾고
-      - 해당 Z 레이어 전체(모든 압출 세그먼트)의 XY 길이 합을 계산.
-    반환: (레이어 Z값, 전체 길이[mm]) / 없으면 (None, None)
-    """
     if not segments or upto_idx <= 0:
         return None, None
 
     N = len(segments)
     upto = min(max(int(upto_idx), 0), N)
 
-    # 1) upto 구간 내 마지막 압출 세그먼트의 레이어 Z 찾기
     layer_z = None
     for i in range(upto):
         p1, p2, is_travel, is_extruding = segments[i]
@@ -369,7 +362,6 @@ def compute_layer_length_for_index(
     if layer_z is None:
         return None, None
 
-    # 2) 해당 레이어 Z의 전체 XY 길이 합산
     total_len = 0.0
     for p1, p2, is_travel, is_extruding in segments:
         if not is_extruding:
@@ -671,16 +663,17 @@ if "paths_travel_mode" not in st.session_state:
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
-# --- (NEW) A1/A2 Constant-Speed defaults ---
+# --- A1/A2 Constant-Speed defaults ---
 if "ext_const_enable_a1" not in st.session_state:
     st.session_state.ext_const_enable_a1 = True
 if "ext_const_enable_a2" not in st.session_state:
     st.session_state.ext_const_enable_a2 = True
 
+# ✅ 기본값을 사용자 범위(0~6000)로 맞춤
 if "ext_const_xmin" not in st.session_state:
     st.session_state.ext_const_xmin = 0.0
 if "ext_const_xmax" not in st.session_state:
-    st.session_state.ext_const_xmax = 6500.0
+    st.session_state.ext_const_xmax = 6000.0  # <-- 여기
 if "ext_const_a1_at_xmin" not in st.session_state:
     st.session_state.ext_const_a1_at_xmin = 4000.0
 if "ext_const_a1_at_xmax" not in st.session_state:
@@ -696,11 +689,11 @@ if "ext_const_a2_at_ymax" not in st.session_state:
     st.session_state.ext_const_a2_at_ymax = 4000.0
 
 if "ext_const_speed_mm_s" not in st.session_state:
-    st.session_state.ext_const_speed_mm_s = 200.0  # 로봇 일정 속도 가정
+    st.session_state.ext_const_speed_mm_s = 200.0
 if "ext_const_eps_mm" not in st.session_state:
-    st.session_state.ext_const_eps_mm = 0.2       # 경계 일치 판정 허용오차
+    st.session_state.ext_const_eps_mm = 0.5  # 약간 키워서 경계 홀드 안정화
 if "ext_const_apply_print_only" not in st.session_state:
-    st.session_state.ext_const_apply_print_only = True
+    st.session_state.ext_const_apply_print_only = False  # ✅ “모든 모션” 기준으로 기본 동작
 if "ext_const_travel_interp" not in st.session_state:
     st.session_state.ext_const_travel_interp = True
 
@@ -831,7 +824,7 @@ if st.session_state.get("gcode_text"):
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
 def _fmt_pos(v: float) -> str:
-    if abs(v) < 5e-5:  # avoid "-0000.0"
+    if abs(v) < 5e-5:
         v = 0.0
     s = f"{v:+.1f}"
     sign = s[0]
@@ -840,7 +833,7 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    if abs(v) < 5e-5:  # avoid "-000.00"
+    if abs(v) < 5e-5:
         v = 0.0
     s = f"{v:+.2f}"
     sign = s[0]
@@ -855,22 +848,18 @@ def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
     return float(b0 + t * (b1 - b0))
 
-# ---- (UPDATED) 기본 프리셋: A1_out/A2_out 제거 (A1/A2는 별도 알고리즘으로 생성) ----
 DEFAULT_PRESET = {
     "0": {
-        # 0°: (A4 on X), Z -> A3
         "X": {"in": [0.0, 6500.0], "A4_out": [0.0, 500.0]},
         "Y": {"in": [0.0, 1000.0]},
         "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
     },
     "90": {
-        # +90°: (A4 on Y), Z -> A3
         "X": {"in": [0.0, 6500.0]},
         "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
         "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
     },
     "-90": {
-        # −90°: (A4 on Y), Z -> A3
         "X": {"in": [0.0, 6500.0]},
         "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
         "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
@@ -880,7 +869,6 @@ DEFAULT_PRESET = {
 def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(p))
 
-# 세션에 프리셋 보관
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
@@ -899,7 +887,9 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 # =========================
-# (NEW) A1/A2 Constant-Speed profile (boundary-hold)
+# (FIXED) A1/A2 Constant-Speed profile
+#  - raw_x/raw_y 기준으로 계산
+#  - A1은 ΔX만 / A2는 ΔY만 보고 진행(ΔY로 A1 진행 X)
 # =========================
 def _apply_const_speed_profile_on_nodes(
     nodes: List[Dict[str, Any]],
@@ -910,25 +900,10 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
-    eps_mm: float = 0.2,
-    apply_print_only: bool = True,
+    eps_mm: float = 0.5,
+    apply_print_only: bool = False,
     travel_interp: bool = True
 ) -> None:
-    """
-    nodes[i]에 axis_key 값을 "등속 왕복"으로 덮어쓴다.
-
-    핵심:
-    - 프린팅(Extruding) 연속 블록 단위로 처리
-    - 각 블록에서:
-      i0 = coord_min(경계) 첫 발생
-      i1 = coord_max(경계) i0 이후 첫 발생
-      i2 = coord_min(경계) i1 이후 첫 발생 (없으면 블록 끝)
-      => i0->i1: axis_at_min -> axis_at_max 등속(시간축=거리/speed)
-      => i1->i2: axis_at_max -> axis_at_min 등속
-    - 경계 좌표(coord==min/max, eps 이내) 구간에서는 axis 진행시간을 "멈춤"(axis가 움직이지 않음)
-      즉, 그 구간은 axis_key 값이 고정.
-    - travel(비압출) 구간은 (옵션) 전후값을 선형 보간해 튐 방지.
-    """
     if not nodes or axis_key not in ("a1", "a2"):
         return
     n = len(nodes)
@@ -944,16 +919,15 @@ def _apply_const_speed_profile_on_nodes(
     eps = float(max(0.0, eps_mm))
     v = float(max(1e-6, speed_mm_s))
 
-    # --- 1) printing 마스크 및 print-block 추출 ---
+    # printing mask
     extr = [bool(nd.get("extr", False)) for nd in nodes]
     if apply_print_only:
-        # E가 전혀 없는 파일(모두 False)이면 전체를 프린팅으로 간주
         if not any(extr):
             extr = [True] * n
     else:
         extr = [True] * n
 
-    # 블록: extr True가 시작되는 지점에서 start=(i-1), end=마지막 extr True 인덱스
+    # blocks
     blocks: List[Tuple[int, int]] = []
     in_block = False
     b_start = 0
@@ -962,32 +936,27 @@ def _apply_const_speed_profile_on_nodes(
             in_block = True
             b_start = max(0, i - 1)
         if in_block:
-            # 블록 종료 조건: extr False가 연속되기 시작하면 종료
             if (i == n - 1) or (not extr[i] and extr[i - 1]):
                 b_end = i - 1
                 if b_end > b_start:
                     blocks.append((b_start, b_end))
                 in_block = False
-
-    # 블록이 하나도 없으면 전체를 하나로
     if not blocks:
         blocks = [(0, n - 1)]
 
-    # 초기값 세팅(혹시 누락 대비)
+    # init
     for nd in nodes:
         if axis_key not in nd:
             nd[axis_key] = float(axis_at_min)
 
-    def _dist_xy(i0: int, i1: int) -> float:
-        dx = float(nodes[i1]["x"]) - float(nodes[i0]["x"])
-        dy = float(nodes[i1]["y"]) - float(nodes[i0]["y"])
-        return math.hypot(dx, dy)
+    def _coord(i: int) -> float:
+        return float(nodes[i][coord_key])
 
     def _is_on_min(i: int) -> bool:
-        return abs(float(nodes[i][coord_key]) - coord_min) <= eps
+        return abs(_coord(i) - coord_min) <= eps
 
     def _is_on_max(i: int) -> bool:
-        return abs(float(nodes[i][coord_key]) - coord_max) <= eps
+        return abs(_coord(i) - coord_max) <= eps
 
     def _find_first_idx(start: int, end: int, pred) -> Optional[int]:
         for k in range(start, end + 1):
@@ -996,31 +965,36 @@ def _apply_const_speed_profile_on_nodes(
         return None
 
     def _find_minmax_fallback(start: int, end: int) -> Tuple[int, int]:
-        # 경계 일치가 없으면 실제 min/max 인덱스로 대체
-        vals = [float(nodes[k][coord_key]) for k in range(start, end + 1)]
+        vals = [_coord(k) for k in range(start, end + 1)]
         i_min = int(np.argmin(vals)) + start
         i_max = int(np.argmax(vals)) + start
         return i_min, i_max
 
+    def _dt_axis(a: int, b: int) -> float:
+        # ✅ 이 축은 "해당 coord 변화량"만 보고 시간 진행
+        d = abs(_coord(b) - _coord(a))
+        if d <= 1e-12:
+            return 0.0
+        # 경계에 닿아있는 구간에서는 강제 정지(안정성)
+        if _is_on_min(a) or _is_on_min(b) or _is_on_max(a) or _is_on_max(b):
+            return 0.0
+        return float(d / v)
+
     def _assign_piecewise(block_s: int, block_e: int):
-        # 1) i0(min), i1(max), i2(min) 찾기
         i0 = _find_first_idx(block_s, block_e, _is_on_min)
         i1 = None
         i2 = None
-
         if i0 is not None:
             i1 = _find_first_idx(i0 + 1, block_e, _is_on_max)
             if i1 is not None:
                 i2 = _find_first_idx(i1 + 1, block_e, _is_on_min)
-        # 경계가 제대로 없으면 fallback
+
         if i0 is None or i1 is None:
             i_min, i_max = _find_minmax_fallback(block_s, block_e)
-            # 순서를 보장: i0 < i1 로 맞추되, 그래도 불가능하면 단일 램프로 처리
             if i_min < i_max:
                 i0, i1 = i_min, i_max
                 i2 = block_e
             else:
-                # i_max가 먼저 나오면: 시작은 min쪽으로 잡기 어려움 → 이 블록은 축을 고정(안 튀게)
                 for k in range(block_s, block_e + 1):
                     nodes[k][axis_key] = float(axis_at_min)
                 return
@@ -1028,29 +1002,23 @@ def _apply_const_speed_profile_on_nodes(
         if i2 is None:
             i2 = block_e
 
-        # 2) 유효 구간이 너무 짧으면 고정
         if not (block_s <= i0 < i1 <= block_e):
             for k in range(block_s, block_e + 1):
                 nodes[k][axis_key] = float(axis_at_min)
             return
 
-        # 3) 프린팅 전(블록 시작~i0)은 axis_at_min 홀드
+        # start..i0 hold at min
         for k in range(block_s, i0 + 1):
             nodes[k][axis_key] = float(axis_at_min)
 
-        # 4) i0->i1 (forward): eff_time 누적(경계에서는 dt_eff=0)
+        # i0->i1 forward
         eff_f = [0.0] * (i1 - i0 + 1)
         for t_i in range(1, len(eff_f)):
             a = i0 + t_i - 1
             b = i0 + t_i
-            dt = _dist_xy(a, b) / v
-            # 경계 일치 구간이면 A축 진행시간 멈춤
-            if _is_on_min(a) or _is_on_min(b) or _is_on_max(a) or _is_on_max(b):
-                dt = 0.0
-            eff_f[t_i] = eff_f[t_i - 1] + dt
+            eff_f[t_i] = eff_f[t_i - 1] + _dt_axis(a, b)
         Tf = eff_f[-1]
 
-        # 값 할당
         for t_i in range(len(eff_f)):
             k = i0 + t_i
             if Tf <= 1e-12:
@@ -1058,14 +1026,14 @@ def _apply_const_speed_profile_on_nodes(
             else:
                 u = eff_f[t_i] / Tf
                 val = float(axis_at_min) + (float(axis_at_max) - float(axis_at_min)) * float(u)
-            # 경계에서는 정지 + 정확값으로 강제
+            # ✅ 경계에서는 정확값으로 강제 스냅 + 홀드
             if _is_on_min(k):
                 val = float(axis_at_min)
             if _is_on_max(k):
                 val = float(axis_at_max)
             nodes[k][axis_key] = float(val)
 
-        # 5) i1->i2 (back): axis_at_max -> axis_at_min
+        # i1->i2 back
         if i2 <= i1:
             for k in range(i1, block_e + 1):
                 nodes[k][axis_key] = float(axis_at_min)
@@ -1075,10 +1043,7 @@ def _apply_const_speed_profile_on_nodes(
         for t_i in range(1, len(eff_b)):
             a = i1 + t_i - 1
             b = i1 + t_i
-            dt = _dist_xy(a, b) / v
-            if _is_on_min(a) or _is_on_min(b) or _is_on_max(a) or _is_on_max(b):
-                dt = 0.0
-            eff_b[t_i] = eff_b[t_i - 1] + dt
+            eff_b[t_i] = eff_b[t_i - 1] + _dt_axis(a, b)
         Tb = eff_b[-1]
 
         for t_i in range(len(eff_b)):
@@ -1094,57 +1059,46 @@ def _apply_const_speed_profile_on_nodes(
                 val = float(axis_at_min)
             nodes[k][axis_key] = float(val)
 
-        # 6) i2 이후는 axis_at_min 홀드
+        # tail hold at min
         for k in range(i2 + 1, block_e + 1):
-            # 경계가 아닌데도 이어지는 꼬리 구간은 튀지 않게 min으로 유지
             nodes[k][axis_key] = float(axis_at_min)
 
-    # --- 2) 블록별 profile 적용 ---
+        # ✅ 블록 전체에 대해 "현재 coord가 경계면이면 강제 스냅"
+        for k in range(block_s, block_e + 1):
+            if _is_on_min(k):
+                nodes[k][axis_key] = float(axis_at_min)
+            if _is_on_max(k):
+                nodes[k][axis_key] = float(axis_at_max)
+
     for (bs, be) in blocks:
         _assign_piecewise(bs, be)
 
-    # --- 3) travel(비압출) 구간 보간(옵션) ---
+    # travel interpolation (옵션)
     if travel_interp and apply_print_only:
-        # travel은 extr False인 구간을 의미(원래 extr 마스크)
         orig_extr = [bool(nd.get("extr", False)) for nd in nodes]
-        # E가 전혀 없으면 보간 의미 없음
         if any(orig_extr):
             i = 0
             while i < n:
                 if orig_extr[i]:
                     i += 1
                     continue
-                # travel run start
                 t0 = i
                 while i < n and (not orig_extr[i]):
                     i += 1
                 t1 = i - 1
-                # travel run (t0..t1), prev printing idx = t0-1, next printing idx = i
                 prev_idx = t0 - 1 if t0 - 1 >= 0 else None
                 next_idx = i if i < n else None
                 if prev_idx is None or next_idx is None:
-                    # 한쪽만 있으면 그냥 유지
                     base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
                     for k in range(t0, t1 + 1):
                         nodes[k][axis_key] = base
                     continue
                 a0 = float(nodes[prev_idx][axis_key])
                 a1 = float(nodes[next_idx][axis_key])
-                # travel 길이로 보간(거리 기반)
-                dists = [0.0]
-                for k in range(t0, t1 + 1):
-                    if k == t0:
-                        dists.append(dists[-1] + _dist_xy(prev_idx, k))
-                    else:
-                        dists.append(dists[-1] + _dist_xy(k - 1, k))
-                total = dists[-1]
-                if total <= 1e-9:
-                    for k in range(t0, t1 + 1):
-                        nodes[k][axis_key] = a0
-                else:
-                    for kk, k in enumerate(range(t0, t1 + 1), start=1):
-                        u = dists[kk] / total
-                        nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
+                total = max(1, (t1 - t0 + 1))
+                for kk, k in enumerate(range(t0, t1 + 1)):
+                    u = (kk + 1) / float(total + 1)
+                    nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
 
 # =========================
 # Rapid Converter (UPDATED)
@@ -1156,11 +1110,10 @@ def gcode_to_cone1500_module(
     rz: float,
     preset: Dict[str, Any],
     swap_a3_a4: bool = False,
-    # --- (NEW) Constant-Speed A1/A2 settings ---
     enable_a1_const: bool = True,
     enable_a2_const: bool = True,
     x_min: float = 0.0,
-    x_max: float = 6500.0,
+    x_max: float = 6000.0,
     a1_at_xmin: float = 4000.0,
     a1_at_xmax: float = 0.0,
     y_min: float = 0.0,
@@ -1168,23 +1121,10 @@ def gcode_to_cone1500_module(
     a2_at_ymin: float = 0.0,
     a2_at_ymax: float = 4000.0,
     speed_mm_s: float = 200.0,
-    boundary_eps_mm: float = 0.2,
-    apply_print_only: bool = True,
+    boundary_eps_mm: float = 0.5,
+    apply_print_only: bool = False,
     travel_interp: bool = True,
 ) -> str:
-    """
-    A4만 '비례 분해(증분 누적)'로 동작.
-    출력 좌표 보정:
-      - Z' = Z - A3(절대값)
-      - Rz=90:  Y' = Y - A4
-      - Rz=0:   X' = X - A4
-      - Rz=-90: Y' = Y - (A4_max - A4)
-
-    (UPDATED)
-      - A1/A2는 preset(A1_out/A2_out) 기반이 아니라,
-        사용자가 지정한 Xmin/Xmax, Ymin/Ymax 경계에 대해 "등속 왕복" 프로파일로 생성.
-      - 경계(X==min/max, Y==min/max)에 좌표가 일치하는 구간에서는 외부축 진행을 멈춤(=축이 움직이지 않음).
-    """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
@@ -1197,15 +1137,12 @@ def gcode_to_cone1500_module(
         except Exception:
             return float(default)
 
-    # 입력 스팬
     x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
 
-    # A3 출력 스팬
     a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
 
-    # A4 부착 위치/스팬
     a4_on_x = "A4_out" in P.get("X", {})
     a4_on_y = "A4_out" in P.get("Y", {})
     a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
@@ -1225,16 +1162,16 @@ def gcode_to_cone1500_module(
 
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
-    # ---- 1) G-code 파싱 & 1차 계산(A3/A4 + 좌표보정) ----
     have_prev = False
     prev_x = prev_y = prev_z = 0.0
     prev_e = None
-    cur_a4 = 0.0  # 누적 A4
+    cur_a4 = 0.0
 
-    # 저장 버퍼(후처리용)
     xs_out: List[float] = []
     ys_out: List[float] = []
     zs_out: List[float] = []
+    raw_xs: List[float] = []
+    raw_ys: List[float] = []
     a1_list: List[float] = []
     a2_list: List[float] = []
     a3_list: List[float] = []
@@ -1246,7 +1183,6 @@ def gcode_to_cone1500_module(
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # 좌표 파싱(없으면 이전 유지)
         cx, cy, cz = prev_x, prev_y, prev_z
         ce = None
         has_any = False
@@ -1266,7 +1202,7 @@ def gcode_to_cone1500_module(
         if not has_any:
             continue
 
-        # E 기반 extruding 판정(있을 때만)
+        # E 기반 extruding 판정
         is_extruding = False
         if ce is not None and prev_e is not None:
             if (ce - prev_e) > 1e-12:
@@ -1274,10 +1210,10 @@ def gcode_to_cone1500_module(
         if ce is not None:
             prev_e = ce
 
-        # --- A3(절대) ---
+        # A3(절대)
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
 
-        # --- A4: 첫 점 절대 앵커, 이후 증분 누적 ---
+        # A4(기존 유지: 분해축)
         if not have_prev:
             if a4_on_x:
                 cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
@@ -1293,7 +1229,7 @@ def gcode_to_cone1500_module(
             elif a4_on_y and abs(dy) > 0:
                 cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
 
-        # A4 범위 클램프
+        # clamp A4
         if a4_on_x:
             lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
         elif a4_on_y:
@@ -1302,9 +1238,8 @@ def gcode_to_cone1500_module(
             lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        # --- 출력 좌표 보정 ---
-        x_out, y_out, z_out = cx, cy, cz - a3_abs  # Z' = Z - A3
-
+        # 좌표 보정 (기존 유지)
+        x_out, y_out, z_out = cx, cy, cz - a3_abs
         if key == "90":
             y_out = cy - cur_a4
         elif key == "0":
@@ -1313,7 +1248,9 @@ def gcode_to_cone1500_module(
             a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
             y_out = cy - (a4_max - cur_a4)
 
-        # A1/A2는 일단 placeholder(후처리로 덮어씀)
+        # 저장
+        raw_xs.append(float(cx))
+        raw_ys.append(float(cy))
         xs_out.append(float(x_out))
         ys_out.append(float(y_out))
         zs_out.append(float(z_out))
@@ -1328,7 +1265,6 @@ def gcode_to_cone1500_module(
 
         prev_x, prev_y, prev_z = cx, cy, cz
 
-    # 모션이 없으면 패딩만
     if len(xs_out) == 0:
         lines_out = [PAD_LINE] * MAX_LINES
         ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
@@ -1340,11 +1276,6 @@ def gcode_to_cone1500_module(
                   "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
                   "!\n"
                   "!******************************************************************************************************************************\n")
-        if len(lines_out) > MAX_LINES:
-            lines_out = lines_out[:MAX_LINES]
-        while len(lines_out) < MAX_LINES:
-            lines_out.append(PAD_LINE)
-
         cnt_str = str(MAX_LINES)
         open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
         body = ""
@@ -1354,13 +1285,15 @@ def gcode_to_cone1500_module(
         close_decl = "];\nENDMODULE\n"
         return header + open_decl + body + close_decl
 
-    # ---- 2) 노드 구성 ----
+    # nodes
     nodes = []
     for i in range(len(xs_out)):
         nodes.append({
             "x": float(xs_out[i]),
             "y": float(ys_out[i]),
             "z": float(zs_out[i]),
+            "raw_x": float(raw_xs[i]),
+            "raw_y": float(raw_ys[i]),
             "a1": float(a1_list[i]),
             "a2": float(a2_list[i]),
             "a3": float(a3_list[i]),
@@ -1368,12 +1301,12 @@ def gcode_to_cone1500_module(
             "extr": bool(is_extruding_list[i]),
         })
 
-    # ---- 3) (NEW) A1/A2 Constant-Speed 적용 ----
+    # ✅ A1/A2 const-speed는 raw_x/raw_y로 계산 (여기가 핵심)
     if bool(enable_a1_const):
         _apply_const_speed_profile_on_nodes(
             nodes=nodes,
             axis_key="a1",
-            coord_key="x",
+            coord_key="raw_x",
             coord_min=float(x_min),
             coord_max=float(x_max),
             axis_at_min=float(a1_at_xmin),
@@ -1384,7 +1317,6 @@ def gcode_to_cone1500_module(
             travel_interp=bool(travel_interp),
         )
     else:
-        # 비활성화면 0 고정
         for nd in nodes:
             nd["a1"] = 0.0
 
@@ -1392,7 +1324,7 @@ def gcode_to_cone1500_module(
         _apply_const_speed_profile_on_nodes(
             nodes=nodes,
             axis_key="a2",
-            coord_key="y",
+            coord_key="raw_y",
             coord_min=float(y_min),
             coord_max=float(y_max),
             axis_at_min=float(a2_at_ymin),
@@ -1406,7 +1338,6 @@ def gcode_to_cone1500_module(
         for nd in nodes:
             nd["a2"] = 0.0
 
-    # ---- 4) 출력 문자열 생성 ----
     lines_out = []
     for nd in nodes:
         if len(lines_out) >= MAX_LINES:
@@ -1440,7 +1371,7 @@ def gcode_to_cone1500_module(
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2: constant-speed profile by Xmin/Xmax, Ymin/Ymax with boundary-hold; A3 from original Z; Z' = Z-A3; A4 split & clamped.\n"
+              "!*** A1/A2: raw_x/raw_y based; A1 progresses ONLY with ΔX; A2 progresses ONLY with ΔY; boundary snap/hold enabled.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1467,80 +1398,58 @@ if KEY_OK:
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-        # ---- (NEW) A1/A2 Constant-Speed UI ----
         with st.sidebar.expander("External Axis (A1/A2 등속 왕복 · 경계정지)", expanded=True):
-            st.caption("A1은 Xmin→Xmax 구간에서 등속(4000→0), Xmax→Xmin 구간에서 등속(0→4000). A2도 동일(값은 입력). "
-                       "X/Y가 경계(min/max)와 일치(eps 이내)하면 외부축 진행을 멈춰서 '그 순간에는 움직이지 않게' 합니다.")
+            st.caption("A1은 raw X, A2는 raw Y 기준. A1은 ΔX로만, A2는 ΔY로만 진행합니다. "
+                       "따라서 X가 6000으로 고정된 상태에서 Y만 변하면 A1은 절대 움직이지 않습니다.")
 
             st.session_state.ext_const_speed_mm_s = st.number_input(
-                "Robot speed assumption (mm/s)",
+                "Axis speed base (mm/s)",
                 min_value=1.0, max_value=2000.0,
                 value=float(st.session_state.ext_const_speed_mm_s),
                 step=10.0, format="%.1f"
             )
             st.session_state.ext_const_eps_mm = st.number_input(
-                "Boundary match tolerance eps (mm)",
+                "Boundary snap/hold eps (mm)",
                 min_value=0.0, max_value=50.0,
                 value=float(st.session_state.ext_const_eps_mm),
                 step=0.1, format="%.2f"
             )
             st.session_state.ext_const_apply_print_only = st.checkbox(
-                "Apply using E-increase blocks only (printing only)",
-                value=bool(st.session_state.ext_const_apply_print_only),
-                help="G-code에 E가 있고, E가 증가하는(프린팅) 구간 블록 단위로 A1/A2 프로파일을 적용합니다. "
-                     "E가 전혀 없으면 전체를 프린팅으로 간주합니다."
+                "Apply printing-only blocks (E 증가 구간만)",
+                value=bool(st.session_state.ext_const_apply_print_only)
             )
             st.session_state.ext_const_travel_interp = st.checkbox(
-                "Interpolate A1/A2 across travel blocks (smooth)",
-                value=bool(st.session_state.ext_const_travel_interp),
-                help="비압출(Travel) 구간에서 A1/A2가 튀지 않도록 전후 값 사이를 부드럽게 보간합니다."
+                "Interpolate across travel blocks",
+                value=bool(st.session_state.ext_const_travel_interp)
             )
 
-            st.markdown("**A1 (X → A1)**")
+            st.markdown("**A1 (raw X → A1)**")
             st.session_state.ext_const_enable_a1 = st.checkbox(
                 "Enable A1 constant-speed profile",
                 value=bool(st.session_state.ext_const_enable_a1)
             )
             cols = st.columns(2)
-            st.session_state.ext_const_xmin = cols[0].number_input(
-                "Xmin (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f"
-            )
-            st.session_state.ext_const_xmax = cols[1].number_input(
-                "Xmax (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f"
-            )
+            st.session_state.ext_const_xmin = cols[0].number_input("Xmin (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
+            st.session_state.ext_const_xmax = cols[1].number_input("Xmax (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
             cols2 = st.columns(2)
-            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input(
-                "A1 @ Xmin", value=float(st.session_state.ext_const_a1_at_xmin), step=50.0, format="%.3f"
-            )
-            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input(
-                "A1 @ Xmax", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f"
-            )
+            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input("A1 @ Xmin", value=float(st.session_state.ext_const_a1_at_xmin), step=50.0, format="%.3f")
+            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 @ Xmax", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
 
-            st.markdown("**A2 (Y → A2)**")
+            st.markdown("**A2 (raw Y → A2)**")
             st.session_state.ext_const_enable_a2 = st.checkbox(
                 "Enable A2 constant-speed profile",
                 value=bool(st.session_state.ext_const_enable_a2)
             )
             cols3 = st.columns(2)
-            st.session_state.ext_const_ymin = cols3[0].number_input(
-                "Ymin (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f"
-            )
-            st.session_state.ext_const_ymax = cols3[1].number_input(
-                "Ymax (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f"
-            )
+            st.session_state.ext_const_ymin = cols3[0].number_input("Ymin (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
+            st.session_state.ext_const_ymax = cols3[1].number_input("Ymax (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
             cols4 = st.columns(2)
-            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input(
-                "A2 @ Ymin", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f"
-            )
-            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input(
-                "A2 @ Ymax", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f"
-            )
+            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("A2 @ Ymin", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f")
+            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 @ Ymax", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
 
-        # ---- Mapping Presets UI ----
         with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
-            st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요. (A1/A2는 별도 알고리즘)")
+            st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
 
-            # 불러오기
             up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
             if up_json is not None:
                 try:
@@ -1559,12 +1468,10 @@ if KEY_OK:
                 PAX = st.session_state.mapping_preset[title_key].get(axis_key, {})
                 if "in" not in PAX:
                     PAX["in"] = [0.0, 0.0]
-                # 입력 구간
                 in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(PAX["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
                 in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(PAX["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
                 PAX["in"] = [float(in0), float(in1)]
 
-                # 출력 (A3/A4만)
                 if axis_key == "X":
                     cols2 = st.columns(2)
                     if "A4_out" in PAX:
@@ -1583,7 +1490,7 @@ if KEY_OK:
                     else:
                         cols2[0].info("A4_out(Y) 미사용 프리셋")
 
-                else:  # Z
+                else:
                     a3_0 = cols[2].number_input("A3_out[0]", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
                     a3_1 = cols[3].number_input("A3_out[1]", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
                     PAX["A3_out"] = [float(a3_0), float(a3_1)]
@@ -1599,7 +1506,6 @@ if KEY_OK:
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
             st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
-        # ---- 저장 버튼 ----
         gtxt = st.session_state.get("gcode_text")
         over = None
         if gtxt is not None:
@@ -1634,9 +1540,7 @@ if KEY_OK:
                 apply_print_only=bool(st.session_state.ext_const_apply_print_only),
                 travel_interp=bool(st.session_state.ext_const_travel_interp),
             )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
+            st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
 
         if st.session_state.get("rapid_text"):
             base = st.session_state.get("base_name", "output")
@@ -1701,13 +1605,9 @@ with right_col:
     dims_placeholder = st.empty()
     st.markdown("---")
 
-    # 우측 슬라이더 / 행번호 + 레이어 길이 표시
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
-        scrub = None
-        scrub_num = None
     else:
-        # 현재 저장된 값 기준 default 지정
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
         scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
@@ -1716,7 +1616,6 @@ with right_col:
                                     int(default_val), 1,
                                     help="표시할 최종 세그먼트(행) 번호")
 
-        # 슬라이더/행번호 입력을 통합해서 target 결정
         target = default_val
         if scrub != default_val:
             target = int(scrub)
@@ -1726,7 +1625,6 @@ with right_col:
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
 
-        # ---- (NEW) 현재 행 기준 레이어 전체 길이 표시 ----
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
         if layer_z is not None and layer_len is not None:
             st.caption(
@@ -1770,7 +1668,7 @@ if segments is not None and total_segments > 0:
         total_len = 0.0
         for i in range(target):
             p1, p2, is_travel, is_extruding = segments[i]
-            if is_extruding:  # E>0 구간만 길이로 인정
+            if is_extruding:
                 total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
         st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
 else:
@@ -1828,6 +1726,5 @@ with center_col:
         else:
             st.info("G-code를 생성하세요.")
 
-# 키가 없거나 만료 시 안내
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
