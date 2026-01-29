@@ -669,11 +669,11 @@ if "ext_const_enable_a1" not in st.session_state:
 if "ext_const_enable_a2" not in st.session_state:
     st.session_state.ext_const_enable_a2 = True
 
-# ✅ 기본값을 사용자 범위(0~6000)로 맞춤
+# 기본값(네 범위 기준)
 if "ext_const_xmin" not in st.session_state:
     st.session_state.ext_const_xmin = 0.0
 if "ext_const_xmax" not in st.session_state:
-    st.session_state.ext_const_xmax = 6000.0  # <-- 여기
+    st.session_state.ext_const_xmax = 6000.0
 if "ext_const_a1_at_xmin" not in st.session_state:
     st.session_state.ext_const_a1_at_xmin = 4000.0
 if "ext_const_a1_at_xmax" not in st.session_state:
@@ -691,9 +691,9 @@ if "ext_const_a2_at_ymax" not in st.session_state:
 if "ext_const_speed_mm_s" not in st.session_state:
     st.session_state.ext_const_speed_mm_s = 200.0
 if "ext_const_eps_mm" not in st.session_state:
-    st.session_state.ext_const_eps_mm = 0.5  # 약간 키워서 경계 홀드 안정화
+    st.session_state.ext_const_eps_mm = 0.5
 if "ext_const_apply_print_only" not in st.session_state:
-    st.session_state.ext_const_apply_print_only = False  # ✅ “모든 모션” 기준으로 기본 동작
+    st.session_state.ext_const_apply_print_only = False
 if "ext_const_travel_interp" not in st.session_state:
     st.session_state.ext_const_travel_interp = True
 
@@ -887,9 +887,11 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 # =========================
-# (FIXED) A1/A2 Constant-Speed profile
-#  - raw_x/raw_y 기준으로 계산
-#  - A1은 ΔX만 / A2는 ΔY만 보고 진행(ΔY로 A1 진행 X)
+# ✅ (FIX) A1/A2 Constant-Speed profile (robust)
+#   - 경계(xmin/xmax, ymin/ymax) 없어도 고정되지 않음
+#   - A1: raw_x의 |ΔX|만으로 진행 (Y로는 절대 진행 X)
+#   - A2: raw_y의 |ΔY|만으로 진행
+#   - 경계에 "있을 때"는 정확히 스냅/홀드, 경계에서 "벗어나는 순간"은 바로 진행
 # =========================
 def _apply_const_speed_profile_on_nodes(
     nodes: List[Dict[str, Any]],
@@ -907,9 +909,7 @@ def _apply_const_speed_profile_on_nodes(
     if not nodes or axis_key not in ("a1", "a2"):
         return
     n = len(nodes)
-    if n < 2:
-        for nd in nodes:
-            nd[axis_key] = float(axis_at_min)
+    if n == 0:
         return
 
     coord_min = float(coord_min)
@@ -917,173 +917,117 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
     eps = float(max(0.0, eps_mm))
-    v = float(max(1e-6, speed_mm_s))
 
-    # printing mask
-    extr = [bool(nd.get("extr", False)) for nd in nodes]
-    if apply_print_only:
-        if not any(extr):
-            extr = [True] * n
-    else:
-        extr = [True] * n
-
-    # blocks
-    blocks: List[Tuple[int, int]] = []
-    in_block = False
-    b_start = 0
-    for i in range(n):
-        if (not in_block) and extr[i]:
-            in_block = True
-            b_start = max(0, i - 1)
-        if in_block:
-            if (i == n - 1) or (not extr[i] and extr[i - 1]):
-                b_end = i - 1
-                if b_end > b_start:
-                    blocks.append((b_start, b_end))
-                in_block = False
-    if not blocks:
-        blocks = [(0, n - 1)]
-
-    # init
-    for nd in nodes:
-        if axis_key not in nd:
+    span = float(coord_max - coord_min)
+    span_abs = abs(span)
+    if span_abs <= 1e-9:
+        for nd in nodes:
             nd[axis_key] = float(axis_at_min)
+        return
+
+    # axis per mm (속도 파라미터는 출력 포지션에선 상쇄되지만, 인터페이스 호환 위해 유지)
+    axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
 
     def _coord(i: int) -> float:
         return float(nodes[i][coord_key])
 
-    def _is_on_min(i: int) -> bool:
-        return abs(_coord(i) - coord_min) <= eps
+    # 경계 판정: <= / >= 로 잡아서 오차에 강하게
+    def _at_min(c: float) -> bool:
+        return c <= coord_min + eps
 
-    def _is_on_max(i: int) -> bool:
-        return abs(_coord(i) - coord_max) <= eps
+    def _at_max(c: float) -> bool:
+        return c >= coord_max - eps
 
-    def _find_first_idx(start: int, end: int, pred) -> Optional[int]:
-        for k in range(start, end + 1):
-            if pred(k):
-                return k
-        return None
+    def _snap_axis_for_coord(c: float) -> float:
+        if _at_min(c):
+            return float(axis_at_min)
+        if _at_max(c):
+            return float(axis_at_max)
+        # 내부면 선형 맵(시작점이 내부에서 시작할 때 점프 방지)
+        t = (c - coord_min) / span_abs
+        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+        return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
-    def _find_minmax_fallback(start: int, end: int) -> Tuple[int, int]:
-        vals = [_coord(k) for k in range(start, end + 1)]
-        i_min = int(np.argmin(vals)) + start
-        i_max = int(np.argmax(vals)) + start
-        return i_min, i_max
+    # apply_print_only이면 "다음 노드가 extruding(True)일 때"만 진행(세그먼트 기준)
+    extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-    def _dt_axis(a: int, b: int) -> float:
-        # ✅ 이 축은 "해당 coord 변화량"만 보고 시간 진행
-        d = abs(_coord(b) - _coord(a))
-        if d <= 1e-12:
-            return 0.0
-        # 경계에 닿아있는 구간에서는 강제 정지(안정성)
-        if _is_on_min(a) or _is_on_min(b) or _is_on_max(a) or _is_on_max(b):
-            return 0.0
-        return float(d / v)
+    # 초기값/방향 설정
+    c0 = _coord(0)
+    nodes[0][axis_key] = _snap_axis_for_coord(c0)
 
-    def _assign_piecewise(block_s: int, block_e: int):
-        i0 = _find_first_idx(block_s, block_e, _is_on_min)
-        i1 = None
-        i2 = None
-        if i0 is not None:
-            i1 = _find_first_idx(i0 + 1, block_e, _is_on_max)
-            if i1 is not None:
-                i2 = _find_first_idx(i1 + 1, block_e, _is_on_min)
+    # dir_mode: "fwd"(coord_min→coord_max로 가는 동안 axis_at_min→axis_at_max), "bwd"(반대)
+    if _at_min(c0):
+        dir_mode = "fwd"
+    elif _at_max(c0):
+        dir_mode = "bwd"
+    else:
+        # 첫 유효 Δcoord로 방향 추정
+        dir_mode = "fwd"
+        for j in range(1, n):
+            dc = _coord(j) - c0
+            if abs(dc) > 1e-9:
+                dir_mode = "fwd" if dc > 0 else "bwd"
+                break
 
-        if i0 is None or i1 is None:
-            i_min, i_max = _find_minmax_fallback(block_s, block_e)
-            if i_min < i_max:
-                i0, i1 = i_min, i_max
-                i2 = block_e
+    # 진행
+    for i in range(n - 1):
+        ci = _coord(i)
+        cj = _coord(i + 1)
+
+        # 현재가 경계면 방향 강제
+        if _at_min(ci):
+            nodes[i][axis_key] = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(ci):
+            nodes[i][axis_key] = float(axis_at_max)
+            dir_mode = "bwd"
+
+        ai = float(nodes[i][axis_key])
+
+        # 이 스텝( i -> i+1 )에서 진행할지 여부
+        active = True
+        if apply_print_only:
+            active = bool(extr_node[i + 1])
+
+        dcoord = float(cj - ci)
+        if (not active) or abs(dcoord) <= 1e-12:
+            aj = ai
+        else:
+            # ✅ 핵심: 방향은 유지, 크기는 |Δcoord|만 반영
+            step = axis_per_mm * abs(dcoord)
+            if dir_mode == "fwd":
+                aj = ai + step
             else:
-                for k in range(block_s, block_e + 1):
-                    nodes[k][axis_key] = float(axis_at_min)
-                return
+                aj = ai - step
 
-        if i2 is None:
-            i2 = block_e
+        # 다음 노드 경계 스냅 + 방향 갱신
+        if _at_min(cj):
+            aj = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(cj):
+            aj = float(axis_at_max)
+            dir_mode = "bwd"
 
-        if not (block_s <= i0 < i1 <= block_e):
-            for k in range(block_s, block_e + 1):
-                nodes[k][axis_key] = float(axis_at_min)
-            return
+        # clamp
+        lo = min(axis_at_min, axis_at_max)
+        hi = max(axis_at_min, axis_at_max)
+        if aj < lo: aj = lo
+        if aj > hi: aj = hi
 
-        # start..i0 hold at min
-        for k in range(block_s, i0 + 1):
-            nodes[k][axis_key] = float(axis_at_min)
-
-        # i0->i1 forward
-        eff_f = [0.0] * (i1 - i0 + 1)
-        for t_i in range(1, len(eff_f)):
-            a = i0 + t_i - 1
-            b = i0 + t_i
-            eff_f[t_i] = eff_f[t_i - 1] + _dt_axis(a, b)
-        Tf = eff_f[-1]
-
-        for t_i in range(len(eff_f)):
-            k = i0 + t_i
-            if Tf <= 1e-12:
-                val = float(axis_at_min) if k < i1 else float(axis_at_max)
-            else:
-                u = eff_f[t_i] / Tf
-                val = float(axis_at_min) + (float(axis_at_max) - float(axis_at_min)) * float(u)
-            # ✅ 경계에서는 정확값으로 강제 스냅 + 홀드
-            if _is_on_min(k):
-                val = float(axis_at_min)
-            if _is_on_max(k):
-                val = float(axis_at_max)
-            nodes[k][axis_key] = float(val)
-
-        # i1->i2 back
-        if i2 <= i1:
-            for k in range(i1, block_e + 1):
-                nodes[k][axis_key] = float(axis_at_min)
-            return
-
-        eff_b = [0.0] * (i2 - i1 + 1)
-        for t_i in range(1, len(eff_b)):
-            a = i1 + t_i - 1
-            b = i1 + t_i
-            eff_b[t_i] = eff_b[t_i - 1] + _dt_axis(a, b)
-        Tb = eff_b[-1]
-
-        for t_i in range(len(eff_b)):
-            k = i1 + t_i
-            if Tb <= 1e-12:
-                val = float(axis_at_max) if k < i2 else float(axis_at_min)
-            else:
-                u = eff_b[t_i] / Tb
-                val = float(axis_at_max) + (float(axis_at_min) - float(axis_at_max)) * float(u)
-            if _is_on_max(k):
-                val = float(axis_at_max)
-            if _is_on_min(k):
-                val = float(axis_at_min)
-            nodes[k][axis_key] = float(val)
-
-        # tail hold at min
-        for k in range(i2 + 1, block_e + 1):
-            nodes[k][axis_key] = float(axis_at_min)
-
-        # ✅ 블록 전체에 대해 "현재 coord가 경계면이면 강제 스냅"
-        for k in range(block_s, block_e + 1):
-            if _is_on_min(k):
-                nodes[k][axis_key] = float(axis_at_min)
-            if _is_on_max(k):
-                nodes[k][axis_key] = float(axis_at_max)
-
-    for (bs, be) in blocks:
-        _assign_piecewise(bs, be)
+        nodes[i + 1][axis_key] = float(aj)
 
     # travel interpolation (옵션)
     if travel_interp and apply_print_only:
-        orig_extr = [bool(nd.get("extr", False)) for nd in nodes]
-        if any(orig_extr):
+        # travel 구간(비활성)들을 앞/뒤 active 사이로 선형 보간
+        active_node = [bool(extr_node[i]) for i in range(n)]
+        if any(active_node):
             i = 0
             while i < n:
-                if orig_extr[i]:
+                if active_node[i]:
                     i += 1
                     continue
                 t0 = i
-                while i < n and (not orig_extr[i]):
+                while i < n and (not active_node[i]):
                     i += 1
                 t1 = i - 1
                 prev_idx = t0 - 1 if t0 - 1 >= 0 else None
@@ -1099,6 +1043,14 @@ def _apply_const_speed_profile_on_nodes(
                 for kk, k in enumerate(range(t0, t1 + 1)):
                     u = (kk + 1) / float(total + 1)
                     nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
+
+    # 마지막으로 경계 강제(보간이 경계를 덮어쓰지 않도록)
+    for i in range(n):
+        c = _coord(i)
+        if _at_min(c):
+            nodes[i][axis_key] = float(axis_at_min)
+        elif _at_max(c):
+            nodes[i][axis_key] = float(axis_at_max)
 
 # =========================
 # Rapid Converter (UPDATED)
@@ -1301,7 +1253,7 @@ def gcode_to_cone1500_module(
             "extr": bool(is_extruding_list[i]),
         })
 
-    # ✅ A1/A2 const-speed는 raw_x/raw_y로 계산 (여기가 핵심)
+    # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
         _apply_const_speed_profile_on_nodes(
             nodes=nodes,
@@ -1371,7 +1323,8 @@ def gcode_to_cone1500_module(
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1/A2: raw_x/raw_y based; A1 progresses ONLY with ΔX; A2 progresses ONLY with ΔY; boundary snap/hold enabled.\n"
+              "!*** A1: raw_x |ΔX| based + boundary snap/hold (leave-boundary resumes)\n"
+              "!*** A2: raw_y |ΔY| based + boundary snap/hold (leave-boundary resumes)\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1399,8 +1352,8 @@ if KEY_OK:
             st.session_state.rapid_rz = float(rz_preset)
 
         with st.sidebar.expander("External Axis (A1/A2 등속 왕복 · 경계정지)", expanded=True):
-            st.caption("A1은 raw X, A2는 raw Y 기준. A1은 ΔX로만, A2는 ΔY로만 진행합니다. "
-                       "따라서 X가 6000으로 고정된 상태에서 Y만 변하면 A1은 절대 움직이지 않습니다.")
+            st.caption("A1은 raw X, A2는 raw Y 기준. A1은 |ΔX|로만, A2는 |ΔY|로만 진행합니다. "
+                       "X가 xmin/xmax에 '있을 때'는 A1 고정, 경계에서 '벗어나면' 바로 진행합니다.")
 
             st.session_state.ext_const_speed_mm_s = st.number_input(
                 "Axis speed base (mm/s)",
