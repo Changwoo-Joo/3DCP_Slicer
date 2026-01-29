@@ -348,19 +348,12 @@ def compute_layer_length_for_index(
     segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
     upto_idx: int
 ) -> Tuple[Optional[float], Optional[float]]:
-    """
-    upto_idx 번째 세그먼트까지 기준으로:
-      - 그 구간에서 마지막 '압출 세그먼트'가 속한 Z 레이어를 찾고
-      - 해당 Z 레이어 전체(모든 압출 세그먼트)의 XY 길이 합을 계산.
-    반환: (레이어 Z값, 전체 길이[mm]) / 없으면 (None, None)
-    """
     if not segments or upto_idx <= 0:
         return None, None
 
     N = len(segments)
     upto = min(max(int(upto_idx), 0), N)
 
-    # 1) upto 구간 내 마지막 압출 세그먼트의 레이어 Z 찾기
     layer_z = None
     for i in range(upto):
         p1, p2, is_travel, is_extruding = segments[i]
@@ -369,7 +362,6 @@ def compute_layer_length_for_index(
     if layer_z is None:
         return None, None
 
-    # 2) 해당 레이어 Z의 전체 XY 길이 합산
     total_len = 0.0
     for p1, p2, is_travel, is_extruding in segments:
         if not is_extruding:
@@ -671,21 +663,17 @@ if "paths_travel_mode" not in st.session_state:
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
-# --- (NEW) A1 time-sync defaults ---
-if "a1_time_sync_enable" not in st.session_state:
-    st.session_state.a1_time_sync_enable = False
-if "a1_time_sync_start" not in st.session_state:
-    st.session_state.a1_time_sync_start = 4000.0
-if "a1_time_sync_end" not in st.session_state:
-    st.session_state.a1_time_sync_end = 0.0
-if "a1_time_sync_speed" not in st.session_state:
-    st.session_state.a1_time_sync_speed = 200.0  # mm/s (사용자가 말한 200)
-if "a1_time_sync_div" not in st.session_state:
-    st.session_state.a1_time_sync_div = 10
-if "a1_time_sync_smooth" not in st.session_state:
-    st.session_state.a1_time_sync_smooth = True
-if "a1_time_sync_print_only" not in st.session_state:
-    st.session_state.a1_time_sync_print_only = False
+# --- (NEW) A1 Layer Sync defaults ---
+if "a1_layer_sync_enable" not in st.session_state:
+    st.session_state.a1_layer_sync_enable = True
+if "a1_layer_sync_divisions" not in st.session_state:
+    st.session_state.a1_layer_sync_divisions = 10
+if "a1_layer_sync_use_print_only" not in st.session_state:
+    st.session_state.a1_layer_sync_use_print_only = False
+if "a1_layer_sync_smooth_enable" not in st.session_state:
+    st.session_state.a1_layer_sync_smooth_enable = True
+if "a1_layer_sync_smooth_ratio" not in st.session_state:
+    st.session_state.a1_layer_sync_smooth_ratio = 0.12  # 시작/끝 스무딩 구간 비율(0~0.49)
 
 ensure_anim_buffers()
 
@@ -821,7 +809,6 @@ def _fmt_pos(v: float) -> str:
     intpart, dec = s[1:].split(".")
     intpart = intpart.zfill(4)
     return f"{sign}{intpart}.{dec}"
-
 def _fmt_ang(v: float) -> str:
     if abs(v) < 5e-5:  # avoid "-000.00"
         v = 0.0
@@ -841,29 +828,25 @@ def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
 # ---- 교정된 기본 프리셋 ----
 DEFAULT_PRESET = {
     "0": {
-        # 0°: X -> A1, A4 / Y -> A2 / Z -> A3
         "X": {"in": [0.0, 0.0],     "A1_out": [0.0,   0.0], "A4_out": [0.0, 0.0]},
-        "Y": {"in": [0.0, 0.0], "A2_out": [ 0.0,   0.0]},
-        "Z": {"in": [0.0, 0.0],     "A3_out": [   0.0, 0.0]},
+        "Y": {"in": [0.0, 0.0],     "A2_out": [ 0.0,  0.0]},
+        "Z": {"in": [0.0, 0.0],     "A3_out": [ 0.0,  0.0]},
     },
     "90": {
-        # +90°: X -> A1 / Y -> A2, A4 / Z -> A3
-        "X": {"in": [0.0, 6500.0],  "A1_out": [ 4000.0, 0.0]},
-        "Y": {"in": [0.0, 1000.0],  "A2_out": [ 500.0,   0.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 3000.0],  "A3_out": [   0.0, 1000.0]},
+        "X": {"in": [0.0, 6500.0],  "A1_out": [4000.0, 0.0]},
+        "Y": {"in": [0.0, 1000.0],  "A2_out": [ 500.0, 0.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 3000.0],  "A3_out": [ 0.0, 1000.0]},
     },
     "-90": {
-        # −90°: X -> A1 / Y -> A2(0→500), A4 / Z -> A3
-        "X": {"in": [0.0, 6500.0], "A1_out": [ 4000.0, 0.00]},
-        "Y": {"in": [0.0, 1000.0], "A2_out": [ 500.0, 0.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 3000.0], "A3_out": [   0.0, 1000.0]},
+        "X": {"in": [0.0, 6500.0],  "A1_out": [4000.0, 0.0]},
+        "Y": {"in": [0.0, 1000.0],  "A2_out": [ 500.0, 0.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 3000.0],  "A3_out": [ 0.0, 1000.0]},
     },
 }
 
 def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(json.dumps(p))
 
-# 세션에 프리셋 보관
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
@@ -881,33 +864,174 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-# -------------------------
-# A1 time-sync smoothing helper
-# -------------------------
-def _smootherstep(x: float) -> float:
-    x = 0.0 if x < 0.0 else 1.0 if x > 1.0 else float(x)
-    # 6x^5 - 15x^4 + 10x^3
-    return x*x*x*(x*(x*6.0 - 15.0) + 10.0)
-
-def _smooth_progress_quantized(p: float, div_n: int) -> float:
+# =========================
+# (NEW) A1 Layer Sync helpers (레이어별 왕복: Xmin->Xmax->Xmin 에 맞춰 A1 start->end->start)
+# =========================
+def _ease_window_ratio(t: float, w: float) -> float:
     """
-    p(0..1)을 smootherstep으로 변환하되,
-    '전체 이동을 N으로 나눈다' 요구에 맞춰 N분할 테이블로 근사(선형보간)한다.
-    N이 커질수록 더 연속적인 smootherstep에 가까워짐.
+    0..1 입력 t를 '시작/끝만' 스무딩(가감속)하는 형태로 변환.
+    - w: 0..0.49 (스무딩 구간 비율)
+    - 중간은 거의 선형 유지
     """
-    p = 0.0 if p < 0.0 else 1.0 if p > 1.0 else float(p)
-    n = int(max(2, int(div_n)))
-    # segment index
-    i = int(min(n - 1, max(0, math.floor(p * n))))
-    p0 = i / n
-    p1 = (i + 1) / n
-    q0 = _smootherstep(p0)
-    q1 = _smootherstep(p1)
-    if p1 - p0 <= 1e-12:
-        return q0
-    t = (p - p0) / (p1 - p0)
-    return q0 + (q1 - q0) * t
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    w = float(w)
+    if w <= 1e-9:
+        return t
+    if w >= 0.49:
+        w = 0.49
 
+    # 시작구간
+    if t <= w:
+        u = t / w
+        # cosine ease-in (0 slope at 0)
+        return w * (0.5 - 0.5 * math.cos(math.pi * u))
+    # 끝구간
+    if t >= (1.0 - w):
+        u = (1.0 - t) / w
+        return 1.0 - w * (0.5 - 0.5 * math.cos(math.pi * u))
+    # 중간구간: 선형 연결
+    # t in [w, 1-w] -> out in [w, 1-w]
+    return t
+
+def _interp_node_all(nA: Dict[str, Any], nB: Dict[str, Any], t: float) -> Dict[str, Any]:
+    t = float(t)
+    u = 1.0 - t
+    return {
+        "x": u * float(nA["x"]) + t * float(nB["x"]),
+        "y": u * float(nA["y"]) + t * float(nB["y"]),
+        "z": u * float(nA["z"]) + t * float(nB["z"]),
+        "z_raw": u * float(nA.get("z_raw", nA["z"])) + t * float(nB.get("z_raw", nB["z"])),
+        "a1": u * float(nA["a1"]) + t * float(nB["a1"]),
+        "a2": u * float(nA["a2"]) + t * float(nB["a2"]),
+        "a3": u * float(nA["a3"]) + t * float(nB["a3"]),
+        "a4": u * float(nA["a4"]) + t * float(nB["a4"]),
+        "extr": bool(nA.get("extr", False)) or bool(nB.get("extr", False)),
+    }
+
+def _insert_nodes_at_x(layer_nodes: List[Dict[str, Any]], x_targets: List[float], tol: float = 1e-6, hard_limit: int = 200000) -> List[Dict[str, Any]]:
+    """
+    레이어 노드 폴리라인에서 x_targets(여러 개)에 해당하는 X 교차 지점에 노드를 삽입.
+    - x가 단조가 아니어도 '교차'하면 삽입 가능.
+    - 과도 삽입 방지(hard_limit).
+    """
+    if len(layer_nodes) < 2 or not x_targets:
+        return layer_nodes
+
+    targets = sorted([float(v) for v in x_targets])
+    out = [layer_nodes[0]]
+    for i in range(len(layer_nodes) - 1):
+        if len(out) > hard_limit:
+            break
+        n0 = layer_nodes[i]
+        n1 = layer_nodes[i + 1]
+        x0 = float(n0["x"]); x1 = float(n1["x"])
+        dx = x1 - x0
+        if abs(dx) < 1e-12:
+            out.append(n1)
+            continue
+
+        lo = min(x0, x1) - tol
+        hi = max(x0, x1) + tol
+
+        # 이 세그먼트에서 교차하는 target들만 처리
+        mids = [xt for xt in targets if (lo <= xt <= hi)]
+        if not mids:
+            out.append(n1)
+            continue
+
+        # 중복 삽입 방지: 이미 끝점과 거의 같으면 skip
+        for xt in mids:
+            if abs(xt - x0) <= tol or abs(xt - x1) <= tol:
+                continue
+            t = (xt - x0) / dx
+            if t <= tol or t >= (1.0 - tol):
+                continue
+            out.append(_interp_node_all(n0, n1, t))
+        out.append(n1)
+
+    return out
+
+def apply_a1_layer_sync(
+    nodes: List[Dict[str, Any]],
+    a1_start: float,
+    a1_end: float,
+    divisions: int = 10,
+    smooth_enable: bool = True,
+    smooth_ratio: float = 0.12,
+    use_print_only_for_range: bool = False,
+    z_tol: float = 1e-6
+) -> List[Dict[str, Any]]:
+    """
+    레이어(Z 고정 구간)마다:
+      - 해당 레이어의 Xmin~Xmax 기준으로 A1을 a1_start~a1_end로 재매핑
+      - X가 돌아오면 A1도 왕복(4000->0->4000)
+      - divisions>1: 레이어 X 범위 균등 분할 경계점에 노드를 삽입해 "등속(선형)"에 가까운 움직임 유도
+      - smooth_enable: 시작/끝 일부 구간만 스무딩(가감속)
+    """
+    if not nodes or len(nodes) < 2:
+        return nodes
+
+    div = int(max(1, divisions))
+
+    out_all: List[Dict[str, Any]] = []
+    i = 0
+    n = len(nodes)
+
+    while i < n:
+        z0 = float(nodes[i].get("z_raw", nodes[i]["z"]))
+        j = i + 1
+        while j < n and abs(float(nodes[j].get("z_raw", nodes[j]["z"])) - z0) <= z_tol:
+            j += 1
+        layer = nodes[i:j]
+        if len(layer) < 2:
+            out_all.extend(layer)
+            i = j
+            continue
+
+        # 레이어 X 범위 산출
+        if use_print_only_for_range:
+            xs = [float(nd["x"]) for nd in layer if bool(nd.get("extr", False))]
+            if len(xs) < 2:
+                xs = [float(nd["x"]) for nd in layer]
+        else:
+            xs = [float(nd["x"]) for nd in layer]
+
+        x_min = min(xs) if xs else float(layer[0]["x"])
+        x_max = max(xs) if xs else float(layer[0]["x"])
+        x_span = float(x_max - x_min)
+
+        # 분할 경계 삽입(너무 짧으면 스킵)
+        layer2 = layer
+        if div >= 2 and abs(x_span) > 1e-9:
+            dx = x_span / float(div)
+            x_targets = [x_min + dx * k for k in range(1, div)]
+            # 과도 삽입 방지: 레이어 하나당 삽입 노드가 너무 많아지면 제한
+            hard_limit = len(layer) + div * 50
+            layer2 = _insert_nodes_at_x(layer, x_targets, tol=1e-6, hard_limit=hard_limit)
+
+        # A1 재매핑
+        if abs(x_span) <= 1e-9:
+            # X 변화가 거의 없으면 A1 고정 (start)
+            for nd in layer2:
+                nd["a1"] = float(a1_start)
+        else:
+            for nd in layer2:
+                t = (float(nd["x"]) - x_min) / x_span
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+                if smooth_enable:
+                    t2 = _ease_window_ratio(t, float(smooth_ratio))
+                else:
+                    t2 = t
+                nd["a1"] = float(a1_start + (a1_end - a1_start) * t2)
+
+        out_all.extend(layer2)
+        i = j
+
+    return out_all
+
+# =========================
+# Converter
+# =========================
 def gcode_to_cone1500_module(
     gcode_text: str,
     rx: float,
@@ -915,29 +1039,26 @@ def gcode_to_cone1500_module(
     rz: float,
     preset: Dict[str, Any],
     swap_a3_a4: bool = False,
-    # --- (NEW) A1 time-sync options ---
-    a1_time_sync_enable: bool = False,
-    a1_time_sync_start: float = 0.0,
-    a1_time_sync_end: float = 4000.0,
-    a1_time_sync_speed: float = 200.0,     # mm/s (TCP 속도)
-    a1_time_sync_div: int = 10,            # 전체 이동 N분할
-    a1_time_sync_smooth: bool = True,      # 시작/끝 스무스 가속/감속
-    a1_time_sync_print_only: bool = False  # E 증가(출력) 구간만 시간축에 포함
+    # (NEW) A1 Layer Sync options
+    enable_a1_layer_sync: bool = True,
+    a1_layer_divisions: int = 10,
+    a1_layer_smooth_enable: bool = True,
+    a1_layer_smooth_ratio: float = 0.12,
+    a1_layer_range_print_only: bool = False
 ) -> str:
     """
-    A4만 '비례 분해(증분 누적)'로 동작.
-    추가: 출력 좌표 보정
-      - Z' = Z - A3(절대값)
-      - Rz=90:  Y' = Y - A4  (A2는 Y'로 산출)
-      - Rz=0:   X' = X - A4  (A1은 X'로 산출)
-      - Rz=-90: Y' = Y - (A4_max - A4)  (A2는 Y'로 산출; A4 범위 0~max 가정)
+    - A4: 비례 분해(증분 누적) + 클램프
+    - 좌표 보정:
+      Z' = Z - A3(절대)
+      Rz=90:  Y' = Y - A4
+      Rz=0:   X' = X - A4
+      Rz=-90: Y' = Y - (A4_max - A4)
 
-    (NEW) A1 Time-Sync:
-      - A1을 좌표(X) 비례가 아니라 "TCP 이동시간"에 따라 0..A1_end 로 진행되게 생성
-      - TCP 이동시간은 각 구간 XY거리 / (사용자 입력 속도 mm/s)
-      - 시작/끝은 smootherstep(S-curve)로 가속/감속(속도 0에서 시작/종료)
-      - '전체 이동을 N으로 나눈다'는 요청에 맞춰 smootherstep을 N분할 테이블로 근사 가능
-      - 기존 히스테리시스/데드밴드 로직은 제거(사용 안함)
+    (NEW) A1 Layer Sync:
+      - 레이어(Z 고정 구간)마다 Xmin~Xmax 기준으로 A1을 (start->end)로 재매핑
+      - 따라서 레이어마다 4000->0->4000 왕복이 자연스럽게 발생
+      - N등분 경계점에 노드를 삽입하여 A1이 "등속 선형"에 가깝게 움직이도록 유도
+      - 시작/끝 구간만 스무딩(가감속)
     """
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -981,16 +1102,16 @@ def gcode_to_cone1500_module(
 
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
 
-    # ---- 1) G-code 파싱 & 1차 계산(원래 로직 유지) ----
+    # ---- G-code 파싱 ----
     have_prev = False
     prev_x = prev_y = prev_z = 0.0
     prev_e = None
     cur_a4 = 0.0  # 누적 A4
 
-    # 저장 버퍼(후처리용)
     xs_out: List[float] = []
     ys_out: List[float] = []
     zs_out: List[float] = []
+    zs_raw: List[float] = []
     a1_des: List[float] = []
     a2_des: List[float] = []
     a3_list: List[float] = []
@@ -1002,7 +1123,6 @@ def gcode_to_cone1500_module(
         if not t or not t.startswith(("G0","G00","G1","G01")):
             continue
 
-        # 좌표 파싱(없으면 이전 유지)
         cx, cy, cz = prev_x, prev_y, prev_z
         ce = None
         has_any = False
@@ -1022,19 +1142,17 @@ def gcode_to_cone1500_module(
         if not has_any:
             continue
 
-        # E 기반 extruding 판정(있을 때만)
         is_extruding = False
         if ce is not None and prev_e is not None:
             if (ce - prev_e) > 1e-12:
                 is_extruding = True
-        # prev_e 업데이트는 모션라인 기준으로만
         if ce is not None:
             prev_e = ce
 
-        # --- A3(절대) 먼저 산출 (원본 Z 기반) ---
+        # A3(절대)
         a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
 
-        # --- A4: 첫 점은 절대 앵커, 이후 증분 누적 ---
+        # A4 (증분 누적)
         if not have_prev:
             if a4_on_x:
                 cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
@@ -1050,7 +1168,6 @@ def gcode_to_cone1500_module(
             elif a4_on_y and abs(dy) > 0:
                 cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
 
-        # A4 범위 클램프
         if a4_on_x:
             lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
         elif a4_on_y:
@@ -1059,21 +1176,18 @@ def gcode_to_cone1500_module(
             lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        # --- 출력 좌표 보정 ---
-        x_out, y_out, z_out = cx, cy, cz - a3_abs  # Z' = Z - A3
+        # 좌표 보정
+        x_out, y_out, z_out = cx, cy, cz - a3_abs
 
         if key == "90":
-            # Y' = Y - A4
             y_out = cy - cur_a4
         elif key == "0":
-            # X' = X - A4
             x_out = cx - cur_a4
         elif key == "-90":
-            # Y' = Y - (A4_max - A4)
             a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
             y_out = cy - (a4_max - cur_a4)
 
-        # --- A1/A2는 보정된 축으로 계산(기본) ---
+        # A1/A2 (일단 기본으로 계산해두고, 아래에서 A1은 레이어-sync로 덮어씀)
         a1 = _linmap(x_out, x0, x1, a1_0, a1_1)
         a2 = _linmap(y_out, y0, y1, a2_0, a2_1)
         a3 = a3_abs
@@ -1082,6 +1196,7 @@ def gcode_to_cone1500_module(
         xs_out.append(float(x_out))
         ys_out.append(float(y_out))
         zs_out.append(float(z_out))
+        zs_raw.append(float(cz))
         a1_des.append(float(a1))
         a2_des.append(float(a2))
         a3_list.append(float(a3))
@@ -1119,79 +1234,60 @@ def gcode_to_cone1500_module(
         close_decl = "];\nENDMODULE\n"
         return header + open_decl + body + close_decl
 
-    # ---- 2) (NEW) A1 Time-Sync 적용: A1을 TCP 이동시간 기반으로 생성 ----
-    if bool(a1_time_sync_enable) and len(xs_out) >= 2:
-        speed = float(a1_time_sync_speed) if float(a1_time_sync_speed) > 1e-9 else 200.0
+    # ---- 노드 구성 ----
+    nodes: List[Dict[str, Any]] = []
+    for i in range(len(xs_out)):
+        nodes.append({
+            "x": float(xs_out[i]),
+            "y": float(ys_out[i]),
+            "z": float(zs_out[i]),
+            "z_raw": float(zs_raw[i]),
+            "a1": float(a1_des[i]),
+            "a2": float(a2_des[i]),
+            "a3": float(a3_list[i]),
+            "a4": float(a4_list[i]),
+            "extr": bool(is_extruding_list[i]) if i < len(is_extruding_list) else False,
+        })
 
-        # print-only 옵션 처리: E가 전혀 없으면(모두 False) 전체를 printing으로 간주
-        seg_print_mask = []
-        any_extr = any(bool(v) for v in is_extruding_list)
-        for i in range(len(xs_out)):
-            # 노드 i가 "출력 중"인지 의미: 이 노드로 오는 모션이 출력인지로 판단하는 게 가장 안전
-            # 첫 노드는 기준 노드이므로 True 처리(시간 계산에서 제외될 수 있음)
-            if i == 0:
-                seg_print_mask.append(True)
-            else:
-                seg_print_mask.append(bool(is_extruding_list[i]) if any_extr else True)
+    # ---- (NEW) A1 Layer Sync 적용: 레이어마다 A1을 (a1_0->a1_1)로 풀스케일 왕복 ----
+    if bool(enable_a1_layer_sync):
+        nodes = apply_a1_layer_sync(
+            nodes=nodes,
+            a1_start=float(a1_0),
+            a1_end=float(a1_1),
+            divisions=int(a1_layer_divisions),
+            smooth_enable=bool(a1_layer_smooth_enable),
+            smooth_ratio=float(a1_layer_smooth_ratio),
+            use_print_only_for_range=bool(a1_layer_range_print_only),
+            z_tol=1e-6
+        )
 
-        # 누적 시간 계산
-        t_cum = [0.0]
-        for i in range(1, len(xs_out)):
-            dx = xs_out[i] - xs_out[i - 1]
-            dy = ys_out[i] - ys_out[i - 1]
-            dist = math.hypot(dx, dy)
+    # ---- 출력 문자열 생성 ----
+    lines_out: List[str] = []
+    for nd in nodes:
+        if len(lines_out) >= MAX_LINES:
+            break
 
-            use_seg = True
-            if bool(a1_time_sync_print_only):
-                use_seg = bool(seg_print_mask[i])
-
-            dt = (dist / speed) if (use_seg and dist > 1e-12) else 0.0
-            t_cum.append(t_cum[-1] + dt)
-
-        total_t = float(t_cum[-1])
-        if total_t > 1e-9:
-            a_start = float(a1_time_sync_start)
-            a_end = float(a1_time_sync_end)
-            a_span = a_end - a_start
-            div_n = int(max(2, int(a1_time_sync_div)))
-            do_smooth = bool(a1_time_sync_smooth)
-
-            new_a1 = []
-            for ti in t_cum:
-                p = float(ti / total_t) if total_t > 0 else 0.0
-                if do_smooth:
-                    p2 = _smooth_progress_quantized(p, div_n)
-                else:
-                    p2 = p
-                new_a1.append(a_start + a_span * p2)
-
-            # A1 override
-            a1_des = new_a1
-
-    # ---- 3) 출력 문자열 생성 ----
-    lines_out = []
-    for i in range(min(len(xs_out), MAX_LINES)):
-        x = _fmt_pos(float(xs_out[i]))
-        y = _fmt_pos(float(ys_out[i]))
-        z = _fmt_pos(float(zs_out[i]))
+        x = _fmt_pos(float(nd["x"]))
+        y = _fmt_pos(float(nd["y"]))
+        z = _fmt_pos(float(nd["z"]))
 
         if swap_a3_a4:
-            a3_v = a4_list[i]
-            a4_v = a3_list[i]
+            a3_v = nd["a4"]
+            a4_v = nd["a3"]
         else:
-            a3_v = a3_list[i]
-            a4_v = a4_list[i]
+            a3_v = nd["a3"]
+            a4_v = nd["a4"]
 
-        a1s = _fmt_pos(float(a1_des[i]))
-        a2s = _fmt_pos(float(a2_des[i]))
-        a3s = _fmt_pos(float(a3_v))
-        a4s = _fmt_pos(float(a4_v))
+        a1 = _fmt_pos(float(nd["a1"]))
+        a2 = _fmt_pos(float(nd["a2"]))
+        a3 = _fmt_pos(float(a3_v))
+        a4 = _fmt_pos(float(a4_v))
 
-        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s}")
+        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1},{a2},{a3},{a4}")
 
     if len(lines_out) == 0:
         lines_out.append(PAD_LINE)
-
     while len(lines_out) < MAX_LINES:
         lines_out.append(PAD_LINE)
 
@@ -1202,8 +1298,7 @@ def gcode_to_cone1500_module(
               f"!*** Generated {ts} by Gcode→RAPID converter.\n"
               "!\n"
               "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A3 from original Z; Z' = Z-A3; A4 = proportional-split & clamped.\n"
-              "!*** A1 option: Time-Sync (TCP distance / speed) + S-curve accel/decel at start/end.\n"
+              "!*** A1 Layer Sync: per-layer Xmin..Xmax -> A1(start..end) with optional boundary inserts + window smoothing.\n"
               "!\n"
               "!******************************************************************************************************************************\n")
     cnt_str = str(MAX_LINES)
@@ -1215,7 +1310,9 @@ def gcode_to_cone1500_module(
     close_decl = "];\nENDMODULE\n"
     return header + open_decl + body + close_decl
 
-# ---- 사이드바: Rapid UI ----
+# =========================
+# Sidebar: Rapid UI
+# =========================
 st.sidebar.markdown("---")
 if KEY_OK:
     if st.sidebar.button("Generate Rapid", use_container_width=True):
@@ -1230,46 +1327,38 @@ if KEY_OK:
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-        # ---- (NEW) A1 Time-Sync UI ----
-        with st.sidebar.expander("A1 Time-Sync (부가축 A1 시간동기)", expanded=False):
-            st.caption("A1을 X좌표 비례가 아니라, TCP 이동시간(거리/속도)에 맞춰 0→End로 진행시킵니다. 시작/끝은 S-curve로 가속/감속됩니다.")
-            st.session_state.a1_time_sync_enable = st.checkbox(
-                "Enable A1 time-sync (override A1 mapping)",
-                value=bool(st.session_state.a1_time_sync_enable),
+        # ---- (NEW) A1 Layer Sync UI ----
+        with st.sidebar.expander("A1 Layer Sync (레이어별 왕복: 4000→0→4000)", expanded=False):
+            st.caption("레이어(Z 고정 구간)마다 Xmin~Xmax를 기준으로 A1을 start→end로 풀스케일 매핑합니다. X가 돌아오면 A1도 왕복합니다.")
+            st.session_state.a1_layer_sync_enable = st.checkbox(
+                "Enable A1 Layer Sync",
+                value=bool(st.session_state.a1_layer_sync_enable),
             )
-            st.session_state.a1_time_sync_start = st.number_input(
-                "A1 start (mm)", value=float(st.session_state.a1_time_sync_start),
-                step=50.0, format="%.1f"
+            st.session_state.a1_layer_sync_divisions = st.number_input(
+                "X divisions per layer (등분 수)",
+                min_value=1, max_value=2000, value=int(st.session_state.a1_layer_sync_divisions), step=1
             )
-            st.session_state.a1_time_sync_end = st.number_input(
-                "A1 end (mm)", value=float(st.session_state.a1_time_sync_end),
-                step=50.0, format="%.1f"
+            st.session_state.a1_layer_sync_use_print_only = st.checkbox(
+                "Detect X range using only extruding moves",
+                value=bool(st.session_state.a1_layer_sync_use_print_only),
+                help="ON: E 증가(압출) 구간만으로 Xmin~Xmax를 계산합니다. OFF: 해당 Z 레이어의 모든 이동으로 계산합니다."
             )
-            st.session_state.a1_time_sync_speed = st.number_input(
-                "TCP speed for time (mm/s)", min_value=0.1, max_value=100000.0,
-                value=float(st.session_state.a1_time_sync_speed), step=10.0, format="%.1f",
-                help="예: 200이면 이동시간 = (TCP XY거리)/200 (초)"
+            st.session_state.a1_layer_sync_smooth_enable = st.checkbox(
+                "Smooth accel/decel near start/end",
+                value=bool(st.session_state.a1_layer_sync_smooth_enable),
+                help="시작/끝 일부 구간만 스무딩(가감속) 적용합니다. 중간은 거의 선형 유지."
             )
-            st.session_state.a1_time_sync_div = st.number_input(
-                "Divide N (전체 이동 N분할)", min_value=2, max_value=100000,
-                value=int(st.session_state.a1_time_sync_div), step=1,
-                help="요청하신 '전체 이동을 10(또는 20)으로 나누기' 개념을 반영. (S-curve를 N분할 테이블로 근사)"
-            )
-            st.session_state.a1_time_sync_smooth = st.checkbox(
-                "Smooth accel/decel at start/end (S-curve)",
-                value=bool(st.session_state.a1_time_sync_smooth),
-            )
-            st.session_state.a1_time_sync_print_only = st.checkbox(
-                "Time based only on printing moves (E increases only)",
-                value=bool(st.session_state.a1_time_sync_print_only),
-                help="E가 증가하는 구간만 시간축에 포함합니다. E가 없으면 전체 구간을 출력으로 간주합니다."
+            st.session_state.a1_layer_sync_smooth_ratio = st.number_input(
+                "Smooth window ratio (0~0.49)",
+                min_value=0.0, max_value=0.49, value=float(st.session_state.a1_layer_sync_smooth_ratio),
+                step=0.01, format="%.2f",
+                help="0.12면: 시작/끝 각각 12% 구간만 스무딩"
             )
 
         # ---- Mapping Presets UI ----
         with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
             st.caption("각 Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A1/A2/A3/A4 출력 구간을 편집하세요.")
 
-            # 불러오기
             up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
             if up_json is not None:
                 try:
@@ -1282,20 +1371,16 @@ if KEY_OK:
                 except Exception as e:
                     st.error(f"프리셋 로드 실패: {e}")
 
-            # 편집 폼
             def edit_axis(title_key: str, axis_key: str):
                 st.write(f"**Rz = {title_key}° — {axis_key}**")
                 cols = st.columns(4)
                 P = st.session_state.mapping_preset[title_key][axis_key]
 
-                # 입력 구간
                 in0 = cols[0].number_input(f"{axis_key}.in[0]", value=float(P["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
                 in1 = cols[1].number_input(f"{axis_key}.in[1]", value=float(P["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
                 P["in"] = [float(in0), float(in1)]
 
-                # 출력 (축별로 다름)
                 if axis_key == "X":
-                    # A1
                     a1_0 = cols[2].number_input("A1_out[0]", value=float(P.get("A1_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a10")
                     a1_1 = cols[3].number_input("A1_out[1]", value=float(P.get("A1_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a11")
                     P["A1_out"] = [float(a1_0), float(a1_1)]
@@ -1328,11 +1413,9 @@ if KEY_OK:
                 edit_axis(key_title, "Y")
                 edit_axis(key_title, "Z")
 
-            # 저장(다운로드)
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
             st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
-        # ---- 저장 버튼 ----
         gtxt = st.session_state.get("gcode_text")
         over = None
         if gtxt is not None:
@@ -1352,17 +1435,13 @@ if KEY_OK:
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
                 swap_a3_a4=True,
-                a1_time_sync_enable=bool(st.session_state.a1_time_sync_enable),
-                a1_time_sync_start=float(st.session_state.a1_time_sync_start),
-                a1_time_sync_end=float(st.session_state.a1_time_sync_end),
-                a1_time_sync_speed=float(st.session_state.a1_time_sync_speed),
-                a1_time_sync_div=int(st.session_state.a1_time_sync_div),
-                a1_time_sync_smooth=bool(st.session_state.a1_time_sync_smooth),
-                a1_time_sync_print_only=bool(st.session_state.a1_time_sync_print_only),
+                enable_a1_layer_sync=bool(st.session_state.a1_layer_sync_enable),
+                a1_layer_divisions=int(st.session_state.a1_layer_sync_divisions),
+                a1_layer_smooth_enable=bool(st.session_state.a1_layer_sync_smooth_enable),
+                a1_layer_smooth_ratio=float(st.session_state.a1_layer_sync_smooth_ratio),
+                a1_layer_range_print_only=bool(st.session_state.a1_layer_sync_use_print_only),
             )
-            st.sidebar.success(
-                f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)"
-            )
+            st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
 
         if st.session_state.get("rapid_text"):
             base = st.session_state.get("base_name", "output")
@@ -1427,7 +1506,6 @@ with right_col:
     dims_placeholder = st.empty()
     st.markdown("---")
 
-    # 우측 슬라이더 / 행번호 + 레이어 길이 표시
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
         scrub = None
@@ -1495,6 +1573,7 @@ if segments is not None and total_segments > 0:
             p1, p2, is_travel, is_extruding = segments[i]
             if is_extruding:
                 total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
+
         st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
     else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
