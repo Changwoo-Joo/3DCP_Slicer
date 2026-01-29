@@ -675,9 +675,9 @@ if "ui_banner" not in st.session_state:
 if "a1_time_sync_enable" not in st.session_state:
     st.session_state.a1_time_sync_enable = False
 if "a1_time_sync_start" not in st.session_state:
-    st.session_state.a1_time_sync_start = 0.0
+    st.session_state.a1_time_sync_start = 4000.0
 if "a1_time_sync_end" not in st.session_state:
-    st.session_state.a1_time_sync_end = 4000.0
+    st.session_state.a1_time_sync_end = 0.0
 if "a1_time_sync_speed" not in st.session_state:
     st.session_state.a1_time_sync_speed = 200.0  # mm/s (사용자가 말한 200)
 if "a1_time_sync_div" not in st.session_state:
