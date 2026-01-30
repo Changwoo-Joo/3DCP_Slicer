@@ -904,13 +904,12 @@ def _apply_const_speed_profile_on_nodes(
     speed_mm_s: float = 200.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
-    travel_interp: bool = True,
-    out_coord_key: Optional[str] = None,   # ✅ 로컬좌표를 같이 “분해”할 때만 사용 (A2용)
+    travel_interp: bool = True
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
     n = len(nodes)
-    if n <= 0:
+    if n == 0:
         return
 
     coord_min = float(coord_min)
@@ -919,132 +918,139 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_max = float(axis_at_max)
     eps = float(max(0.0, eps_mm))
 
-    coord_span = float(coord_max - coord_min)
-    coord_span_abs = abs(coord_span)
-
-    axis_span = float(axis_at_max - axis_at_min)
-    axis_span_abs = abs(axis_span)
-
-    if coord_span_abs <= 1e-12:
+    span = float(coord_max - coord_min)
+    span_abs = abs(span)
+    if span_abs <= 1e-9:
         for nd in nodes:
             nd[axis_key] = float(axis_at_min)
-            if out_coord_key is not None:
-                nd[out_coord_key] = float(coord_min)
         return
 
-    # ✅ 핵심: A2처럼 “로컬좌표도 같이 분해”할 때만 (coord + axis) 사용
-    # A1은 out_coord_key=None 이므로 total_raw_span = coord_span_abs 로 복원됨
-    total_raw_span = coord_span_abs + (axis_span_abs if out_coord_key is not None else 0.0)
-    if total_raw_span <= 1e-12:
-        for nd in nodes:
-            nd[axis_key] = float(axis_at_min)
-            if out_coord_key is not None:
-                nd[out_coord_key] = float(coord_min)
-        return
-
-    extr_node = [bool(nd.get("extr", False)) for nd in nodes]
+    # axis per mm (속도 파라미터는 출력 포지션에선 상쇄되지만, 인터페이스 호환 위해 유지)
+    axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
 
     def _coord(i: int) -> float:
-        return float(nodes[i].get(coord_key, 0.0))
+        return float(nodes[i][coord_key])
 
+    # 경계 판정: <= / >= 로 잡아서 오차에 강하게
     def _at_min(c: float) -> bool:
         return c <= coord_min + eps
 
     def _at_max(c: float) -> bool:
         return c >= coord_max - eps
 
-    def _set_from_s(i: int, s_val: float):
-        u = 0.0 if total_raw_span <= 1e-12 else (s_val / total_raw_span)
-        u = 0.0 if u < 0.0 else 1.0 if u > 1.0 else u
+    def _snap_axis_for_coord(c: float) -> float:
+        if _at_min(c):
+            return float(axis_at_min)
+        if _at_max(c):
+            return float(axis_at_max)
+        # 내부면 선형 맵(시작점이 내부에서 시작할 때 점프 방지)
+        t = (c - coord_min) / span_abs
+        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+        return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
-        nodes[i][axis_key] = float(axis_at_min + u * axis_span)
+    # apply_print_only이면 "다음 노드가 extruding(True)일 때"만 진행(세그먼트 기준)
+    extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-        if out_coord_key is not None:
-            nodes[i][out_coord_key] = float(coord_min + u * coord_span)
-
-    # ---- 초기 s/dir ----
+    # 초기값/방향 설정
     c0 = _coord(0)
+    nodes[0][axis_key] = _snap_axis_for_coord(c0)
 
-    # A1 모드(out_coord_key None): raw coord 위치에 맞춰 s를 “그 자리”로 시작
-    if out_coord_key is None:
-        if _at_min(c0):
-            s = 0.0
-            dir_mode = "fwd"
-        elif _at_max(c0):
-            s = total_raw_span
-            dir_mode = "bwd"
-        else:
-            t = (c0 - coord_min) / coord_span_abs
-            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-            s = float(t * total_raw_span)
-            dir_mode = "fwd"
-            for j in range(1, n):
-                dc = _coord(j) - c0
-                if abs(dc) > 1e-9:
-                    dir_mode = "fwd" if dc > 0 else "bwd"
-                    break
-    else:
-        # A2 분해모드: 0부터 진행
-        s = 0.0
+    # dir_mode: "fwd"(coord_min→coord_max로 가는 동안 axis_at_min→axis_at_max), "bwd"(반대)
+    if _at_min(c0):
         dir_mode = "fwd"
+    elif _at_max(c0):
+        dir_mode = "bwd"
+    else:
+        # 첫 유효 Δcoord로 방향 추정
+        dir_mode = "fwd"
+        for j in range(1, n):
+            dc = _coord(j) - c0
+            if abs(dc) > 1e-9:
+                dir_mode = "fwd" if dc > 0 else "bwd"
+                break
 
-    _set_from_s(0, s)
-
-    # ---- 진행 ----
+    # 진행
     for i in range(n - 1):
         ci = _coord(i)
         cj = _coord(i + 1)
 
-        # ✅ A1 모드에서는 raw coord 경계에서 방향/위치 강제 (원래 동작 복원)
-        if out_coord_key is None:
-            if _at_min(ci):
-                s = 0.0
-                dir_mode = "fwd"
-                _set_from_s(i, s)
-            elif _at_max(ci):
-                s = total_raw_span
-                dir_mode = "bwd"
-                _set_from_s(i, s)
+        # 현재가 경계면 방향 강제
+        if _at_min(ci):
+            nodes[i][axis_key] = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(ci):
+            nodes[i][axis_key] = float(axis_at_max)
+            dir_mode = "bwd"
 
+        ai = float(nodes[i][axis_key])
+
+        # 이 스텝( i -> i+1 )에서 진행할지 여부
         active = True
         if apply_print_only:
             active = bool(extr_node[i + 1])
 
-        d = abs(cj - ci)
+        dcoord = float(cj - ci)
+        if (not active) or abs(dcoord) <= 1e-12:
+            aj = ai
+        else:
+            # ✅ 핵심: 방향은 유지, 크기는 |Δcoord|만 반영
+            step = axis_per_mm * abs(dcoord)
+            if dir_mode == "fwd":
+                aj = ai + step
+            else:
+                aj = ai - step
 
-        s_next = s
-        if active and d > 1e-12:
-            s_next = (s + d) if dir_mode == "fwd" else (s - d)
+        # 다음 노드 경계 스냅 + 방향 갱신
+        if _at_min(cj):
+            aj = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(cj):
+            aj = float(axis_at_max)
+            dir_mode = "bwd"
 
-            # 반사(튕김) 처리
-            while s_next > total_raw_span:
-                over = s_next - total_raw_span
-                s_next = total_raw_span - over
-                dir_mode = "bwd"
-            while s_next < 0.0:
-                over = -s_next
-                s_next = over
-                dir_mode = "fwd"
+        # clamp
+        lo = min(axis_at_min, axis_at_max)
+        hi = max(axis_at_min, axis_at_max)
+        if aj < lo: aj = lo
+        if aj > hi: aj = hi
 
-        s = s_next
-        _set_from_s(i + 1, s)
+        nodes[i + 1][axis_key] = float(aj)
 
-    # ---- clamp ----
-    alo, ahi = (axis_at_min, axis_at_max) if axis_at_min <= axis_at_max else (axis_at_max, axis_at_min)
-    clo, chi = (coord_min, coord_max) if coord_min <= coord_max else (coord_max, coord_min)
+    # travel interpolation (옵션)
+    if travel_interp and apply_print_only:
+        # travel 구간(비활성)들을 앞/뒤 active 사이로 선형 보간
+        active_node = [bool(extr_node[i]) for i in range(n)]
+        if any(active_node):
+            i = 0
+            while i < n:
+                if active_node[i]:
+                    i += 1
+                    continue
+                t0 = i
+                while i < n and (not active_node[i]):
+                    i += 1
+                t1 = i - 1
+                prev_idx = t0 - 1 if t0 - 1 >= 0 else None
+                next_idx = i if i < n else None
+                if prev_idx is None or next_idx is None:
+                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
+                    for k in range(t0, t1 + 1):
+                        nodes[k][axis_key] = base
+                    continue
+                a0 = float(nodes[prev_idx][axis_key])
+                a1 = float(nodes[next_idx][axis_key])
+                total = max(1, (t1 - t0 + 1))
+                for kk, k in enumerate(range(t0, t1 + 1)):
+                    u = (kk + 1) / float(total + 1)
+                    nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
 
-    for nd in nodes:
-        a = float(nd[axis_key])
-        if a < alo: a = alo
-        if a > ahi: a = ahi
-        nd[axis_key] = a
-
-        if out_coord_key is not None:
-            c = float(nd[out_coord_key])
-            if c < clo: c = clo
-            if c > chi: c = chi
-            nd[out_coord_key] = c
-
+    # 마지막으로 경계 강제(보간이 경계를 덮어쓰지 않도록)
+    for i in range(n):
+        c = _coord(i)
+        if _at_min(c):
+            nodes[i][axis_key] = float(axis_at_min)
+        elif _at_max(c):
+            nodes[i][axis_key] = float(axis_at_max)
 
 # =========================
 # Rapid Converter (UPDATED)
@@ -1279,7 +1285,6 @@ def gcode_to_cone1500_module(
             eps_mm=float(boundary_eps_mm),
             apply_print_only=bool(apply_print_only),
             travel_interp=bool(travel_interp),
-            out_coord_key="y",
         )
     else:
         for nd in nodes:
