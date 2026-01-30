@@ -905,7 +905,7 @@ def _apply_const_speed_profile_on_nodes(
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
-    out_coord_key: Optional[str] = None,   # ✅ 추가: 로컬 좌표(x or y)도 같이 갱신
+    out_coord_key: Optional[str] = None,   # ✅ 로컬좌표를 같이 “분해”할 때만 사용 (A2용)
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
@@ -917,64 +917,106 @@ def _apply_const_speed_profile_on_nodes(
     coord_max = float(coord_max)
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
+    eps = float(max(0.0, eps_mm))
 
-    # 로컬(로봇) 좌표 스팬
     coord_span = float(coord_max - coord_min)
     coord_span_abs = abs(coord_span)
 
-    # 외부축 스팬
     axis_span = float(axis_at_max - axis_at_min)
     axis_span_abs = abs(axis_span)
 
-    # ✅ 핵심: raw 이동 1스윕 총 길이 = 로컬스팬 + 외부축스팬
-    total_raw_span = coord_span_abs + axis_span_abs
-    if total_raw_span <= 1e-9:
+    if coord_span_abs <= 1e-12:
         for nd in nodes:
             nd[axis_key] = float(axis_at_min)
             if out_coord_key is not None:
                 nd[out_coord_key] = float(coord_min)
         return
 
-    # printing-only 옵션
+    # ✅ 핵심: A2처럼 “로컬좌표도 같이 분해”할 때만 (coord + axis) 사용
+    # A1은 out_coord_key=None 이므로 total_raw_span = coord_span_abs 로 복원됨
+    total_raw_span = coord_span_abs + (axis_span_abs if out_coord_key is not None else 0.0)
+    if total_raw_span <= 1e-12:
+        for nd in nodes:
+            nd[axis_key] = float(axis_at_min)
+            if out_coord_key is not None:
+                nd[out_coord_key] = float(coord_min)
+        return
+
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-    # 진행값 s: 0..total_raw_span (삼각파로 왕복)
-    s = 0.0
-    dir_mode = "fwd"  # fwd: s 증가, bwd: s 감소
+    def _coord(i: int) -> float:
+        return float(nodes[i].get(coord_key, 0.0))
+
+    def _at_min(c: float) -> bool:
+        return c <= coord_min + eps
+
+    def _at_max(c: float) -> bool:
+        return c >= coord_max - eps
 
     def _set_from_s(i: int, s_val: float):
         u = 0.0 if total_raw_span <= 1e-12 else (s_val / total_raw_span)
         u = 0.0 if u < 0.0 else 1.0 if u > 1.0 else u
 
-        # ✅ 외부축 값
         nodes[i][axis_key] = float(axis_at_min + u * axis_span)
 
-        # ✅ 로컬 좌표도 같이 갱신 (예: y를 0~100으로)
         if out_coord_key is not None:
             nodes[i][out_coord_key] = float(coord_min + u * coord_span)
 
-    # 초기값 세팅
+    # ---- 초기 s/dir ----
+    c0 = _coord(0)
+
+    # A1 모드(out_coord_key None): raw coord 위치에 맞춰 s를 “그 자리”로 시작
+    if out_coord_key is None:
+        if _at_min(c0):
+            s = 0.0
+            dir_mode = "fwd"
+        elif _at_max(c0):
+            s = total_raw_span
+            dir_mode = "bwd"
+        else:
+            t = (c0 - coord_min) / coord_span_abs
+            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+            s = float(t * total_raw_span)
+            dir_mode = "fwd"
+            for j in range(1, n):
+                dc = _coord(j) - c0
+                if abs(dc) > 1e-9:
+                    dir_mode = "fwd" if dc > 0 else "bwd"
+                    break
+    else:
+        # A2 분해모드: 0부터 진행
+        s = 0.0
+        dir_mode = "fwd"
+
     _set_from_s(0, s)
 
-    # 진행 루프
+    # ---- 진행 ----
     for i in range(n - 1):
-        # 이 스텝이 active인지 (printing-only면 extruding 구간만)
+        ci = _coord(i)
+        cj = _coord(i + 1)
+
+        # ✅ A1 모드에서는 raw coord 경계에서 방향/위치 강제 (원래 동작 복원)
+        if out_coord_key is None:
+            if _at_min(ci):
+                s = 0.0
+                dir_mode = "fwd"
+                _set_from_s(i, s)
+            elif _at_max(ci):
+                s = total_raw_span
+                dir_mode = "bwd"
+                _set_from_s(i, s)
+
         active = True
         if apply_print_only:
             active = bool(extr_node[i + 1])
 
-        c0 = float(nodes[i].get(coord_key, 0.0))
-        c1 = float(nodes[i + 1].get(coord_key, c0))
-        d = abs(c1 - c0)
+        d = abs(cj - ci)
 
         s_next = s
         if active and d > 1e-12:
-            if dir_mode == "fwd":
-                s_next = s + d
-            else:
-                s_next = s - d
+            s_next = (s + d) if dir_mode == "fwd" else (s - d)
 
-            # ✅ 왕복(반사) 처리: 범위 밖으로 나가면 튕겨서 돌아오게
+            # 반사(튕김) 처리
             while s_next > total_raw_span:
                 over = s_next - total_raw_span
                 s_next = total_raw_span - over
@@ -987,47 +1029,7 @@ def _apply_const_speed_profile_on_nodes(
         s = s_next
         _set_from_s(i + 1, s)
 
-    # travel interpolation (printing-only일 때 travel 구간 보간)
-    if travel_interp and apply_print_only:
-        active_node = [bool(extr_node[i]) for i in range(n)]
-        if any(active_node):
-            i = 0
-            while i < n:
-                if active_node[i]:
-                    i += 1
-                    continue
-                t0 = i
-                while i < n and (not active_node[i]):
-                    i += 1
-                t1 = i - 1
-                prev_idx = t0 - 1 if t0 - 1 >= 0 else None
-                next_idx = i if i < n else None
-
-                if prev_idx is None or next_idx is None:
-                    # 한쪽만 있으면 그대로 유지
-                    base_a = float(nodes[prev_idx][axis_key]) if prev_idx is not None else float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
-                    base_c = None
-                    if out_coord_key is not None:
-                        base_c = float(nodes[prev_idx][out_coord_key]) if prev_idx is not None else float(nodes[next_idx][out_coord_key]) if next_idx is not None else float(coord_min)
-
-                    for k in range(t0, t1 + 1):
-                        nodes[k][axis_key] = base_a
-                        if out_coord_key is not None:
-                            nodes[k][out_coord_key] = base_c
-                    continue
-
-                a0 = float(nodes[prev_idx][axis_key]); a1 = float(nodes[next_idx][axis_key])
-                c0v = float(nodes[prev_idx][out_coord_key]) if out_coord_key is not None else None
-                c1v = float(nodes[next_idx][out_coord_key]) if out_coord_key is not None else None
-
-                total = max(1, (t1 - t0 + 1))
-                for kk, k in enumerate(range(t0, t1 + 1)):
-                    u = (kk + 1) / float(total + 1)
-                    nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
-                    if out_coord_key is not None and c0v is not None and c1v is not None:
-                        nodes[k][out_coord_key] = c0v + (c1v - c0v) * float(u)
-
-    # 마지막 clamp
+    # ---- clamp ----
     alo, ahi = (axis_at_min, axis_at_max) if axis_at_min <= axis_at_max else (axis_at_max, axis_at_min)
     clo, chi = (coord_min, coord_max) if coord_min <= coord_max else (coord_max, coord_min)
 
