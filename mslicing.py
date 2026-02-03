@@ -146,6 +146,10 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     return _rdp_xy(pts, eps)
 
 
+
+# =========================
+# Corner refinement (insert pre/post points)
+# =========================
 def refine_corners_insert_points(
     poly,
     corner_spacing_mm: float = 20.0,
@@ -230,8 +234,6 @@ def refine_corners_insert_points(
             cleaned.append(q)
 
     return np.asarray(cleaned, dtype=float)
-
-
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -300,13 +302,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-                if enable_corner_refine:
-                    simplified = refine_corners_insert_points(
-                        simplified,
-                        corner_spacing_mm=float(corner_spacing_mm),
-                        corner_angle_deg=float(corner_angle_deg),
-                        apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
-                    )
+            if enable_corner_refine:
+                simplified = refine_corners_insert_points(
+                    simplified,
+                    corner_spacing_mm=float(corner_spacing_mm),
+                    corner_angle_deg=float(corner_angle_deg),
+                    apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
+                )
 
             if i_seg > 0:
                 s = simplified[0]
@@ -384,13 +386,13 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-                if enable_corner_refine:
-                    simplified = refine_corners_insert_points(
-                        simplified,
-                        corner_spacing_mm=float(corner_spacing_mm),
-                        corner_angle_deg=float(corner_angle_deg),
-                        apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
-                    )
+            if enable_corner_refine:
+                simplified = refine_corners_insert_points(
+                    simplified,
+                    corner_spacing_mm=float(corner_spacing_mm),
+                    corner_angle_deg=float(corner_angle_deg),
+                    apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
+                )
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
