@@ -145,6 +145,93 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
+
+def refine_corners_insert_points(
+    poly,
+    corner_spacing_mm: float = 20.0,
+    corner_angle_deg: float = 45.0,
+    apply_if_seg_longer_than_mm: float = 40.0,
+    dense_skip_factor: float = 1.05,
+    eps: float = 1e-9,
+):
+    """Insert 1 point before and 1 point after sharp corners (XY angle), only when adjacent segment(s) are long.
+
+    - If points are already dense around the corner (both adjacent segments <= corner_spacing_mm), it skips.
+    - Interpolates in full 3D using the same t computed from XY length.
+    """
+    import numpy as np
+    import math
+
+    pts = np.asarray(poly, dtype=float)
+    n = len(pts)
+    if n < 3 or corner_spacing_mm <= 0:
+        return pts
+
+    def norm_xy(v):
+        return float((v[0]*v[0] + v[1]*v[1]) ** 0.5)
+
+    def angle_deg(u2, v2):
+        du = float((u2[0]*u2[0] + u2[1]*u2[1]) ** 0.5)
+        dv = float((v2[0]*v2[0] + v2[1]*v2[1]) ** 0.5)
+        if du <= eps or dv <= eps:
+            return 0.0
+        dot = (u2[0]*v2[0] + u2[1]*v2[1]) / (du*dv)
+        dot = -1.0 if dot < -1.0 else (1.0 if dot > 1.0 else dot)
+        return float(math.degrees(math.acos(dot)))
+
+    out = [pts[0].copy()]
+
+    for i in range(1, n-1):
+        p_prev = pts[i-1]
+        p = pts[i]
+        p_next = pts[i+1]
+
+        v1 = p - p_prev
+        v2 = p_next - p
+
+        l1 = norm_xy(v1)
+        l2 = norm_xy(v2)
+
+        if l1 <= eps or l2 <= eps:
+            out.append(p.copy())
+            continue
+
+        ang = angle_deg(v1[:2], v2[:2])
+        is_corner = ang >= float(corner_angle_deg)
+
+        long_enough = (l1 >= float(apply_if_seg_longer_than_mm)) or (l2 >= float(apply_if_seg_longer_than_mm))
+        already_dense = (l1 <= float(corner_spacing_mm) * dense_skip_factor) and (l2 <= float(corner_spacing_mm) * dense_skip_factor)
+
+        if is_corner and long_enough and (not already_dense):
+            # one point before corner
+            if l1 > float(corner_spacing_mm) * dense_skip_factor:
+                t = float(corner_spacing_mm) / l1
+                p_before = p - t * v1
+                if norm_xy(p_before - out[-1]) > 1e-6 and norm_xy(p - p_before) > 1e-6:
+                    out.append(p_before)
+
+            out.append(p.copy())
+
+            # one point after corner
+            if l2 > float(corner_spacing_mm) * dense_skip_factor:
+                t = float(corner_spacing_mm) / l2
+                p_after = p + t * v2
+                if norm_xy(p_after - out[-1]) > 1e-6 and norm_xy(p_next - p_after) > 1e-6:
+                    out.append(p_after)
+        else:
+            out.append(p.copy())
+
+    out.append(pts[-1].copy())
+
+    # de-dup near neighbors (XY)
+    cleaned = [out[0]]
+    for q in out[1:]:
+        if norm_xy(q - cleaned[-1]) > 1e-6:
+            cleaned.append(q)
+
+    return np.asarray(cleaned, dtype=float)
+
+
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -213,6 +300,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+                if enable_corner_refine:
+                    simplified = refine_corners_insert_points(
+                        simplified,
+                        corner_spacing_mm=float(corner_spacing_mm),
+                        corner_angle_deg=float(corner_angle_deg),
+                        apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
+                    )
 
             if i_seg > 0:
                 s = simplified[0]
@@ -290,6 +384,13 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+                if enable_corner_refine:
+                    simplified = refine_corners_insert_points(
+                        simplified,
+                        corner_spacing_mm=float(corner_spacing_mm),
+                        corner_angle_deg=float(corner_angle_deg),
+                        apply_if_seg_longer_than_mm=float(corner_apply_min_seg_mm),
+                    )
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -791,7 +892,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
         z_int=z_int,
-        ref_pt_user=(ref_x, ref_y),
+        ref_pt_user=(ref_x, ref_y, corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine),
         trim_dist=trim_dist,
         min_spacing=min_spacing,
         auto_start=auto_start,
@@ -807,7 +908,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y, corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
