@@ -145,8 +145,6 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
-
-
 # =========================
 # Corner refinement (insert pre/post points)
 # =========================
@@ -160,12 +158,9 @@ def refine_corners_insert_points(
 ):
     """Insert 1 point before and 1 point after sharp corners (XY angle), only when adjacent segment(s) are long.
 
-    - If points are already dense around the corner (both adjacent segments <= corner_spacing_mm), it skips.
-    - Interpolates in full 3D using the same t computed from XY length.
+    - Skips if points are already dense around the corner.
+    - Interpolates in full 3D using t computed from XY length.
     """
-    import numpy as np
-    import math
-
     pts = np.asarray(poly, dtype=float)
     n = len(pts)
     if n < 3 or corner_spacing_mm <= 0:
@@ -234,6 +229,8 @@ def refine_corners_insert_points(
             cleaned.append(q)
 
     return np.asarray(cleaned, dtype=float)
+
+
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -894,7 +891,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
         z_int=z_int,
-        ref_pt_user=(ref_x, ref_y, corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine),
+        ref_pt_user=(ref_x, ref_y), corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine,
         trim_dist=trim_dist,
         min_spacing=min_spacing,
         auto_start=auto_start,
@@ -910,7 +907,7 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y, corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine),
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y), corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine,
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
     )
