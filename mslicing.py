@@ -145,17 +145,19 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
 
     return _rdp_xy(pts, eps)
 
+
+
 # =========================
 # Corner refinement (insert pre/post points)
 # =========================
 def refine_corners_insert_points(
-    poly,
+    poly: np.ndarray,
     corner_spacing_mm: float = 20.0,
     corner_angle_deg: float = 45.0,
     apply_if_seg_longer_than_mm: float = 40.0,
     dense_skip_factor: float = 1.05,
     eps: float = 1e-9,
-):
+) -> np.ndarray:
     """Insert 1 point before and 1 point after sharp corners (XY angle), only when adjacent segment(s) are long.
 
     - Skips if points are already dense around the corner.
@@ -166,24 +168,24 @@ def refine_corners_insert_points(
     if n < 3 or corner_spacing_mm <= 0:
         return pts
 
-    def norm_xy(v):
-        return float((v[0]*v[0] + v[1]*v[1]) ** 0.5)
+    def norm_xy(v: np.ndarray) -> float:
+        return float((v[0] * v[0] + v[1] * v[1]) ** 0.5)
 
-    def angle_deg(u2, v2):
-        du = float((u2[0]*u2[0] + u2[1]*u2[1]) ** 0.5)
-        dv = float((v2[0]*v2[0] + v2[1]*v2[1]) ** 0.5)
+    def angle_deg(u2: np.ndarray, v2: np.ndarray) -> float:
+        du = float((u2[0] * u2[0] + u2[1] * u2[1]) ** 0.5)
+        dv = float((v2[0] * v2[0] + v2[1] * v2[1]) ** 0.5)
         if du <= eps or dv <= eps:
             return 0.0
-        dot = (u2[0]*v2[0] + u2[1]*v2[1]) / (du*dv)
+        dot = (u2[0] * v2[0] + u2[1] * v2[1]) / (du * dv)
         dot = -1.0 if dot < -1.0 else (1.0 if dot > 1.0 else dot)
         return float(math.degrees(math.acos(dot)))
 
     out = [pts[0].copy()]
 
-    for i in range(1, n-1):
-        p_prev = pts[i-1]
+    for i in range(1, n - 1):
+        p_prev = pts[i - 1]
         p = pts[i]
-        p_next = pts[i+1]
+        p_next = pts[i + 1]
 
         v1 = p - p_prev
         v2 = p_next - p
@@ -229,8 +231,6 @@ def refine_corners_insert_points(
             cleaned.append(q)
 
     return np.asarray(cleaned, dtype=float)
-
-
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
@@ -891,12 +891,12 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
         z_int=z_int,
-        ref_pt_user=(ref_x, ref_y), corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine,
+        ref_pt_user=(ref_x, ref_y),
         trim_dist=trim_dist,
         min_spacing=min_spacing,
         auto_start=auto_start,
         e_on=e_on
-    )
+    , corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine)
     st.session_state.paths_items = items
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
@@ -907,10 +907,10 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y), corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine,
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on
-    )
+    , corner_spacing_mm=corner_spacing_mm, corner_angle_deg=corner_angle_deg, corner_apply_min_seg_mm=corner_apply_min_seg_mm, enable_corner_refine=enable_corner_refine)
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
 
