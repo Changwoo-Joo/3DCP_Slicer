@@ -228,6 +228,57 @@ def densify_sparse_corners(poly: np.ndarray,
     s_targets.sort()
     return _resample_polyline_by_s(pts, s_targets)
 
+
+def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
+                             collinear_eps: float = 1e-12,
+                             min_sep_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    n = len(pts)
+    if n < 3 or d_mm <= 0:
+        return pts.copy()
+
+    out = [pts[0].copy()]
+
+    for i in range(1, n - 1):
+        p0 = pts[i - 1]
+        p1 = pts[i]
+        p2 = pts[i + 1]
+
+        v1 = p1 - p0
+        v2 = p2 - p1
+        L1 = float(np.linalg.norm(v1[:2]))
+        L2 = float(np.linalg.norm(v2[:2]))
+
+        cross = v1[0]*v2[1] - v1[1]*v2[0]
+        is_corner = abs(cross) > collinear_eps and L1 > 1e-9 and L2 > 1e-9
+
+        if not is_corner:
+            out.append(p1.copy())
+            continue
+
+        # before point
+        if L1 > d_mm + min_sep_eps:
+            u1 = v1 / L1
+            p_before = p1 - u1 * d_mm
+            if np.linalg.norm((p_before - out[-1])[:2]) > min_sep_eps:
+                out.append(p_before)
+
+        # corner itself
+        if np.linalg.norm((p1 - out[-1])[:2]) > min_sep_eps:
+            out.append(p1.copy())
+
+        # after point
+        if L2 > d_mm + min_sep_eps:
+            u2 = v2 / L2
+            p_after = p1 + u2 * d_mm
+            if np.linalg.norm((p_after - out[-1])[:2]) > min_sep_eps:
+                out.append(p_after)
+
+    if np.linalg.norm((pts[-1] - out[-1])[:2]) > min_sep_eps:
+        out.append(pts[-1].copy())
+
+    return np.asarray(out, dtype=float)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -292,7 +343,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
+            if enable_corner:
+               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
 
             if i_seg > 0:
                 s = simplified[0]
@@ -370,7 +422,8 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
+            if enable_corner:
+               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -837,8 +890,11 @@ start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (
 e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
 st.sidebar.subheader("Path processing")
+enable_corner = st.sidebar.checkbox("Enable corner neighbor points", value=True)
+corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
+corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
