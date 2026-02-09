@@ -890,8 +890,19 @@ start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (
 e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
 st.sidebar.subheader("Path processing")
-enable_corner = st.sidebar.checkbox("Enable corner neighbor points", value=True)
-corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
+enable_corner = st.sidebar.checkbox(
+    "Enable corner neighbor points",
+    value=True,
+    key="enable_corner_points",
+)
+
+corner_d = st.sidebar.number_input(
+    "Corner neighbor distance (mm)",
+    0.0, 1000.0, 5.0, 1.0,
+    key="corner_neighbor_distance_mm",
+    disabled=not enable_corner,   # (선택) OFF면 입력 비활성
+)
+
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
 corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
