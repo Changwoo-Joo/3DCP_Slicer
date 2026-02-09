@@ -149,6 +149,85 @@ def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
+def _poly_arclen_s_xy(poly: np.ndarray) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2:
+        return np.array([0.0], dtype=float)
+    d = pts[1:] - pts[:-1]
+    lens = np.linalg.norm(d[:, :2], axis=1)
+    return np.concatenate([[0.0], np.cumsum(lens)])
+
+def _resample_polyline_by_s(poly: np.ndarray, s_targets: np.ndarray) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2:
+        return pts.copy()
+
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts[[0]].copy()
+
+    seg = pts[1:] - pts[:-1]
+    lens = np.linalg.norm(seg[:, :2], axis=1)
+
+    s_targets = np.clip(np.asarray(s_targets, dtype=float), 0.0, total)
+
+    out = []
+    j = 0
+    for st in s_targets:
+        while j < len(lens) - 1 and s[j+1] < st:
+            j += 1
+        d = float(lens[j])
+        if d < 1e-12:
+            out.append(pts[j].copy())
+        else:
+            t = (st - s[j]) / d
+            out.append((1.0 - t) * pts[j] + t * pts[j+1])
+    return np.asarray(out, dtype=float)
+
+def densify_sparse_corners(poly: np.ndarray,
+                           step_mm: float = 5.0,
+                           window_mm: float = 30.0,
+                           collinear_eps: float = 1e-12) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 3 or step_mm <= 0 or window_mm <= 0:
+        return pts.copy()
+
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts.copy()
+
+    s_targets = [0.0, total]
+
+    for i in range(1, len(pts) - 1):
+        v1 = pts[i] - pts[i-1]
+        v2 = pts[i+1] - pts[i]
+
+        # 각도 임계값 없이: '완전 일직선'만 제외
+        cross = v1[0]*v2[1] - v1[1]*v2[0]
+        if abs(cross) <= collinear_eps:
+            continue
+
+        # 코너에서 앞/뒤 인접 점 간격이 window_mm보다 큰 경우에만 발동
+        gap_prev = float(s[i] - s[i-1])
+        gap_next = float(s[i+1] - s[i])
+        if not (gap_prev > window_mm or gap_next > window_mm):
+            continue
+
+        si = float(s[i])
+        a = max(0.0, si - window_mm)
+        b = min(total, si + window_mm)
+
+        n = int(max(2, math.floor((b - a) / step_mm) + 1))
+        ss = a + step_mm * np.arange(n, dtype=float)
+        ss = ss[ss <= b + 1e-6]
+        s_targets.extend(ss.tolist())
+
+    s_targets = np.unique(np.round(np.asarray(s_targets, dtype=float), 6))
+    s_targets.sort()
+    return _resample_polyline_by_s(pts, s_targets)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -213,6 +292,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
 
             if i_seg > 0:
                 s = simplified[0]
@@ -290,6 +370,7 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
+            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
