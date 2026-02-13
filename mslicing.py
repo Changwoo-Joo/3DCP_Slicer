@@ -1141,7 +1141,7 @@ def _apply_const_speed_profile_on_nodes(
         dcoord = float(cj - ci)
         if abs(dcoord) < deadband_mm:
             aj = ai
-            nodes[i + 1][axiskey] = float(aj)
+            nodes[i + 1][axis_key] = float(aj)
             continue
 
         if (not active) or abs(dcoord) <= 1e-12:
