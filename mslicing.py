@@ -1050,7 +1050,7 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
-    deadband_mm: float = 1.0,
+    deadband_mm: float = 5.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True
