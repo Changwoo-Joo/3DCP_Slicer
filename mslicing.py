@@ -1050,6 +1050,7 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
+    deadband_mm: float = 1.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True
@@ -1138,6 +1139,11 @@ def _apply_const_speed_profile_on_nodes(
             active = bool(extr_node[i + 1])
 
         dcoord = float(cj - ci)
+        if abs(dcoord) < deadband_mm:
+            aj = ai
+            nodes[i + 1][axiskey] = float(aj)
+            continue
+
         if (not active) or abs(dcoord) <= 1e-12:
             aj = ai
         else:
