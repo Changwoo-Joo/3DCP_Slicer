@@ -1452,7 +1452,7 @@ def gcode_to_cone1500_module(
             nd["coords"] = float(nd.get("rawy", 0.0)) + float(nd.get("a4", 0.0))
     
         if use_step:
-            apply_const_speed_profile_on_nodes(
+            _apply_const_speed_profile_on_nodes(
                 nodes=nodes, axis_key="a2", coord_key="coords",
                 coord_min=float(ymin), coord_max=float(ymax),
                 axis_at_min=float(a2_at_ymin), axis_at_max=float(a2_at_ymax),
@@ -1462,7 +1462,7 @@ def gcode_to_cone1500_module(
                 step_round="floor",
             )
         else:
-            apply_const_speed_profile_on_nodes(
+            _apply_const_speed_profile_on_nodes(
                 nodes=nodes, axis_key="a2", coord_key="rawy",  # ← 핵심 수정
                 coord_min=float(ymin), coord_max=float(ymax),
                 axis_at_min=float(a2_at_ymin), axis_at_max=float(a2_at_ymax),
