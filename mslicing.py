@@ -1280,14 +1280,26 @@ def gcode_to_cone1500_module(
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
         # 좌표 보정 (기존 유지)
+                # 좌표 보정
+        # Z 보정 (A3는 Z에 연동됨)
         x_out, y_out, z_out = cx, cy, cz - a3_abs
-        if key == "90":
-            y_out = cy - cur_a4
-        elif key == "0":
-            x_out = cx - cur_a4
-        elif key == "-90":
-            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
-            y_out = cy - (a4_max - cur_a4)
+
+        # Y(또는 X) 보정 (A4가 어디에 연동되었는지 확인 후 보정)
+        if a4_on_y:
+            # A4가 Y축에 연동된 경우 (현재 이미지 설정)
+            if key == "-90":
+                a4_max = max(a4y_0, a4y_1)
+                y_out = cy - (a4_max - cur_a4)
+            else:
+                y_out = cy - cur_a4
+        elif a4_on_x:
+            # A4가 X축에 연동된 경우
+            if key == "-90":
+                a4_max = max(a4x_0, a4x_1)
+                x_out = cx - (a4_max - cur_a4)
+            else:
+                x_out = cx - cur_a4
+
 
         # 저장
         raw_xs.append(float(cx))
