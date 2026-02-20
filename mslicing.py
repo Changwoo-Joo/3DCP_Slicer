@@ -1445,33 +1445,46 @@ def gcode_to_cone1500_module(
 
     # --- A2 constant-speed profile (FIXED: always use coords = raw_y + a4) ---
     if bool(enable_a2_const):
-        use_step = bool(st.session_state.get("extconsta2usestep", False))
-    
-        # coords 필드 생성 (rawy + a4)
+        use_step = bool(st.session_state.get("ext_const_a2_use_step", False))
+
+        # coords 필드 생성 (raw_y + a4)
         for nd in nodes:
-            nd["coords"] = float(nd.get("rawy", 0.0)) + float(nd.get("a4", 0.0))
-    
+            nd["coords"] = float(nd.get("raw_y", 0.0)) + float(nd.get("a4", 0.0))
+
         if use_step:
             _apply_const_speed_profile_on_nodes(
-                nodes=nodes, axis_key="a2", coord_key="coords",
-                coord_min=float(ymin), coord_max=float(ymax),
-                axis_at_min=float(a2_at_ymin), axis_at_max=float(a2_at_ymax),
-                speed_mms=float(speed_mms), eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only), travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
+                nodes=nodes,
+                axis_key="a2",
+                coord_key="coords",
+                coord_min=float(y_min),
+                coord_max=float(y_max),
+                axis_at_min=float(a2_at_ymin),
+                axis_at_max=float(a2_at_ymax),
+                speed_mm_s=float(speed_mm_s),
+                eps_mm=float(boundary_eps_mm),
+                apply_print_only=bool(apply_print_only),
+                travel_interp=bool(travel_interp),
+                step_mm=float(st.session_state.get("ext_const_a2_step_mm", 60.0)),
                 step_round="floor",
             )
         else:
             _apply_const_speed_profile_on_nodes(
-                nodes=nodes, axis_key="a2", coord_key="rawy",  # ← 핵심 수정
-                coord_min=float(ymin), coord_max=float(ymax),
-                axis_at_min=float(a2_at_ymin), axis_at_max=float(a2_at_ymax),
-                speed_mms=float(speed_mms), eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only), travel_interp=bool(travel_interp),
+                nodes=nodes,
+                axis_key="a2",
+                coord_key="raw_y",
+                coord_min=float(y_min),
+                coord_max=float(y_max),
+                axis_at_min=float(a2_at_ymin),
+                axis_at_max=float(a2_at_ymax),
+                speed_mm_s=float(speed_mm_s),
+                eps_mm=float(boundary_eps_mm),
+                apply_print_only=bool(apply_print_only),
+                travel_interp=bool(travel_interp),
             )
     else:
         for nd in nodes:
             nd["a2"] = 0.0
+
 
 
     lines_out = []
