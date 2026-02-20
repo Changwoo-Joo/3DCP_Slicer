@@ -1419,9 +1419,9 @@ def gcode_to_cone1500_module(
             "a4": float(a4_list[i]),
             "extr": bool(is_extruding_list[i]),
         })
-    # (추가) A2용 좌표: S = rawy + a4
+    # (수정됨) A2용 좌표: S = Y(출력) + A4
     for nd in nodes:
-        nd["coord_s"] = float(nd.get("rawy", 0.0)) + float(nd.get("a4", 0.0))
+        nd["coord_s"] = float(nd.get("y", 0.0)) + float(nd.get("a4", 0.0))
 
     # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
@@ -1442,14 +1442,13 @@ def gcode_to_cone1500_module(
         for nd in nodes:
             nd["a1"] = 0.0
 
-
     if bool(enable_a2_const):
         use_step = bool(st.session_state.get("extconsta2usestep", False))
         if use_step:
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="coord_s",   # (변경) rawy 대신 (rawy + a4)
+                coord_key="coord_s",   # Y + A4 합산 좌표 사용
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
@@ -1458,14 +1457,14 @@ def gcode_to_cone1500_module(
                 eps_mm=float(boundary_eps_mm),
                 apply_print_only=bool(apply_print_only),
                 travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),  # (추가)
+                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
                 step_round="floor",
             )
         else:
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="rawy",      # (기존 방식 유지)
+                coord_key="raw_y",      # 오타(rawy -> raw_y) 수정 완료
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
@@ -1475,8 +1474,6 @@ def gcode_to_cone1500_module(
                 apply_print_only=bool(apply_print_only),
                 travel_interp=bool(travel_interp),
             )
-
-    
     else:
         for nd in nodes:
             nd["a2"] = 0.0
