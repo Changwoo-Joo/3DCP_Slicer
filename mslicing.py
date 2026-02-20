@@ -1102,20 +1102,21 @@ def _apply_const_speed_profile_on_nodes(
         if _at_max(c):
             return float(axis_at_max)
 
-        t = (c - coord_min) / span_abs
-        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-
         dt = float(step_mm) / span_abs if step_mm is not None else 0.0
         if dt <= 1e-12:
             return _snap_linear(c)
 
+        # [수정됨] 부동소수점 연산 오차 방지 (60.0이 59.9999로 계산되는 현상 방지)
+        t_step = (c - coord_min) / float(step_mm)
+        
         if step_round == "round":
-            tq = round(t / dt) * dt
+            idx = round(t_step)
         elif step_round == "ceil":
-            tq = math.ceil(t / dt) * dt
+            idx = math.ceil(t_step)
         else:  # "floor"
-            tq = math.floor(t / dt) * dt
+            idx = math.floor(t_step + 1e-9)
 
+        tq = idx * dt
         tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
         return float(axis_at_min + tq * (axis_at_max - axis_at_min))
 
@@ -1144,6 +1145,18 @@ def _apply_const_speed_profile_on_nodes(
         if apply_print_only:
             active = bool(extr_node[i - 1])
 
+        # === [추가됨: 계단(Step) 모드일 때는 상대거리 무시하고 무조건 절대좌표 계산] ===
+        if use_step:
+            if not active:
+                aj = ai
+            else:
+                aj = float(snap_for_coord(cj))
+            nodes[i][axis_key] = aj
+            ai = aj
+            continue
+        # =========================================================================
+
+        # 기존 연속(등속 왕복) 모드 로직
         dcoord = float(cj - ci)
 
         if abs(dcoord) < float(deadband_mm):
@@ -1205,8 +1218,6 @@ def _apply_const_speed_profile_on_nodes(
                     u = (kk + 1) / float(total + 1)
                     nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
-        elif _at_max(c):
-            nodes[i][axis_key] = float(axis_at_max)
 
 # =========================
 # Rapid Converter (UPDATED)
