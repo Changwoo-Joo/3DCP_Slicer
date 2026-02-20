@@ -1096,15 +1096,13 @@ def _apply_const_speed_profile_on_nodes(
 
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-    # 1차 패스: 절대 좌표 1:1 직접 매핑
     for i in range(n):
         c_val = float(nodes[i].get(coord_key, 0.0))
         if apply_print_only and not extr_node[i]:
-            nodes[i][axis_key] = None  # travel → 나중에 보간
+            nodes[i][axis_key] = None
         else:
             nodes[i][axis_key] = _map(c_val)
 
-    # 양끝 None 처리
     if nodes[0][axis_key] is None:
         for k in range(n):
             if nodes[k][axis_key] is not None:
@@ -1121,7 +1119,6 @@ def _apply_const_speed_profile_on_nodes(
         else:
             nodes[-1][axis_key] = float(axis_at_min)
 
-    # 2차 패스: travel 구간 보간
     if apply_print_only:
         i = 0
         while i < n:
