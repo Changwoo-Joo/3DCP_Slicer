@@ -1040,6 +1040,9 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
 #   - 물결(Wavy) 패턴에서도 좌표가 뒤로 가면 A축 값도 1:1로 되돌아감 (드리프트/누적현상 완벽해결)
 #   - 스텝(Step) 모드 완벽 지원
 # =========================
+# =========================
+# ✅ (FIX) A1/A2 Constant-Speed profile (Absolute Mapping)
+# =========================
 def _apply_const_speed_profile_on_nodes(
     nodes: List[Dict[str, Any]],
     axis_key: str,
@@ -1504,7 +1507,7 @@ if KEY_OK:
             )
             # (추가) A2를 (Y + A4) 기준으로 계단식 적용
             if "extconsta2usestep" not in st.session_state:
-                st.session_state.extconsta2usestep = True
+                st.session_state.extconsta2usestep = False
             if "extconsta2stepmm" not in st.session_state:
                 st.session_state.extconsta2stepmm = 60.0
             
