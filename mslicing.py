@@ -1035,11 +1035,10 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
     return cnt
 
 # =========================
-# ✅ (FIX) A1/A2 Constant-Speed profile (robust)
-#   - 경계(xmin/xmax, ymin/ymax) 없어도 고정되지 않음
-#   - A1: raw_x의 |ΔX|만으로 진행 (Y로는 절대 진행 X)
-#   - A2: raw_y의 |ΔY|만으로 진행
-#   - 경계에 "있을 때"는 정확히 스냅/홀드, 경계에서 "벗어나는 순간"은 바로 진행
+# ✅ (FIX) A1/A2 Constant-Speed profile (Absolute Mapping)
+#   - 누적 이동거리가 아닌 1:1 절대 좌표(Absolute Mapping) 방식으로 변경
+#   - 물결(Wavy) 패턴에서도 좌표가 뒤로 가면 A축 값도 1:1로 되돌아감 (드리프트/누적현상 완벽해결)
+#   - 스텝(Step) 모드 완벽 지원
 # =========================
 def _apply_const_speed_profile_on_nodes(
     nodes: List[Dict[str, Any]],
@@ -1050,12 +1049,12 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
-    deadband_mm: float = 1.0,
+    deadband_mm: float = 11.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
-    step_mm: float = 0.0,             # (추가) 0이면 기존처럼 연속, >0이면 계단
-    step_round: str = "floor",        # (추가) "floor" / "round" / "ceil"
+    step_mm: float = 0.0,
+    step_round: str = "floor"
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
@@ -1067,158 +1066,110 @@ def _apply_const_speed_profile_on_nodes(
     coord_max = float(coord_max)
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
-    eps = float(max(0.0, eps_mm))
-
+    
     span = float(coord_max - coord_min)
     span_abs = abs(span)
+    
+    # Min/Max가 동일하거나 설정 오류인 경우 최소값으로 고정
     if span_abs <= 1e-9:
         for nd in nodes:
             nd[axis_key] = float(axis_at_min)
         return
 
-    axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
-
-    def _coord(i: int) -> float:
-        return float(nodes[i].get(coord_key, 0.0))
-
-    def _at_min(c: float) -> bool:
-        return c <= coord_min + eps
-
-    def _at_max(c: float) -> bool:
-        return c >= coord_max - eps
-
-    def _snap_linear(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
-        t = (c - coord_min) / span_abs
-        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-        return float(axis_at_min + t * (axis_at_max - axis_at_min))
-
-    def _snap_step(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
-
-        dt = float(step_mm) / span_abs if step_mm is not None else 0.0
-        if dt <= 1e-12:
-            return _snap_linear(c)
-
-        # [수정됨] 부동소수점 연산 오차 방지 (60.0이 59.9999로 계산되는 현상 방지)
-        t_step = (c - coord_min) / float(step_mm)
-        
-        if step_round == "round":
-            idx = round(t_step)
-        elif step_round == "ceil":
-            idx = math.ceil(t_step)
-        else:  # "floor"
-            idx = math.floor(t_step + 1e-9)
-
-        tq = idx * dt
-        tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
-        return float(axis_at_min + tq * (axis_at_max - axis_at_min))
-
     use_step = (step_mm is not None) and (float(step_mm) > 0.0)
-    snap_for_coord = _snap_step if use_step else _snap_linear
+    dt = float(step_mm) / span_abs if use_step else 0.0
+
+    # 1:1 절대 좌표 매핑 내부 함수
+    def _get_mapped_value(c: float) -> float:
+        # 1. 현재 좌표가 전체 구간(span) 중 어디쯤 있는지 비율(t) 계산 (0.0 ~ 1.0)
+        t = (c - coord_min) / span
+        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        
+        # 2. 스텝 모드(계단형) 적용
+        if use_step and dt > 1e-12:
+            if step_round == "round":
+                tq = round(t / dt) * dt
+            elif step_round == "ceil":
+                tq = math.ceil(t / dt) * dt
+            else:  # "floor"
+                tq = math.floor(t / dt) * dt
+            
+            # 양자화 후 범위 이탈 방지
+            tq = 0.0 if tq < 0.0 else (1.0 if tq > 1.0 else tq)
+            return float(axis_at_min + tq * (axis_at_max - axis_at_min))
+        else:
+            # 3. 선형 연속 모드 적용
+            return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
-
-    c0 = _coord(0)
-    nodes[0][axis_key] = float(snap_for_coord(c0))
-
-    if _at_min(c0):
-        dir_mode = "fwd"
-    elif _at_max(c0):
-        dir_mode = "bwd"
-    else:
-        dir_mode = "fwd"
-
-    ai = float(nodes[0][axis_key])
-
-    for i in range(1, n):
-        ci = _coord(i - 1)
-        cj = _coord(i)
-
+    
+    # 1차 패스: 절대 좌표를 기반으로 모든 노드에 A축 값 1:1 직접 매핑
+    for i in range(n):
+        nd = nodes[i]
+        c_val = float(nd.get(coord_key, 0.0))
+        
         active = True
         if apply_print_only:
-            active = bool(extr_node[i - 1])
-
-        # === [추가됨: 계단(Step) 모드일 때는 상대거리 무시하고 무조건 절대좌표 계산] ===
-        if use_step:
-            if not active:
-                aj = ai
-            else:
-                aj = float(snap_for_coord(cj))
-            nodes[i][axis_key] = aj
-            ai = aj
-            continue
-        # =========================================================================
-
-        # 기존 연속(등속 왕복) 모드 로직
-        dcoord = float(cj - ci)
-
-        if abs(dcoord) < float(deadband_mm):
-            nodes[i][axis_key] = float(ai)
-            continue
-
-        if (not active) or abs(dcoord) <= 1e-12:
-            aj = ai
+            active = extr_node[i]
+            
+        if active or not apply_print_only:
+            nd[axis_key] = _get_mapped_value(c_val)
         else:
-            if use_step:
-                # ✅ 스텝 모드: 목적지 좌표(cj)를 직접 계단 양자화
-                aj = snap_for_coord(cj)
-            elif _at_min(cj):
-                aj = float(axis_at_min)
-                dir_mode = "fwd"
-            elif _at_max(cj):
-                aj = float(axis_at_max)
-                dir_mode = "bwd"
-            else:
-                step = float(axis_per_mm) * abs(dcoord)
-                aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
-                lo = min(float(axis_at_min), float(axis_at_max))
-                hi = max(float(axis_at_min), float(axis_at_max))
-                if aj < lo:
-                    aj = lo
-                if aj > hi:
-                    aj = hi
+            # 비활성(Travel) 구간은 나중에 보간하기 위해 임시로 None 할당
+            nd[axis_key] = None
 
-        nodes[i][axis_key] = float(aj)
-        ai = float(aj)
+    # 2차 패스: Travel 구간 처리 (apply_print_only == True 인 경우)
+    if apply_print_only:
+        # 양끝단 예외 처리 (첫 노드나 끝 노드가 travel일 경우 붕 뜨는 것 방지)
+        if nodes[0][axis_key] is None:
+            first_val = float(axis_at_min)
+            for k in range(n):
+                if nodes[k][axis_key] is not None:
+                    first_val = nodes[k][axis_key]
+                    break
+            nodes[0][axis_key] = first_val
+            
+        if nodes[-1][axis_key] is None:
+            last_val = float(axis_at_min)
+            for k in range(n - 1, -1, -1):
+                if nodes[k][axis_key] is not None:
+                    last_val = nodes[k][axis_key]
+                    break
+            nodes[-1][axis_key] = last_val
 
-    # travel 구간 보간(기존 동작 유지)
-    if travel_interp and apply_print_only:
-        active_node = extr_node
-        if any(active_node):
+        # 빈 공간 보간 (Travel Interpolation)
+        if travel_interp:
             i = 0
             while i < n:
-                if active_node[i]:
+                if nodes[i][axis_key] is not None:
                     i += 1
                     continue
+                
+                # None(Travel) 구간 시작점 찾기
                 t0 = i
-                while i < n and not active_node[i]:
+                while i < n and nodes[i][axis_key] is None:
                     i += 1
                 t1 = i - 1
-
-                prev_idx = t0 - 1 if (t0 - 1) >= 0 else None
+                
+                prev_idx = t0 - 1
                 next_idx = i if i < n else None
+                
+                val_start = nodes[prev_idx][axis_key]
+                val_end = nodes[next_idx][axis_key] if next_idx is not None else val_start
+                
+                steps = t1 - t0 + 2
+                for k in range(t0, t1 + 1):
+                    fraction = (k - prev_idx) / steps
+                    nodes[k][axis_key] = val_start + fraction * (val_end - val_start)
+        else:
+            # 보간 안 함 (Hold 이전 값)
+            curr_val = nodes[0][axis_key]
+            for i in range(n):
+                if nodes[i][axis_key] is None:
+                    nodes[i][axis_key] = curr_val
+                else:
+                    curr_val = nodes[i][axis_key]
 
-                if prev_idx is None or next_idx is None:
-                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else (
-                        float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
-                    )
-                    for k in range(t0, t1 + 1):
-                        nodes[k][axis_key] = base
-                    continue
-
-                a0 = float(nodes[prev_idx][axis_key])
-                a1 = float(nodes[next_idx][axis_key])
-                total = max(1, (t1 - t0 + 1))
-                for kk, k in enumerate(range(t0, t1 + 1)):
-                    u = (kk + 1) / float(total + 1)
-                    nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
 
 # =========================
