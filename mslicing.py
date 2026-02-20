@@ -1142,8 +1142,6 @@ def _apply_const_speed_profile_on_nodes(
                 nodes[k][axis_key] = v_start + frac * (v_end - v_start)
 
 
-
-
 # =========================
 # Rapid Converter (UPDATED)
 # =========================
