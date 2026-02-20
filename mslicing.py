@@ -1166,7 +1166,10 @@ def _apply_const_speed_profile_on_nodes(
         if (not active) or abs(dcoord) <= 1e-12:
             aj = ai
         else:
-            if _at_min(cj):
+            if use_step:
+                # ✅ 스텝 모드: 목적지 좌표(cj)를 직접 계단 양자화
+                aj = snap_for_coord(cj)
+            elif _at_min(cj):
                 aj = float(axis_at_min)
                 dir_mode = "fwd"
             elif _at_max(cj):
@@ -1175,7 +1178,6 @@ def _apply_const_speed_profile_on_nodes(
             else:
                 step = float(axis_per_mm) * abs(dcoord)
                 aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
-
                 lo = min(float(axis_at_min), float(axis_at_max))
                 hi = max(float(axis_at_min), float(axis_at_max))
                 if aj < lo:
