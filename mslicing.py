@@ -1442,13 +1442,20 @@ def gcode_to_cone1500_module(
         for nd in nodes:
             nd["a1"] = 0.0
 
+
+    # --- A2 constant-speed profile (FIXED: always use coords = raw_y + a4) ---
     if bool(enable_a2_const):
         use_step = bool(st.session_state.get("extconsta2usestep", False))
+    
+        # Always build coords = raw_y + a4
+        for nd in nodes:
+            nd["coords"] = float(nd.get("rawy", 0.0)) + float(nd.get("a4", 0.0))
+    
         if use_step:
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="coord_s",   # Y + A4 합산 좌표 사용
+                coord_key="coords",
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
@@ -1458,13 +1465,13 @@ def gcode_to_cone1500_module(
                 apply_print_only=bool(apply_print_only),
                 travel_interp=bool(travel_interp),
                 step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
-                step_round="floor",
+                stepround="floor",
             )
         else:
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="raw_y",      # 오타(rawy -> raw_y) 수정 완료
+                coord_key="coords",  # <-- was "rawy"
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
