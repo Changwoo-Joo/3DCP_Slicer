@@ -1471,7 +1471,7 @@ def gcode_to_cone1500_module(
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="coords",  # <-- was "rawy"
+                coord_key="rawy",
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
