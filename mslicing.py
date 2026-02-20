@@ -1054,7 +1054,7 @@ def _apply_const_speed_profile_on_nodes(
     apply_print_only: bool = False,
     travel_interp: bool = True,
     step_mm: float = 0.0,
-    step_round: str = "floor"
+    step_round: str = "floor",
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
@@ -1066,11 +1066,9 @@ def _apply_const_speed_profile_on_nodes(
     coord_max = float(coord_max)
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
-    
+
     span = float(coord_max - coord_min)
     span_abs = abs(span)
-    
-    # Min/Max가 동일하거나 설정 오류인 경우 최소값으로 고정
     if span_abs <= 1e-9:
         for nd in nodes:
             nd[axis_key] = float(axis_at_min)
@@ -1079,96 +1077,67 @@ def _apply_const_speed_profile_on_nodes(
     use_step = (step_mm is not None) and (float(step_mm) > 0.0)
     dt = float(step_mm) / span_abs if use_step else 0.0
 
-    # 1:1 절대 좌표 매핑 내부 함수
-    def _get_mapped_value(c: float) -> float:
-        # 1. 현재 좌표가 전체 구간(span) 중 어디쯤 있는지 비율(t) 계산 (0.0 ~ 1.0)
+    def _map(c: float) -> float:
         t = (c - coord_min) / span
         t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-        
-        # 2. 스텝 모드(계단형) 적용
         if use_step and dt > 1e-12:
             if step_round == "round":
                 tq = round(t / dt) * dt
             elif step_round == "ceil":
                 tq = math.ceil(t / dt) * dt
-            else:  # "floor"
+            else:
                 tq = math.floor(t / dt) * dt
-            
-            # 양자화 후 범위 이탈 방지
             tq = 0.0 if tq < 0.0 else (1.0 if tq > 1.0 else tq)
             return float(axis_at_min + tq * (axis_at_max - axis_at_min))
-        else:
-            # 3. 선형 연속 모드 적용
-            return float(axis_at_min + t * (axis_at_max - axis_at_min))
+        return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
-    
-    # 1차 패스: 절대 좌표를 기반으로 모든 노드에 A축 값 1:1 직접 매핑
+
+    # 1차 패스: 절대 좌표 1:1 직접 매핑
     for i in range(n):
-        nd = nodes[i]
-        c_val = float(nd.get(coord_key, 0.0))
-        
-        active = True
-        if apply_print_only:
-            active = extr_node[i]
-            
-        if active or not apply_print_only:
-            nd[axis_key] = _get_mapped_value(c_val)
+        c_val = float(nodes[i].get(coord_key, 0.0))
+        if apply_print_only and not extr_node[i]:
+            nodes[i][axis_key] = None  # travel → 나중에 보간
         else:
-            # 비활성(Travel) 구간은 나중에 보간하기 위해 임시로 None 할당
-            nd[axis_key] = None
+            nodes[i][axis_key] = _map(c_val)
 
-    # 2차 패스: Travel 구간 처리 (apply_print_only == True 인 경우)
+    # 양끝 None 처리
+    if nodes[0][axis_key] is None:
+        for k in range(n):
+            if nodes[k][axis_key] is not None:
+                nodes[0][axis_key] = nodes[k][axis_key]
+                break
+        else:
+            nodes[0][axis_key] = float(axis_at_min)
+
+    if nodes[-1][axis_key] is None:
+        for k in range(n - 1, -1, -1):
+            if nodes[k][axis_key] is not None:
+                nodes[-1][axis_key] = nodes[k][axis_key]
+                break
+        else:
+            nodes[-1][axis_key] = float(axis_at_min)
+
+    # 2차 패스: travel 구간 보간
     if apply_print_only:
-        # 양끝단 예외 처리 (첫 노드나 끝 노드가 travel일 경우 붕 뜨는 것 방지)
-        if nodes[0][axis_key] is None:
-            first_val = float(axis_at_min)
-            for k in range(n):
-                if nodes[k][axis_key] is not None:
-                    first_val = nodes[k][axis_key]
-                    break
-            nodes[0][axis_key] = first_val
-            
-        if nodes[-1][axis_key] is None:
-            last_val = float(axis_at_min)
-            for k in range(n - 1, -1, -1):
-                if nodes[k][axis_key] is not None:
-                    last_val = nodes[k][axis_key]
-                    break
-            nodes[-1][axis_key] = last_val
+        i = 0
+        while i < n:
+            if nodes[i][axis_key] is not None:
+                i += 1
+                continue
+            t0 = i
+            while i < n and nodes[i][axis_key] is None:
+                i += 1
+            t1 = i - 1
+            prev_idx = t0 - 1
+            next_idx = i if i < n else t1
+            v_start = nodes[prev_idx][axis_key]
+            v_end = nodes[next_idx][axis_key]
+            steps = t1 - t0 + 2
+            for k in range(t0, t1 + 1):
+                frac = (k - prev_idx) / steps
+                nodes[k][axis_key] = v_start + frac * (v_end - v_start)
 
-        # 빈 공간 보간 (Travel Interpolation)
-        if travel_interp:
-            i = 0
-            while i < n:
-                if nodes[i][axis_key] is not None:
-                    i += 1
-                    continue
-                
-                # None(Travel) 구간 시작점 찾기
-                t0 = i
-                while i < n and nodes[i][axis_key] is None:
-                    i += 1
-                t1 = i - 1
-                
-                prev_idx = t0 - 1
-                next_idx = i if i < n else None
-                
-                val_start = nodes[prev_idx][axis_key]
-                val_end = nodes[next_idx][axis_key] if next_idx is not None else val_start
-                
-                steps = t1 - t0 + 2
-                for k in range(t0, t1 + 1):
-                    fraction = (k - prev_idx) / steps
-                    nodes[k][axis_key] = val_start + fraction * (val_end - val_start)
-        else:
-            # 보간 안 함 (Hold 이전 값)
-            curr_val = nodes[0][axis_key]
-            for i in range(n):
-                if nodes[i][axis_key] is None:
-                    nodes[i][axis_key] = curr_val
-                else:
-                    curr_val = nodes[i][axis_key]
 
 
 
