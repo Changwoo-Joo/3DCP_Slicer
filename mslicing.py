@@ -1413,8 +1413,8 @@ def gcode_to_cone1500_module(
             coord_max=float(x_max),
             axis_at_min=float(a1_at_xmin),
             axis_at_max=float(a1_at_xmax),
-            speed_mm_s=float(speed_mm_s),
-            eps_mm=float(boundary_eps_mm),
+            speed_mm_s=float(speed_mm_s),  # ← 여기!
+            eps_mm=float(boundary_eps_mm), # ← 여기!
             apply_print_only=bool(apply_print_only),
             travel_interp=bool(travel_interp),
         )
@@ -1447,6 +1447,7 @@ def gcode_to_cone1500_module(
                 step_mm=float(st.session_state.get("ext_const_a2_step_mm", 60.0)),
                 step_round="floor",
             )
+
         else:
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
