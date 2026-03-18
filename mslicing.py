@@ -1160,11 +1160,21 @@ def _apply_const_speed_profile_on_nodes(
                 aj = float(axis_at_max)
                 dir_mode = "bwd"
             else:
-                step = float(axis_per_mm) * abs(dcoord)
-                aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
+                if axis_key == "a1":
+                    # [수정] A1축: 전체 진행 방향(dir_mode)과 순간 이동 방향(dcoord)이 일치할 때만 A1 이동
+                    if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
+                        step = float(axis_per_mm) * abs(dcoord)
+                        aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
+                    else:
+                        aj = ai  # 역방향 움직임 발생 시 A1은 정지 (현재 위치 유지, 로봇이 소화)
+                else:
+                    # 다른 축(A2 등)은 기존 로직 절대 건드리지 않고 그대로 유지
+                    step = float(axis_per_mm) * abs(dcoord)
+                    aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
 
                 lo = min(float(axis_at_min), float(axis_at_max))
                 hi = max(float(axis_at_min), float(axis_at_max))
+`
                 if aj < lo:
                     aj = lo
                 if aj > hi:
