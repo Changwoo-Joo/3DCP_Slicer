@@ -1127,6 +1127,7 @@ def _apply_const_speed_profile_on_nodes(
     c0 = _coord(0)
     nodes[0][axis_key] = float(snap_for_coord(c0))
 
+    # 초기 진행 방향
     if _at_min(c0):
         dir_mode = "fwd"
     elif _at_max(c0):
@@ -1134,26 +1135,40 @@ def _apply_const_speed_profile_on_nodes(
     else:
         dir_mode = "fwd"
 
+    # 매크로 왕복 추적용 상태
+    macro_peak = c0
+    macro_valley = c0
+    turn_thresh = max(float(deadband_mm) * 3.0, span_abs * 0.05)  # 예: 4000 span이면 200mm
+
     ai = float(nodes[0][axis_key])
 
     for i in range(1, n):
         ci = _coord(i - 1)
         cj = _coord(i)
 
-        # ==========================================
-        # [NEW] Z축 높이가 바뀌면 새로운 레이어의 주 방향으로 dir_mode를 리셋
-        # ==========================================
-        zi = float(nodes[i-1].get("z", 0.0))
+        # 새 레이어 시작 시 방향 리셋
+        zi = float(nodes[i - 1].get("z", 0.0))
         zj = float(nodes[i].get("z", 0.0))
         if abs(zj - zi) > 1e-4:
-            # 다음 50개 포인트의 위치를 확인하여 새 레이어의 전체 진행 방향 파악
             idx_next = min(n - 1, i + 50)
-            c_next = float(nodes[idx_next].get(coord_key, 0.0))
-            if (c_next - cj) >= 0:
-                dir_mode = "fwd"
-            else:
+            c_next = float(nodes[idx_next].get(coord_key, cj))
+            dir_mode = "fwd" if (c_next - cj) >= 0.0 else "bwd"
+            macro_peak = cj
+            macro_valley = cj
+
+        # 경계에 정확히 안 닿아도, 충분한 반전이 생기면 왕복 방향 전환
+        if dir_mode == "fwd":
+            if cj > macro_peak:
+                macro_peak = cj
+            elif (macro_peak - cj) >= turn_thresh:
                 dir_mode = "bwd"
-        # ==========================================
+                macro_valley = cj
+        else:
+            if cj < macro_valley:
+                macro_valley = cj
+            elif (cj - macro_valley) >= turn_thresh:
+                dir_mode = "fwd"
+                macro_peak = cj
 
         active = True
         if apply_print_only:
@@ -1162,7 +1177,6 @@ def _apply_const_speed_profile_on_nodes(
         dcoord = float(cj - ci)
 
         if abs(dcoord) < float(deadband_mm):
-
             nodes[i][axis_key] = float(ai)
             continue
 
@@ -1172,18 +1186,23 @@ def _apply_const_speed_profile_on_nodes(
             if _at_min(cj):
                 aj = float(axis_at_min)
                 dir_mode = "fwd"
+                macro_peak = cj
+                macro_valley = cj
+
             elif _at_max(cj):
                 aj = float(axis_at_max)
                 dir_mode = "bwd"
+                macro_peak = cj
+                macro_valley = cj
+
             else:
-                # A1/A2 공통: 진행 방향과 순간 이동 방향이 일치할 때만 이동 (역방향 정지)
+                # 현재 왕복 방향과 같은 방향일 때만 축 이동
                 if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
                     step = float(axis_per_mm) * abs(dcoord)
                     aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
                 else:
                     aj = ai
 
-                # 최대/최소값 제한
                 lo = min(float(axis_at_min), float(axis_at_max))
                 hi = max(float(axis_at_min), float(axis_at_max))
                 if aj < lo:
@@ -1191,13 +1210,19 @@ def _apply_const_speed_profile_on_nodes(
                 if aj > hi:
                     aj = hi
 
-                # A1/A2 공통: 끝점에 도달하면 다음 진행 방향으로 강제 전환
+                # 축이 실제 끝점에 닿은 경우도 방향 전환
                 if abs(aj - float(axis_at_min)) <= 1e-9:
                     dir_mode = "fwd"
+                    macro_peak = cj
+                    macro_valley = cj
                 elif abs(aj - float(axis_at_max)) <= 1e-9:
                     dir_mode = "bwd"
-                        
+                    macro_peak = cj
+                    macro_valley = cj
+
         nodes[i][axis_key] = float(aj)
+        ai = float(aj)
+
         ai = float(aj)
 
     # travel 구간 보간(기존 동작 유지)
