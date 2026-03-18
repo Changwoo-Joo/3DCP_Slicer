@@ -1423,50 +1423,32 @@ def gcode_to_cone1500_module(
             nd["a1"] = 0.0
 
 
-    # --- A2 constant-speed profile (FIXED: always use coords = raw_y + a4) ---
+    # --- A2 constant-speed profile (FIXED: 무조건 Y+A4 이동량 기반 스텝 적용) ---
     if bool(enable_a2_const):
-        use_step = bool(st.session_state.get("ext_const_a2_use_step", False))
+        step_mm = float(st.session_state.get("extconsta2stepmm", 60.0))
 
-        # coords 필드 생성 (raw_y + a4)
+        # nodes의 좌표를 raw_y + a4 로 강제 설정
         for nd in nodes:
             nd["coords"] = float(nd.get("raw_y", 0.0)) + float(nd.get("a4", 0.0))
 
-        if use_step:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="coords",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("ext_const_a2_step_mm", 60.0)),
-                step_round="floor",
-            )
-
-        else:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-            )
+        _apply_const_speed_profile_on_nodes(
+            nodes=nodes,
+            axis_key="a2",
+            coord_key="coords",
+            coord_min=float(y_min),
+            coord_max=float(y_max),
+            axis_at_min=float(a2_at_ymin),
+            axis_at_max=float(a2_at_ymax),
+            speed_mm_s=float(speed_mm_s),
+            eps_mm=float(boundary_eps_mm),
+            apply_print_only=bool(apply_print_only),
+            travel_interp=bool(travel_interp),
+            step_mm=step_mm,
+            step_round="floor",
+        )
     else:
         for nd in nodes:
             nd["a2"] = 0.0
-
-
 
     lines_out = []
     for nd in nodes:
@@ -1529,75 +1511,70 @@ if KEY_OK:
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-        with st.sidebar.expander("External Axis (A1/A2 등속 왕복 · 경계정지)", expanded=True):
-            st.caption("A1은 raw X, A2는 raw Y 기준. A1은 |ΔX|로만, A2는 |ΔY|로만 진행합니다. "
-                       "X가 xmin/xmax에 '있을 때'는 A1 고정, 경계에서 '벗어나면' 바로 진행합니다.")
+        with st.sidebar.expander("외부 축 (A1/A2) 왕복 설정", expanded=True):
+            st.caption("A1은 X축, A2는 Y+A4축 기준으로 등속 왕복합니다. 설정된 범위(min/max) 끝에 도달하면 방향을 바꿉니다.")
 
             st.session_state.ext_const_speed_mm_s = st.number_input(
-                "Axis speed base (mm/s)",
+                "축 이동 속도 (mm/s)",
                 min_value=1.0, max_value=2000.0,
-                value=float(st.session_state.ext_const_speed_mm_s),
-                step=10.0, format="%.1f"
+                value=float(st.session_state.get("ext_const_speed_mm_s", 200.0)),
+                step=10.0, format="%.1f",
+                help="A1, A2 축이 왕복하는 기본 속도입니다."
             )
             st.session_state.ext_const_eps_mm = st.number_input(
-                "Boundary snap/hold eps (mm)",
+                "경계 인식 오차 (mm)",
                 min_value=0.0, max_value=50.0,
-                value=float(st.session_state.ext_const_eps_mm),
-                step=0.1, format="%.2f"
+                value=float(st.session_state.get("ext_const_eps_mm", 0.50)),
+                step=0.1, format="%.2f",
+                help="로봇이 경계(min/max)에 도달했다고 판단하는 오차 범위입니다. (권장: 0.5mm)"
             )
             st.session_state.ext_const_apply_print_only = st.checkbox(
-                "Apply printing-only blocks (E 증가 구간만)",
-                value=bool(st.session_state.ext_const_apply_print_only)
+                "출력 구간(압출)에만 적용",
+                value=bool(st.session_state.get("ext_const_apply_print_only", False)),
+                help="체크 시 실제 콘크리트를 압출하는 구간(E 증가)에서만 축이 이동합니다."
             )
-            # (추가) A2를 (Y + A4) 기준으로 계단식 적용
-            if "extconsta2usestep" not in st.session_state:
-                st.session_state.extconsta2usestep = False
+            
             if "extconsta2stepmm" not in st.session_state:
                 st.session_state.extconsta2stepmm = 60.0
-            
-            st.session_state.extconsta2usestep = st.checkbox(
-                "A2 step mode uses (Y + A4)",
-                value=bool(st.session_state.extconsta2usestep),
-            )
-            
             st.session_state.extconsta2stepmm = st.number_input(
-                "A2 step length (Y+A4) mm",
+                "A2 왕복 스텝 간격 (Y+A4 이동량 기준, mm)",
                 min_value=0.0,
                 max_value=10000.0,
                 value=float(st.session_state.extconsta2stepmm),
                 step=1.0,
                 format="%.3f",
-                disabled=not bool(st.session_state.extconsta2usestep),
+                help="A2 축이 방향을 바꾸기 위해 필요한 Y+A4의 누적 이동 거리입니다."
             )
 
             st.session_state.ext_const_travel_interp = st.checkbox(
-                "Interpolate across travel blocks",
-                value=bool(st.session_state.ext_const_travel_interp)
+                "비출력(Travel) 구간 부드럽게 연결",
+                value=bool(st.session_state.get("ext_const_travel_interp", True)),
+                help="비출력 이동 구간을 지날 때 축의 움직임이 튀지 않고 부드럽게 이어지도록 보간합니다."
             )
 
-            st.markdown("**A1 (raw X → A1)**")
+            st.markdown("**A1 (X 좌표 기준)**")
             st.session_state.ext_const_enable_a1 = st.checkbox(
-                "Enable A1 constant-speed profile",
-                value=bool(st.session_state.ext_const_enable_a1)
+                "A1 왕복 적용",
+                value=bool(st.session_state.get("ext_const_enable_a1", True))
             )
             cols = st.columns(2)
-            st.session_state.ext_const_xmin = cols[0].number_input("Xmin (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
-            st.session_state.ext_const_xmax = cols[1].number_input("Xmax (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
+            st.session_state.ext_const_xmin = cols[0].number_input("최소 X (Xmin)", value=float(st.session_state.get("ext_const_xmin", 0.0)), step=50.0, format="%.3f")
+            st.session_state.ext_const_xmax = cols[1].number_input("최대 X (Xmax)", value=float(st.session_state.get("ext_const_xmax", 6000.0)), step=50.0, format="%.3f")
             cols2 = st.columns(2)
-            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input("A1 @ Xmin", value=float(st.session_state.ext_const_a1_at_xmin), step=50.0, format="%.3f")
-            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 @ Xmax", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
+            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input("Xmin일 때 A1", value=float(st.session_state.get("ext_const_a1_at_xmin", 4000.0)), step=50.0, format="%.3f")
+            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("Xmax일 때 A1", value=float(st.session_state.get("ext_const_a1_at_xmax", 0.0)), step=50.0, format="%.3f")
 
-            st.markdown("**A2 (raw Y → A2)**")
+            st.markdown("**A2 (Y+A4 기준)**")
             st.session_state.ext_const_enable_a2 = st.checkbox(
-                "Enable A2 constant-speed profile",
-                value=bool(st.session_state.ext_const_enable_a2)
+                "A2 왕복 적용",
+                value=bool(st.session_state.get("ext_const_enable_a2", True))
             )
             cols3 = st.columns(2)
-            st.session_state.ext_const_ymin = cols3[0].number_input("Ymin (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
-            st.session_state.ext_const_ymax = cols3[1].number_input("Ymax (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
+            st.session_state.ext_const_ymin = cols3[0].number_input("최소 Y (Ymin)", value=float(st.session_state.get("ext_const_ymin", 0.0)), step=50.0, format="%.3f")
+            st.session_state.ext_const_ymax = cols3[1].number_input("최대 Y (Ymax)", value=float(st.session_state.get("ext_const_ymax", 1000.0)), step=50.0, format="%.3f")
             cols4 = st.columns(2)
-            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("A2 @ Ymin", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f")
-            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 @ Ymax", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
+            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("Ymin일 때 A2", value=float(st.session_state.get("ext_const_a2_at_ymin", 0.0)), step=50.0, format="%.3f")
+            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("Ymax일 때 A2", value=float(st.session_state.get("ext_const_a2_at_ymax", 4000.0)), step=50.0, format="%.3f")
 
         with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
             st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
