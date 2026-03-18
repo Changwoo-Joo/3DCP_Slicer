@@ -1051,14 +1051,15 @@ def _apply_const_speed_profile_on_nodes(
     coord_max: float,
     axis_at_min: float,
     axis_at_max: float,
-    speed_mms: float = 200.0,
+    speed_mm_s: float = 200.0,
     deadband_mm: float = 11.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
     step_mm: float = 0.0,
-    step_round: str = 'floor',
+    step_round: str = "floor",
 ) -> None:
+
     if not nodes or axis_key not in ('a1', 'a2'):
         return
 
