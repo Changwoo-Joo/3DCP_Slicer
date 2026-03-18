@@ -1140,6 +1140,21 @@ def _apply_const_speed_profile_on_nodes(
         ci = _coord(i - 1)
         cj = _coord(i)
 
+        # ==========================================
+        # [NEW] Z축 높이가 바뀌면 새로운 레이어의 주 방향으로 dir_mode를 리셋
+        # ==========================================
+        zi = float(nodes[i-1].get("z", 0.0))
+        zj = float(nodes[i].get("z", 0.0))
+        if abs(zj - zi) > 1e-4:
+            # 다음 50개 포인트의 위치를 확인하여 새 레이어의 전체 진행 방향 파악
+            idx_next = min(n - 1, i + 50)
+            c_next = float(nodes[idx_next].get(coord_key, 0.0))
+            if (c_next - cj) >= 0:
+                dir_mode = "fwd"
+            else:
+                dir_mode = "bwd"
+        # ==========================================
+
         active = True
         if apply_print_only:
             active = bool(extr_node[i - 1])
@@ -1147,6 +1162,7 @@ def _apply_const_speed_profile_on_nodes(
         dcoord = float(cj - ci)
 
         if abs(dcoord) < float(deadband_mm):
+
             nodes[i][axis_key] = float(ai)
             continue
 
