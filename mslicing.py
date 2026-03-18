@@ -1051,16 +1051,17 @@ def _apply_const_speed_profile_on_nodes(
     coord_max: float,
     axis_at_min: float,
     axis_at_max: float,
-    speed_mm_s: float = 200.0,
+    speed_mms: float = 200.0,
     deadband_mm: float = 11.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
     step_mm: float = 0.0,
-    step_round: str = "floor",
+    step_round: str = 'floor',
 ) -> None:
-    if not nodes or axis_key not in ("a1", "a2"):
+    if not nodes or axis_key not in ('a1', 'a2'):
         return
+
     n = len(nodes)
     if n == 0:
         return
@@ -1072,30 +1073,31 @@ def _apply_const_speed_profile_on_nodes(
 
     span = float(coord_max - coord_min)
     span_abs = abs(span)
-    if span_abs <= 1e-9:
+    if span_abs < 1e-9:
         for nd in nodes:
             nd[axis_key] = float(axis_at_min)
         return
 
-    use_step = (step_mm is not None) and (float(step_mm) > 0.0)
+    use_step = (step_mm is not None and float(step_mm) > 0.0)
     dt = float(step_mm) / span_abs if use_step else 0.0
 
     def _map(c: float) -> float:
         t = (c - coord_min) / span
         t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
         if use_step and dt > 1e-12:
-            if step_round == "round":
-                tq = round(t / dt) * dt
-            elif step_round == "ceil":
-                tq = math.ceil(t / dt) * dt
+            if step_round == 'round':
+                t_q = round(t / dt) * dt
+            elif step_round == 'ceil':
+                t_q = math.ceil(t / dt) * dt
             else:
-                tq = math.floor(t / dt) * dt
-            tq = 0.0 if tq < 0.0 else (1.0 if tq > 1.0 else tq)
-            return float(axis_at_min + tq * (axis_at_max - axis_at_min))
+                t_q = math.floor(t / dt) * dt
+            t_q = 0.0 if t_q < 0.0 else (1.0 if t_q > 1.0 else t_q)
+            return float(axis_at_min + t_q * (axis_at_max - axis_at_min))
         return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
-    extr_node = [bool(nd.get("extr", False)) for nd in nodes]
+    extr_node = [bool(nd.get('extr', False)) for nd in nodes]
 
+    # 1차 매핑
     for i in range(n):
         c_val = float(nodes[i].get(coord_key, 0.0))
         if apply_print_only and not extr_node[i]:
@@ -1103,6 +1105,7 @@ def _apply_const_speed_profile_on_nodes(
         else:
             nodes[i][axis_key] = _map(c_val)
 
+    # 맨 앞단 / 맨 뒷단 빈값 채우기
     if nodes[0][axis_key] is None:
         for k in range(n):
             if nodes[k][axis_key] is not None:
@@ -1119,6 +1122,7 @@ def _apply_const_speed_profile_on_nodes(
         else:
             nodes[-1][axis_key] = float(axis_at_min)
 
+    # 출력 구간(E 증가 구간) 이외의 빈값을 보간(Travel Interpolation)
     if apply_print_only:
         i = 0
         while i < n:
@@ -1129,14 +1133,57 @@ def _apply_const_speed_profile_on_nodes(
             while i < n and nodes[i][axis_key] is None:
                 i += 1
             t1 = i - 1
+
             prev_idx = t0 - 1
             next_idx = i if i < n else t1
             v_start = nodes[prev_idx][axis_key]
             v_end = nodes[next_idx][axis_key]
+
             steps = t1 - t0 + 2
             for k in range(t0, t1 + 1):
                 frac = (k - prev_idx) / steps
                 nodes[k][axis_key] = v_start + frac * (v_end - v_start)
+
+    # ============================================================
+    # [추가됨] 역방향 방지 및 정지 구간 강제 전진 보간 필터
+    # ============================================================
+    vals = [nd[axis_key] for nd in nodes]
+    n_vals = len(vals)
+    
+    if n_vals > 0:
+        # A1/A2가 시작점에서 끝점으로 갈 때 값이 커지는 설정인지 확인
+        is_increasing = (float(axis_at_max) >= float(axis_at_min))
+        
+        # 1. 후진 쳐내기 -> 값이 변하지 않는 정지 구간으로 변환 (단조 증가/감소 강제)
+        mono_vals = [vals[0]]
+        for v in vals[1:]:
+            if is_increasing:
+                mono_vals.append(max(mono_vals[-1], v))
+            else:
+                mono_vals.append(min(mono_vals[-1], v))
+                
+        # 2. 정지 구간을 찾아서 부드러운 대각선 경사로 이어버림
+        i = 0
+        while i < n_vals - 1:
+            if mono_vals[i] == mono_vals[i+1]:
+                j = i + 1
+                while j < n_vals and mono_vals[j] == mono_vals[i]:
+                    j += 1
+                
+                # 완전히 마지막 노드까지 도달한 게 아니라면, 다음 위치까지 중간 지점들을 선형 보간
+                if j < n_vals:
+                    v_start = mono_vals[i]
+                    v_end = mono_vals[j]
+                    steps = j - i
+                    for k in range(i + 1, j):
+                        mono_vals[k] = v_start + (v_end - v_start) * ((k - i) / float(steps))
+                i = j
+            else:
+                i += 1
+                
+        # 3. 최종 값을 원래 nodes 리스트에 적용
+        for idx in range(n_vals):
+            nodes[idx][axis_key] = mono_vals[idx]
 
 
 # =========================
