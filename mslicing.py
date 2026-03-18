@@ -93,7 +93,7 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     for i in range(n):
         p = ring[i]
         q = ring[(i + 1) % n]
-        lens.append(float(np.linalg.norm(q - p)[:2]))
+        lens.append(float(np.linalg.norm((q - p)[:2])))
         
     total = float(sum(lens))
     if total <= trim_distance:
