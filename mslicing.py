@@ -1160,32 +1160,26 @@ def _apply_const_speed_profile_on_nodes(
                 aj = float(axis_at_max)
                 dir_mode = "bwd"
             else:
-                if axis_key == "a1":
-                    if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
-                        step = float(axis_per_mm) * abs(dcoord)
-                        aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
-                    else:
-                        aj = ai
-                else:
+                # A1/A2 공통: 진행 방향과 순간 이동 방향이 일치할 때만 이동 (역방향 정지)
+                if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
                     step = float(axis_per_mm) * abs(dcoord)
                     aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
+                else:
+                    aj = ai
 
+                # 최대/최소값 제한
                 lo = min(float(axis_at_min), float(axis_at_max))
                 hi = max(float(axis_at_min), float(axis_at_max))
-
                 if aj < lo:
                     aj = lo
                 if aj > hi:
                     aj = hi
 
-                # ==========================================
-                # [추가된 부분] A1이 끝점(500 또는 4000)에 도달하면 방향을 전환
-                # ==========================================
-                if axis_key == "a1":
-                    if abs(aj - float(axis_at_min)) <= 1e-9:
-                        dir_mode = "fwd"
-                    elif abs(aj - float(axis_at_max)) <= 1e-9:
-                        dir_mode = "bwd"
+                # A1/A2 공통: 끝점에 도달하면 다음 진행 방향으로 강제 전환
+                if abs(aj - float(axis_at_min)) <= 1e-9:
+                    dir_mode = "fwd"
+                elif abs(aj - float(axis_at_max)) <= 1e-9:
+                    dir_mode = "bwd"
                         
         nodes[i][axis_key] = float(aj)
         ai = float(aj)
