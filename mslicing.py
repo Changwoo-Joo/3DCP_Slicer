@@ -1178,6 +1178,15 @@ def _apply_const_speed_profile_on_nodes(
                 if aj > hi:
                     aj = hi
 
+                # ==========================================
+                # [추가된 부분] A1이 끝점(500 또는 4000)에 도달하면 방향을 전환
+                # ==========================================
+                if axis_key == "a1":
+                    if abs(aj - float(axis_at_min)) <= 1e-9:
+                        dir_mode = "fwd"
+                    elif abs(aj - float(axis_at_max)) <= 1e-9:
+                        dir_mode = "bwd"
+                        
         nodes[i][axis_key] = float(aj)
         ai = float(aj)
 
