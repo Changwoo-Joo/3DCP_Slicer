@@ -674,71 +674,66 @@ def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
     
     # 1. 궤적 Trace 추가 (0 ~ 4)
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=6, dash="solid", color=CAP_COLOR),
-                               name="Caps Emphasis", showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT), showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT), showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=6, dash="solid", color=CAP_COLOR), showlegend=False))
     
-    # 2. 줌 퍼센트
+    # 2. 줌 퍼센트 적용
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    
-    # 3. ★ 핵심: X, Y, Z 중 가장 긴 축을 기준으로 정육면체(Cube) 영역을 강제 생성 ★
+    scale = zoom_pct / 100.0
+
+    xr = yr = zr = 1.0
+    x_range = y_range = z_range = [-1, 1]
+
+    # 모델 크기를 측정하여 고정된 범위를 계산
     if st.session_state.get("mesh") is not None:
         bounds = st.session_state.mesh.bounds
         x_min, x_max = float(bounds[0][0]), float(bounds[1][0])
         y_min, y_max = float(bounds[0][1]), float(bounds[1][1])
         z_min, z_max = float(bounds[0][2]), float(bounds[1][2])
         
-        # 각 축의 중심점과 길이 계산
-        x_mid, x_len = (x_max + x_min) / 2, x_max - x_min
-        y_mid, y_len = (y_max + y_min) / 2, y_max - y_min
-        z_mid, z_len = (z_max + z_min) / 2, z_max - z_min
+        # 외곽선이 잘리지 않게 5% 여백
+        pad_x = (x_max - x_min) * 0.05
+        pad_y = (y_max - y_min) * 0.05
+        pad_z = (z_max - z_min) * 0.05
         
-        # 가장 긴 축의 길이 (Max Range) 구하기
-        max_range = max(x_len, y_len, z_len) / 2.0
+        x_range = [x_min - pad_x, x_max + pad_x]
+        y_range = [y_min - pad_y, y_max + pad_y]
+        z_range = [z_min - pad_z, z_max + pad_z]
         
-        # 정육면체 바운딩 박스를 강제로 투명하게 그리기 (Trace 5)
-        # 이 투명 상자 때문에 Plotly는 스케일을 절대 마음대로 바꿀 수 없음
-        xb = [x_mid - max_range, x_mid + max_range]
-        yb = [y_mid - max_range, y_mid + max_range]
-        zb = [z_mid - max_range, z_mid + max_range]
-        
-        fig.add_trace(go.Scatter3d(
-            x=[xb[0], xb[0], xb[1], xb[1], xb[0], xb[0], xb[1], xb[1]],
-            y=[yb[0], yb[1], yb[1], yb[0], yb[0], yb[1], yb[1], yb[0]],
-            z=[zb[0], zb[0], zb[0], zb[0], zb[1], zb[1], zb[1], zb[1]],
-            mode='markers',
-            marker=dict(size=0, opacity=0), # 완전 투명
-            showlegend=False,
-            hoverinfo='skip'
-        ))
+        xr = x_range[1] - x_range[0]
+        yr = y_range[1] - y_range[0]
+        zr = z_range[1] - z_range[0]
 
-    # 4. 카메라 및 레이아웃 설정
-    # aspectmode="cube" 로 고정하여 X, Y, Z를 무조건 1:1:1로 맞춤
-    scale = zoom_pct / 100.0
+    mr = max(xr, yr, zr)
+    if mr == 0: mr = 1.0
+
+    # 3. [Trace 5] 투명 박스 - 1:1:1 비율을 강제 유지하기 위해 가장 긴 축(mr)을 기준으로 상자를 그림
+    # 이렇게 하면 Autoscale이 켜지더라도 항상 이 가장 긴 상자 크기에 맞춰지므로 비율이 무너지지 않음
+    x_mid = (x_range[0] + x_range[1]) / 2.0
+    y_mid = (y_range[0] + y_range[1]) / 2.0
+    z_mid = (z_range[0] + z_range[1]) / 2.0
+
+    fig.add_trace(go.Scatter3d(
+        x=[x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2],
+        y=[y_mid - mr/2, y_mid - mr/2, y_mid + mr/2, y_mid + mr/2, y_mid - mr/2, y_mid - mr/2, y_mid + mr/2, y_mid + mr/2],
+        z=[z_mid - mr/2, z_mid - mr/2, z_mid - mr/2, z_mid - mr/2, z_mid + mr/2, z_mid + mr/2, z_mid + mr/2, z_mid + mr/2],
+        mode='markers', marker=dict(size=0, opacity=0), showlegend=False, hoverinfo='skip'
+    ))
+
+    # 4. 레이아웃: aspectmode를 'manual'로 돌리고 scale을 다시 적용
     fig.update_layout(
         scene=dict(
-            aspectmode="cube", 
-            camera=dict(
-                projection=dict(type="orthographic"),
-                eye=dict(x=1.5/scale, y=1.5/scale, z=1.5/scale) # 줌 적용
-            )
+            # 투명박스 덕분에 범위를 고정할 필요가 없으므로 autorange는 그냥 둠
+            aspectmode="manual", 
+            # 정육면체(투명박스)를 넣었으므로 aspectratio는 1:1:1에 scale만 곱해줌
+            aspectratio=dict(x=1.0*scale, y=1.0*scale, z=1.0*scale),
+            camera=dict(projection=dict(type="orthographic"))
         ),
-        height=height, 
-        margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="constant_scale_123", # uirevision 고정 (애니메이션 초기화 방지)
-        transition={'duration': 0}
+        height=height, margin=dict(l=0, r=0, t=10, b=0),
+        uirevision="constant_scale", transition={'duration': 0}
     )
     return fig
 
