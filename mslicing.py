@@ -670,41 +670,39 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
         n_unit = np.array([-t_unit[1], t_unit[0]], dtype=float)
         _append_arc((float(p2[0]), float(p2[1])), t_unit, n_unit, float(p2[2]), sign_t=+1.0, steps=samples)
 
-def make_base_fig(height=820) -> go.Figure:
-    fig = go.Figure()
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
-                               showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=6, dash="solid", color=CAP_COLOR),
-                               name="Caps Emphasis", showlegend=False))
-    # 카메라 줌 퍼센트 적용
-    # orthographic 줌 트릭: aspectratio 스케일링
+def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
+    v = mesh.vertices
+    f = mesh.faces
+    fig = go.Figure(data=[go.Mesh3d(
+        x=v[:, 0], y=v[:, 1], z=v[:, 2],
+        i=f[:, 0], j=f[:, 1], k=f[:, 2],
+        color="#888888", opacity=0.6, flatshading=True,
+        lighting=dict(ambient=0.6, diffuse=0.9, roughness=0.9, specular=0.1)
+    )])
+
+    # 줌 퍼센트
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    # 50%를 입력하면 스케일이 0.5가 되어 작게(축소) 보이고, 200%면 2.0이 되어 확대됨
-    scale = zoom_pct / 100.0 
+    scale = zoom_pct / 100.0
+
+    # ★ 핵심: 실제 모델의 X, Y, Z 길이를 측정해 원본 비율을 구해냄
+    bounds = mesh.bounds
+    xr = float(bounds[1][0] - bounds[0][0])
+    yr = float(bounds[1][1] - bounds[0][1])
+    zr = float(bounds[1][2] - bounds[0][2])
+    mr = max(xr, yr, zr)
+    if mr == 0: mr = 1.0
 
     fig.update_layout(
         scene=dict(
             aspectmode="manual", 
-            aspectratio=dict(x=scale, y=scale, z=scale),
-            camera=dict(
-                projection=dict(type="orthographic")
-            )
+            aspectratio=dict(x=(xr/mr)*scale, y=(yr/mr)*scale, z=(zr/mr)*scale),
+            camera=dict(projection=dict(type="orthographic"))
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision=zoom_pct, transition={'duration': 0}
+        uirevision=zoom_pct
     )
     return fig
+
 
 def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
