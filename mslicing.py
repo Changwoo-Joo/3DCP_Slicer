@@ -293,21 +293,23 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
         lighting=dict(ambient=0.6, diffuse=0.9, roughness=0.9, specular=0.1)
     )])
     # 카메라 줌 퍼센트 적용
+    # orthographic 줌 트릭: aspectratio 스케일링
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    dist = 2.0 * (100.0 / max(1, zoom_pct))
+    scale = zoom_pct / 100.0 
 
     fig.update_layout(
         scene=dict(
-            aspectmode="data", 
+            aspectmode="manual", 
+            aspectratio=dict(x=scale, y=scale, z=scale),
             camera=dict(
-                projection=dict(type="orthographic"),
-                eye=dict(x=dist, y=dist, z=dist)
+                projection=dict(type="orthographic")
             )
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision=zoom_pct  # ★ 여기를 zoom_pct로 바꿈
+        uirevision=zoom_pct
     )
     return fig
+
 
 
 # =========================
@@ -686,22 +688,23 @@ def make_base_fig(height=820) -> go.Figure:
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
     # 카메라 줌 퍼센트 적용
+    # orthographic 줌 트릭: aspectratio 스케일링
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    dist = 2.0 * (100.0 / max(1, zoom_pct))
+    # 50%를 입력하면 스케일이 0.5가 되어 작게(축소) 보이고, 200%면 2.0이 되어 확대됨
+    scale = zoom_pct / 100.0 
 
     fig.update_layout(
         scene=dict(
-            aspectmode="data", 
+            aspectmode="manual", 
+            aspectratio=dict(x=scale, y=scale, z=scale),
             camera=dict(
-                projection=dict(type="orthographic"),
-                eye=dict(x=dist, y=dist, z=dist)
+                projection=dict(type="orthographic")
             )
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision=zoom_pct, transition={'duration': 0}  # ★ 여기를 zoom_pct로 바꿈
+        uirevision=zoom_pct, transition={'duration': 0}
     )
     return fig
-
 
 def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
