@@ -292,11 +292,23 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
         color="#888888", opacity=0.6, flatshading=True,
         lighting=dict(ambient=0.6, diffuse=0.9, roughness=0.9, specular=0.1)
     )])
+    # 카메라 줌 퍼센트 적용
+    zoom_pct = st.session_state.get("camera_zoom_pct", 100)
+    dist = 2.0 * (100.0 / max(1, zoom_pct))
+
     fig.update_layout(
-        scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
-        height=height, margin=dict(l=0, r=0, t=10, b=0)
+        scene=dict(
+            aspectmode="data", 
+            camera=dict(
+                projection=dict(type="orthographic"),
+                eye=dict(x=dist, y=dist, z=dist)
+            )
+        ),
+        height=height, margin=dict(l=0, r=0, t=10, b=0),
+        uirevision="constant_viewer_key"
     )
     return fig
+
 
 # =========================
 # G-code generator
@@ -673,12 +685,23 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
+    # 카메라 줌 퍼센트 적용
+    zoom_pct = st.session_state.get("camera_zoom_pct", 100)
+    dist = 2.0 * (100.0 / max(1, zoom_pct))
+
     fig.update_layout(
-        scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
+        scene=dict(
+            aspectmode="data", 
+            camera=dict(
+                projection=dict(type="orthographic"),
+                eye=dict(x=dist, y=dist, z=dist)
+            )
+        ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
         uirevision="constant_viewer_key", transition={'duration': 0}
     )
     return fig
+
 
 def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
@@ -797,6 +820,8 @@ if "paths_travel_mode" not in st.session_state:
 
 if "is_playing" not in st.session_state:
     st.session_state.is_playing = False
+if "camera_zoom_pct" not in st.session_state:
+    st.session_state.camera_zoom_pct = 100
 if "anim_speed" not in st.session_state:
     st.session_state.anim_speed = 100
 if "anim_step" not in st.session_state:
