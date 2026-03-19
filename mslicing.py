@@ -692,29 +692,52 @@ def make_base_fig(height=820) -> go.Figure:
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
     scale = zoom_pct / 100.0
 
-    # 모델이 로드되어 있으면 실제 bounding box의 가로/세로/높이를 구해 비율(aspectratio) 설정
     xr = yr = zr = 1.0
+    x_range = y_range = z_range = None
+
+    # 모델이 로드되어 있으면 실제 bounding box를 구해 비율 및 '축 범위' 설정
     if st.session_state.get("mesh") is not None:
         bounds = st.session_state.mesh.bounds
         xr = float(bounds[1][0] - bounds[0][0])
         yr = float(bounds[1][1] - bounds[0][1])
         zr = float(bounds[1][2] - bounds[0][2])
+        
+        # 외곽선이 잘리지 않도록 상자 주변에 5% 여백(Padding) 추가
+        pad_x = xr * 0.05
+        pad_y = yr * 0.05
+        pad_z = zr * 0.05
+        
+        x_range = [float(bounds[0][0]) - pad_x, float(bounds[1][0]) + pad_x]
+        y_range = [float(bounds[0][1]) - pad_y, float(bounds[1][1]) + pad_y]
+        z_range = [float(bounds[0][2]) - pad_z, float(bounds[1][2]) + pad_z]
+        
+        # 비율(aspectratio) 계산을 위해 여백이 포함된 최종 길이로 업데이트
+        xr += 2 * pad_x
+        yr += 2 * pad_y
+        zr += 2 * pad_z
     
     mr = max(xr, yr, zr)
     if mr == 0: mr = 1.0
 
+    scene_dict = dict(
+        aspectmode="manual", 
+        aspectratio=dict(x=(xr/mr)*scale, y=(yr/mr)*scale, z=(zr/mr)*scale),
+        camera=dict(projection=dict(type="orthographic"))
+    )
+
+    # ★ 핵심: 애니메이션 도중 축 스케일이 춤추는 현상을 막기 위해 범위를 고정
+    if x_range is not None:
+        scene_dict["xaxis"] = dict(range=x_range, autorange=False)
+        scene_dict["yaxis"] = dict(range=y_range, autorange=False)
+        scene_dict["zaxis"] = dict(range=z_range, autorange=False)
+
     fig.update_layout(
-        scene=dict(
-            aspectmode="manual", 
-            aspectratio=dict(x=(xr/mr)*scale, y=(yr/mr)*scale, z=(zr/mr)*scale),
-            camera=dict(
-                projection=dict(type="orthographic")
-            )
-        ),
+        scene=scene_dict,
         height=height, margin=dict(l=0, r=0, t=10, b=0),
         uirevision=zoom_pct, transition={'duration': 0}
     )
     return fig
+
 
 
 
