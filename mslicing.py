@@ -1837,11 +1837,24 @@ with right_col:
         st.checkbox("Show dotted travel lines", value=False, disabled=True,
                     help="Insert E values OFF이면 travel은 실선으로 표기")
         travel_mode = "solid"
-    prev_mode = st.session_state.get("paths_travel_mode", "solid")
-    st.session_state.paths_travel_mode = travel_mode
-
     dims_placeholder = st.empty()
+
+    new_zoom = st.number_input(
+        "카메라 줌 비율 (%)",
+        min_value=10,
+        max_value=500,
+        value=st.session_state.camera_zoom_pct,
+        step=10,
+        help="100%가 기본 크기입니다. 50%면 더 멀리서 보이고, 200%면 더 확대됩니다."
+    )
+    if new_zoom != st.session_state.camera_zoom_pct:
+        st.session_state.camera_zoom_pct = new_zoom
+        if "paths_base_fig" in st.session_state:
+            del st.session_state["paths_base_fig"]
+        st.rerun()
+
     st.markdown("---")
+
 
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
