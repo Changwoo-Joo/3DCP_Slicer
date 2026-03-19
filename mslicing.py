@@ -746,7 +746,7 @@ def make_base_fig(height=820) -> go.Figure:
 
 
 
-def ensure_traces(fig: go.Figure, want=5):
+def ensure_traces(fig: go.Figure, want=6):
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
@@ -768,7 +768,11 @@ def ensure_traces(fig: go.Figure, want=5):
         if n == 0: add_solid()
         elif n == 1: add_dot()
         elif n in (2, 3): add_off()
-        else: add_caps()
+        elif n == 4: add_caps()
+        else: 
+            # 5번째는 투명 바운딩 박스 자리이므로 빈 마커 추가
+            fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode='markers', marker=dict(size=0, opacity=0), showlegend=False))
+
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
     ensure_traces(fig, want=5)
