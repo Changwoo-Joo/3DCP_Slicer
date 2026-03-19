@@ -1845,8 +1845,8 @@ with right_col:
 if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
-    DRAW_LIMIT = 15000
-    draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+    DRAW_LIMIT = 150000
+    draw_stride = 1
 
     built = st.session_state.paths_anim_buf["built_upto"]
     prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
