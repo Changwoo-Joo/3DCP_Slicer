@@ -3,6 +3,7 @@ import streamlit as st
 import numpy as np
 import math
 import json
+import time
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -675,7 +676,7 @@ def make_base_fig(height=820) -> go.Figure:
     fig.update_layout(
         scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="keep", transition={'duration': 0}
+        uirevision="constant_viewer_key", transition={'duration': 0}
     )
     return fig
 
@@ -793,6 +794,13 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
+
+if "is_playing" not in st.session_state:
+    st.session_state.is_playing = False
+if "anim_speed" not in st.session_state:
+    st.session_state.anim_speed = 100
+if "anim_step" not in st.session_state:
+    st.session_state.anim_step = 30
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -1828,9 +1836,31 @@ with right_col:
             target = int(scrub_num)
 
         target = int(clamp(target, 0, total_segments))
+        
+        # ★ 추가됨: 슬라이더 조작 시 재생 멈춤
+        if scrub != default_val or scrub_num != default_val:
+            st.session_state.is_playing = False
+            
         st.session_state.paths_scrub = target
 
+        # ★ 추가됨: 재생 컨트롤 패널
+        st.markdown("---")
+        st.markdown("##### ▶ 경로 애니메이션")
+        col_p1, col_p2 = st.columns(2)
+        if col_p1.button("▶ Play", use_container_width=True):
+            st.session_state.is_playing = True
+            if st.session_state.paths_scrub >= total_segments:
+                st.session_state.paths_scrub = 1
+            st.rerun()
+        if col_p2.button("⏹ Stop", use_container_width=True):
+            st.session_state.is_playing = False
+            st.rerun()
+
+        st.session_state.anim_speed = st.number_input("지연 속도 (ms)", min_value=1, value=st.session_state.anim_speed, step=10)
+        st.session_state.anim_step = st.number_input("스킵 (Step)", min_value=1, value=st.session_state.anim_step, step=10)
+
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
+
         if layer_z is not None and layer_len is not None:
             st.caption(
                 f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · "
@@ -1881,6 +1911,43 @@ else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
+# ---- 깜빡임 방지용 Fragment 렌더링 함수 ----
+@st.fragment(run_every="0.05s")
+def render_animation_fragment(segments, total_segments, emphasize_caps):
+    if st.session_state.get("is_playing", False) and st.session_state.paths_scrub <= total_segments:
+        current_target = st.session_state.paths_scrub
+        built = st.session_state.paths_anim_buf["built_upto"]
+        
+        if current_target > built:
+            append_segments_to_buffers(segments, built, current_target, stride=1)
+        elif current_target < built:
+            rebuild_buffers_to(segments, current_target, stride=1)
+
+        fig = st.session_state.paths_base_fig
+        # 애니메이션 중에는 오프셋 계산을 꺼서 속도를 올림
+        update_fig_with_buffers(fig, show_offsets=False, show_caps=False)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # 설정한 스킵(Step) 수치만큼 타겟 전진
+        st.session_state.paths_scrub += int(st.session_state.anim_step)
+        
+        # 지연 시간(ms) 적용
+        time.sleep(int(st.session_state.anim_speed) / 1000.0)
+
+        # 끝까지 도달하면 정지
+        if st.session_state.paths_scrub > total_segments:
+            st.session_state.is_playing = False
+            st.rerun()
+    else:
+        # 재생 중이 아닐 때(정지 상태)는 기존처럼 완벽하게 그림
+        fig = st.session_state.paths_base_fig
+        update_fig_with_buffers(
+            fig, 
+            show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), 
+            show_caps=bool(st.session_state.get("apply_offsets_flag", False) and emphasize_caps)
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
 
 # ---- 중앙: 탭 뷰어 ----
 with center_col:
@@ -1890,13 +1957,9 @@ with center_col:
         if segments is not None and total_segments > 0:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
-            fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(
-                fig,
-                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
-                show_caps=bool(emphasize_caps)
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            
+            # ★ 기존의 st.plotly_chart 호출 부분을 지우고 새로 만든 함수로 교체!
+            render_animation_fragment(segments, total_segments, emphasize_caps)
 
             tm = st.session_state.paths_travel_mode
             if not e_on:
@@ -1933,3 +1996,4 @@ with center_col:
 
 if not KEY_OK:
     st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+
