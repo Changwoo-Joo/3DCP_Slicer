@@ -688,20 +688,31 @@ def make_base_fig(height=820) -> go.Figure:
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
     
-    # 카메라 줌 퍼센트 적용
+    # 줌 퍼센트
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    dist = 2.0 * (100.0 / max(1, zoom_pct))
+    scale = zoom_pct / 100.0
+
+    # 모델이 로드되어 있으면 실제 bounding box의 가로/세로/높이를 구해 비율(aspectratio) 설정
+    xr = yr = zr = 1.0
+    if st.session_state.get("mesh") is not None:
+        bounds = st.session_state.mesh.bounds
+        xr = float(bounds[1][0] - bounds[0][0])
+        yr = float(bounds[1][1] - bounds[0][1])
+        zr = float(bounds[1][2] - bounds[0][2])
+    
+    mr = max(xr, yr, zr)
+    if mr == 0: mr = 1.0
 
     fig.update_layout(
         scene=dict(
-            aspectmode="data", 
+            aspectmode="manual", 
+            aspectratio=dict(x=(xr/mr)*scale, y=(yr/mr)*scale, z=(zr/mr)*scale),
             camera=dict(
-                projection=dict(type="orthographic"),
-                eye=dict(x=dist, y=dist, z=dist)
+                projection=dict(type="orthographic")
             )
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="constant_viewer_key", transition={'duration': 0}
+        uirevision=zoom_pct, transition={'duration': 0}
     )
     return fig
 
