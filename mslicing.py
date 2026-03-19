@@ -1837,6 +1837,12 @@ with right_col:
         st.checkbox("Show dotted travel lines", value=False, disabled=True,
                     help="Insert E values OFF이면 travel은 실선으로 표기")
         travel_mode = "solid"
+    
+        # === 실수로 지워졌던 부분 복구 ===
+    prev_mode = st.session_state.get("paths_travel_mode", "solid")
+    st.session_state.paths_travel_mode = travel_mode
+
+    # === 카메라 줌 UI 파트 ===
     dims_placeholder = st.empty()
 
     new_zoom = st.number_input(
@@ -1854,6 +1860,7 @@ with right_col:
         st.rerun()
 
     st.markdown("---")
+
 
 
     if segments is None or total_segments == 0:
