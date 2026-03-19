@@ -1960,16 +1960,21 @@ else:
 # ---- 깜빡임 방지용 Fragment 렌더링 함수 ----
 @st.fragment(run_every="0.05s")
 def render_animation_fragment(segments, total_segments, emphasize_caps):
-    if st.session_state.get("is_playing", False) and st.session_state.paths_scrub <= total_segments:
+    if st.session_state.get("is_playing", False) and st.session_state.paths_scrub < total_segments:
         current_target = st.session_state.paths_scrub
         built = st.session_state.paths_anim_buf["built_upto"]
         
-        if current_target > built:
+        if current_target >= built:
             append_segments_to_buffers(segments, built, current_target, stride=1)
         elif current_target < built:
             rebuild_buffers_to(segments, current_target, stride=1)
-
+        
+        # ★ 추가된 부분: 만약 세션스테이트에 fig가 없으면 다시 만들어준다
+        if "paths_base_fig" not in st.session_state:
+            st.session_state.paths_base_fig = make_base_fig(height=820)
+            
         fig = st.session_state.paths_base_fig
+
         # 애니메이션 중에는 오프셋 계산을 꺼서 속도를 올림
         update_fig_with_buffers(fig, show_offsets=False, show_caps=False)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
