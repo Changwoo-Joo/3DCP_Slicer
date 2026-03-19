@@ -672,6 +672,8 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
+    
+    # 1. 궤적 Trace 추가 (0 ~ 4)
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
@@ -688,55 +690,58 @@ def make_base_fig(height=820) -> go.Figure:
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
     
-    # 줌 퍼센트
+    # 2. 줌 퍼센트
     zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    scale = zoom_pct / 100.0
-
-    xr = yr = zr = 1.0
-    x_range = y_range = z_range = None
-
-    # 모델이 로드되어 있으면 실제 bounding box를 구해 비율 및 '축 범위' 설정
+    
+    # 3. ★ 핵심: X, Y, Z 중 가장 긴 축을 기준으로 정육면체(Cube) 영역을 강제 생성 ★
     if st.session_state.get("mesh") is not None:
         bounds = st.session_state.mesh.bounds
-        xr = float(bounds[1][0] - bounds[0][0])
-        yr = float(bounds[1][1] - bounds[0][1])
-        zr = float(bounds[1][2] - bounds[0][2])
+        x_min, x_max = float(bounds[0][0]), float(bounds[1][0])
+        y_min, y_max = float(bounds[0][1]), float(bounds[1][1])
+        z_min, z_max = float(bounds[0][2]), float(bounds[1][2])
         
-        # 외곽선이 잘리지 않도록 상자 주변에 5% 여백(Padding) 추가
-        pad_x = xr * 0.05
-        pad_y = yr * 0.05
-        pad_z = zr * 0.05
+        # 각 축의 중심점과 길이 계산
+        x_mid, x_len = (x_max + x_min) / 2, x_max - x_min
+        y_mid, y_len = (y_max + y_min) / 2, y_max - y_min
+        z_mid, z_len = (z_max + z_min) / 2, z_max - z_min
         
-        x_range = [float(bounds[0][0]) - pad_x, float(bounds[1][0]) + pad_x]
-        y_range = [float(bounds[0][1]) - pad_y, float(bounds[1][1]) + pad_y]
-        z_range = [float(bounds[0][2]) - pad_z, float(bounds[1][2]) + pad_z]
+        # 가장 긴 축의 길이 (Max Range) 구하기
+        max_range = max(x_len, y_len, z_len) / 2.0
         
-        # 비율(aspectratio) 계산을 위해 여백이 포함된 최종 길이로 업데이트
-        xr += 2 * pad_x
-        yr += 2 * pad_y
-        zr += 2 * pad_z
-    
-    mr = max(xr, yr, zr)
-    if mr == 0: mr = 1.0
+        # 정육면체 바운딩 박스를 강제로 투명하게 그리기 (Trace 5)
+        # 이 투명 상자 때문에 Plotly는 스케일을 절대 마음대로 바꿀 수 없음
+        xb = [x_mid - max_range, x_mid + max_range]
+        yb = [y_mid - max_range, y_mid + max_range]
+        zb = [z_mid - max_range, z_mid + max_range]
+        
+        fig.add_trace(go.Scatter3d(
+            x=[xb[0], xb[0], xb[1], xb[1], xb[0], xb[0], xb[1], xb[1]],
+            y=[yb[0], yb[1], yb[1], yb[0], yb[0], yb[1], yb[1], yb[0]],
+            z=[zb[0], zb[0], zb[0], zb[0], zb[1], zb[1], zb[1], zb[1]],
+            mode='markers',
+            marker=dict(size=0, opacity=0), # 완전 투명
+            showlegend=False,
+            hoverinfo='skip'
+        ))
 
-    scene_dict = dict(
-        aspectmode="manual", 
-        aspectratio=dict(x=(xr/mr)*scale, y=(yr/mr)*scale, z=(zr/mr)*scale),
-        camera=dict(projection=dict(type="orthographic"))
-    )
-
-    # ★ 핵심: 애니메이션 도중 축 스케일이 춤추는 현상을 막기 위해 범위를 고정
-    if x_range is not None:
-        scene_dict["xaxis"] = dict(range=x_range, autorange=False)
-        scene_dict["yaxis"] = dict(range=y_range, autorange=False)
-        scene_dict["zaxis"] = dict(range=z_range, autorange=False)
-
+    # 4. 카메라 및 레이아웃 설정
+    # aspectmode="cube" 로 고정하여 X, Y, Z를 무조건 1:1:1로 맞춤
+    scale = zoom_pct / 100.0
     fig.update_layout(
-        scene=scene_dict,
-        height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision=zoom_pct, transition={'duration': 0}
+        scene=dict(
+            aspectmode="cube", 
+            camera=dict(
+                projection=dict(type="orthographic"),
+                eye=dict(x=1.5/scale, y=1.5/scale, z=1.5/scale) # 줌 적용
+            )
+        ),
+        height=height, 
+        margin=dict(l=0, r=0, t=10, b=0),
+        uirevision="constant_scale_123", # uirevision 고정 (애니메이션 초기화 방지)
+        transition={'duration': 0}
     )
     return fig
+
 
 
 
