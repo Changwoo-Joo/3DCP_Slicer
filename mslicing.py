@@ -305,7 +305,7 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
             )
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="constant_viewer_key"
+        uirevision=zoom_pct  # ★ 여기를 zoom_pct로 바꿈
     )
     return fig
 
@@ -698,7 +698,7 @@ def make_base_fig(height=820) -> go.Figure:
             )
         ),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="constant_viewer_key", transition={'duration': 0}
+        uirevision=zoom_pct, transition={'duration': 0}  # ★ 여기를 zoom_pct로 바꿈
     )
     return fig
 
