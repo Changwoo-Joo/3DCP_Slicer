@@ -984,6 +984,10 @@ corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0,
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
+st.sidebar.subheader("Singularity Avoidance")
+singularity_height = st.sidebar.number_input("Singularity height Z (mm)", value=2000.0, step=10.0)
+singularity_offset = st.sidebar.number_input("Singularity offset (mm)", value=300.0, step=10.0)
+
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 slice_clicked = b1.button("Slice Model", use_container_width=True)
@@ -1359,6 +1363,8 @@ def gcode_to_cone1500_module(
     boundary_eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
+    singularity_height: float = 2000.0,
+    singularity_offset: float = 300.0,
 ) -> str:
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -1474,16 +1480,25 @@ def gcode_to_cone1500_module(
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
         # 좌표 보정 (기존 유지)
-        x_out, y_out, z_out = cx, cy, cz - a3_abs
-        if key == "90":
-            y_out = cy - cur_a4
-        elif key == "0":
-            x_out = cx - cur_a4
-        elif key == "-90":
-            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
-            y_out = cy - (a4_max - cur_a4)
+        # --- 싱귤러리티 보정 로직 ---
+        if cz >= singularity_height:
+            z_out = cz - a3_abs + singularity_offset
+            final_a4 = cur_a4  # 로봇 Z가 올라간 대신 A4는 보정치를 빼서(300 내려감) 기본값 복귀
+        else:
+            z_out = cz - a3_abs
+            final_a4 = cur_a4 + singularity_offset  # 시작 시점부터 A4축이 300만큼 올라간 상태
+        
+        x_out, y_out = cx, cy
 
-        # 저장
+        # X, Y 보정은 물리적 축 길이 변동이 아니므로 기존 cur_a4 사용
+        if key == 90:
+            y_out = cy - cur_a4
+        elif key == 0:
+            x_out = cx - cur_a4
+        elif key == -90:
+            a4_max = max(a4_y0, a4_y1) if a4_on_y else 0.0
+            y_out = cy - a4_max - cur_a4
+            
         raw_xs.append(float(cx))
         raw_ys.append(float(cy))
         xs_out.append(float(x_out))
@@ -1492,7 +1507,7 @@ def gcode_to_cone1500_module(
         a1_list.append(0.0)
         a2_list.append(0.0)
         a3_list.append(float(a3_abs))
-        a4_list.append(float(cur_a4))
+        a4_list.append(float(final_a4))  # cur_a4 대신 final_a4 반영
         is_extruding_list.append(bool(is_extruding))
 
         if len(xs_out) >= MAX_LINES:
@@ -1819,6 +1834,8 @@ if KEY_OK:
                 boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
                 apply_print_only=bool(st.session_state.ext_const_apply_print_only),
                 travel_interp=bool(st.session_state.ext_const_travel_interp),
+                singularity_height=float(singularity_height),
+                singularity_offset=float(singularity_offset),
             )
             st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
 
