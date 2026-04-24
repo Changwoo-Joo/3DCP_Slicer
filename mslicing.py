@@ -1,4 +1,4 @@
- # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import streamlit as st
 import numpy as np
 import math
@@ -1073,19 +1073,19 @@ def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
 
 DEFAULT_PRESET = {
     "0": {
-        "X": {"in": [0.0, 6500.0], "A4_out": [0.0, 500.0]},
+        "X": {"in": [0.0, 6500.0], "A3_out": [0.0, 500.0]},
         "Y": {"in": [0.0, 1000.0]},
-        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
+        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
     },
     "90": {
         "X": {"in": [0.0, 6500.0]},
-        "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
+        "Y": {"in": [0.0, 1000.0], "A3_out": [500.0, 0.0]},
+        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
     },
     "-90": {
         "X": {"in": [0.0, 6500.0]},
-        "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
+        "Y": {"in": [0.0, 1000.0], "A3_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
     },
 }
 
@@ -1376,12 +1376,12 @@ def gcode_to_cone1500_module(
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
 
-    a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
+    a3_on_x = "A3_out" in P.get("X", {})
+    a3_on_y = "A3_out" in P.get("Y", {})
+    a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
+    a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
-    a4_on_x = "A4_out" in P.get("X", {})
-    a4_on_y = "A4_out" in P.get("Y", {})
-    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
-    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
+    a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
         span_in = abs(float(in1) - float(in0))
@@ -1445,43 +1445,23 @@ def gcode_to_cone1500_module(
         if ce is not None:
             prev_e = ce
 
-        # A3(절대)
-        a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
-
-        # A4(기존 유지: 분해축)
-        if not have_prev:
-            if a4_on_x:
-                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y:
-                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
-            else:
-                cur_a4 = 0.0
-            have_prev = True
+        # A3(절대: Rz=0 → X, Rz=±90 → Y)
+        if a3_on_x:
+            a3_abs = _linmap(cx, x0, x1, a3x_0, a3x_1)
+        elif a3_on_y:
+            a3_abs = _linmap(cy, y0, y1, a3y_0, a3y_1)
         else:
-            dx, dy = cx - prev_x, cy - prev_y
-            if a4_on_x and abs(dx) > 0:
-                cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y and abs(dy) > 0:
-                cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
+            a3_abs = 0.0
+
+        # A4(절대: Z축 기반)
+        cur_a4 = _linmap(cz, z0, z1, a4_0, a4_1)
 
         # clamp A4
-        if a4_on_x:
-            lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
-        elif a4_on_y:
-            lo, hi = (a4y_0, a4y_1) if a4y_0 <= a4y_1 else (a4y_1, a4y_0)
-        else:
-            lo, hi = (0.0, 0.0)
+        lo, hi = (a4_0, a4_1) if a4_0 <= a4_1 else (a4_1, a4_0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        # 좌표 보정 (기존 유지)
-        x_out, y_out, z_out = cx, cy, cz - a3_abs
-        if key == "90":
-            y_out = cy - cur_a4
-        elif key == "0":
-            x_out = cx - cur_a4
-        elif key == "-90":
-            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
-            y_out = cy - (a4_max - cur_a4)
+        # 좌표 보정
+        x_out, y_out, z_out = cx, cy, cz - cur_a4
 
         # 저장
         raw_xs.append(float(cx))
@@ -1606,8 +1586,8 @@ def gcode_to_cone1500_module(
         z = _fmt_pos(float(nd["z"]))
 
         if swap_a3_a4:
-            a3_v = nd["a4"]
-            a4_v = nd["a3"]
+            a3_v = nd["a3"]
+            a4_v = nd["a4"]
         else:
             a3_v = nd["a3"]
             a4_v = nd["a4"]
@@ -1754,26 +1734,26 @@ if KEY_OK:
 
                 if axis_key == "X":
                     cols2 = st.columns(2)
-                    if "A4_out" in PAX:
-                        a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
-                        a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
-                        PAX["A4_out"] = [float(a4_0), float(a4_1)]
+                    if "A3_out" in PAX:
+                        a3_0 = cols2[0].number_input("A3_out[0] (X)", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a30")
+                        a3_1 = cols2[1].number_input("A3_out[1] (X)", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a31")
+                        PAX["A3_out"] = [float(a3_0), float(a3_1)]
                     else:
-                        cols2[0].info("A4_out(X) 미사용 프리셋")
+                        cols2[0].info("A3_out(X) 미사용 프리셋")
 
                 elif axis_key == "Y":
                     cols2 = st.columns(2)
-                    if "A4_out" in PAX:
-                        a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
-                        a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
-                        PAX["A4_out"] = [float(a4_0), float(a4_1)]
+                    if "A3_out" in PAX:
+                        a3_0 = cols2[0].number_input("A3_out[0] (Y)", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a30")
+                        a3_1 = cols2[1].number_input("A3_out[1] (Y)", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a31")
+                        PAX["A3_out"] = [float(a3_0), float(a3_1)]
                     else:
-                        cols2[0].info("A4_out(Y) 미사용 프리셋")
+                        cols2[0].info("A3_out(Y) 미사용 프리셋")
 
                 else:
-                    a3_0 = cols[2].number_input("A3_out[0]", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
-                    a3_1 = cols[3].number_input("A3_out[1]", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
-                    PAX["A3_out"] = [float(a3_0), float(a3_1)]
+                    a4_0 = cols[2].number_input("A4_out[0]", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a40")
+                    a4_1 = cols[3].number_input("A4_out[1]", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a41")
+                    PAX["A4_out"] = [float(a4_0), float(a4_1)]
 
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
 
@@ -1804,7 +1784,7 @@ if KEY_OK:
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
-                swap_a3_a4=True,
+                swap_a3_a4=False,
                 enable_a1_const=bool(st.session_state.ext_const_enable_a1),
                 enable_a2_const=bool(st.session_state.ext_const_enable_a2),
                 x_min=float(st.session_state.ext_const_xmin),
