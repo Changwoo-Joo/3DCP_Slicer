@@ -1479,16 +1479,19 @@ def gcode_to_cone1500_module(
             lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        # --- 싱귤러리티 보정 로직 (A4 기본값 0부터 시작) ---
+         # (이 위쪽은 기존 cur_a4 계산 로직 그대로 둠)
+
+        # --- 싱귤러리티 보정 로직 (최종 수정본) ---
         if cz >= singularity_height:
             z_out = cz - a3_abs + singularity_offset
-            final_a4 = cur_a4 - singularity_offset  # Z가 올라간 만큼 A4를 내려서(예: -300) 툴 끝점 유지
+            final_a4 = cur_a4 - singularity_offset  # 상승한 만큼 A4축을 내려서 툴 끝 위치 보상
         else:
             z_out = cz - a3_abs
-            final_a4 = cur_a4  # 기본값 그대로 (초기값 0 등)
+            final_a4 = cur_a4
         
         x_out, y_out = cx, cy
 
+        # X, Y 보정은 원래 계산된 cur_a4를 사용해야 정상적으로 작동함
         if key == 90:
             y_out = cy - cur_a4
         elif key == 0:
@@ -1505,7 +1508,7 @@ def gcode_to_cone1500_module(
         a1_list.append(0.0)
         a2_list.append(0.0)
         a3_list.append(float(a3_abs))
-        a4_list.append(float(final_a4))  # 보정된 A4값 저장
+        a4_list.append(float(final_a4))  # 보정된 A4를 리스트에 추가
         is_extruding_list.append(bool(is_extruding))
 
         if len(xs_out) >= MAX_LINES:
