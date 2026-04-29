@@ -1784,7 +1784,7 @@ if KEY_OK:
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
-                swap_a3_a4=false,
+                swap_a3_a4=False,
                 enable_a1_const=bool(st.session_state.ext_const_enable_a1),
                 enable_a2_const=bool(st.session_state.ext_const_enable_a2),
                 x_min=float(st.session_state.ext_const_xmin),
