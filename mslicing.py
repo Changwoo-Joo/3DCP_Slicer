@@ -1767,12 +1767,22 @@ if KEY_OK:
             
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
 
-            for key_title in ["0", "90", "-90"]:
-                st.markdown(f"---\n**Rz = {key_title}°**")
-                edit_axis(key_title, "X")
-                edit_axis(key_title, "Y")
-                edit_axis(key_title, "Z")
+            current_rz = float(st.session_state.get("rapid_rz", 0.0))
 
+            if abs(current_rz - 0.0) < 1e-6:
+                key_title = "0"
+            elif abs(current_rz - 90.0) < 1e-6:
+                key_title = "90"
+            elif abs(current_rz + 90.0) < 1e-6:
+                key_title = "-90"
+            else:
+                key_title = "0"
+            
+            st.markdown(f"---\n**Rz = {key_title}°**")
+            edit_axis(key_title, "X")
+            edit_axis(key_title, "Y")
+            edit_axis(key_title, "Z")
+            
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
             st.download_button("프리셋 JSON 저장", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
