@@ -324,8 +324,12 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    if abs(z_max - z_values[-1]) > 1e-3:
+    
+    if not z_values:
+        z_values = [z_max]
+    elif abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
+    
     z_values.append(z_max + 0.01)
 
     prev_start_xy = None
@@ -404,8 +408,12 @@ def compute_slice_paths_with_travel(
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    if abs(z_max - z_values[-1]) > 1e-3:
+    
+    if not z_values:
+        z_values = [z_max]
+    elif abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
+    
     z_values.append(z_max + 0.01)
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
