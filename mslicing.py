@@ -1665,7 +1665,7 @@ if KEY_OK:
                 )
 
         with st.sidebar.expander("매핑 프리셋 (편집/저장/불러오기)", expanded=False):
-            st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
+            st.caption("현재 선택된 Rz 프리셋의 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
 
             up_json = st.file_uploader("프리셋 JSON 불러오기", type=["json"], key="mapping_preset_loader")
             if up_json is not None:
