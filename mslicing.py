@@ -228,6 +228,57 @@ def densify_sparse_corners(poly: np.ndarray,
     s_targets.sort()
     return _resample_polyline_by_s(pts, s_targets)
 
+
+def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
+                             collinear_eps: float = 1e-12,
+                             min_sep_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    n = len(pts)
+    if n < 3 or d_mm <= 0:
+        return pts.copy()
+
+    out = [pts[0].copy()]
+
+    for i in range(1, n - 1):
+        p0 = pts[i - 1]
+        p1 = pts[i]
+        p2 = pts[i + 1]
+
+        v1 = p1 - p0
+        v2 = p2 - p1
+        L1 = float(np.linalg.norm(v1[:2]))
+        L2 = float(np.linalg.norm(v2[:2]))
+
+        cross = v1[0]*v2[1] - v1[1]*v2[0]
+        is_corner = abs(cross) > collinear_eps and L1 > 1e-9 and L2 > 1e-9
+
+        if not is_corner:
+            out.append(p1.copy())
+            continue
+
+        # before point
+        if L1 > d_mm + min_sep_eps:
+            u1 = v1 / L1
+            p_before = p1 - u1 * d_mm
+            if np.linalg.norm((p_before - out[-1])[:2]) > min_sep_eps:
+                out.append(p_before)
+
+        # corner itself
+        if np.linalg.norm((p1 - out[-1])[:2]) > min_sep_eps:
+            out.append(p1.copy())
+
+        # after point
+        if L2 > d_mm + min_sep_eps:
+            u2 = v2 / L2
+            p_after = p1 + u2 * d_mm
+            if np.linalg.norm((p_after - out[-1])[:2]) > min_sep_eps:
+                out.append(p_after)
+
+    if np.linalg.norm((pts[-1] - out[-1])[:2]) > min_sep_eps:
+        out.append(pts[-1].copy())
+
+    return np.asarray(out, dtype=float)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -292,7 +343,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
+            if enable_corner:
+               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
 
             if i_seg > 0:
                 s = simplified[0]
@@ -370,7 +422,8 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
+            if enable_corner:
+               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -837,8 +890,22 @@ start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (
 e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
 st.sidebar.subheader("Path processing")
+enable_corner = st.sidebar.checkbox(
+    "Enable corner neighbor points",
+    value=True,
+    key="enable_corner_points",
+)
+
+corner_d = st.sidebar.number_input(
+    "Corner neighbor distance (mm)",
+    0.0, 1000.0, 5.0, 1.0,
+    key="corner_neighbor_distance_mm",
+    disabled=not enable_corner,   # (선택) OFF면 입력 비활성
+)
+
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
+corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
@@ -983,9 +1050,12 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
+    deadband_mm: float = 11.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
-    travel_interp: bool = True
+    travel_interp: bool = True,
+    step_mm: float = 0.0,             # (추가) 0이면 기존처럼 연속, >0이면 계단
+    step_round: str = "floor",        # (추가) "floor" / "round" / "ceil"
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
@@ -1006,101 +1076,158 @@ def _apply_const_speed_profile_on_nodes(
             nd[axis_key] = float(axis_at_min)
         return
 
-    # axis per mm (속도 파라미터는 출력 포지션에선 상쇄되지만, 인터페이스 호환 위해 유지)
     axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
 
     def _coord(i: int) -> float:
-        return float(nodes[i][coord_key])
+        return float(nodes[i].get(coord_key, 0.0))
 
-    # 경계 판정: <= / >= 로 잡아서 오차에 강하게
     def _at_min(c: float) -> bool:
         return c <= coord_min + eps
 
     def _at_max(c: float) -> bool:
         return c >= coord_max - eps
 
-    def _snap_axis_for_coord(c: float) -> float:
+    def _snap_linear(c: float) -> float:
         if _at_min(c):
             return float(axis_at_min)
         if _at_max(c):
             return float(axis_at_max)
-        # 내부면 선형 맵(시작점이 내부에서 시작할 때 점프 방지)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
         return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
-    # apply_print_only이면 "다음 노드가 extruding(True)일 때"만 진행(세그먼트 기준)
+    def _snap_step(c: float) -> float:
+        if _at_min(c):
+            return float(axis_at_min)
+        if _at_max(c):
+            return float(axis_at_max)
+
+        t = (c - coord_min) / span_abs
+        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+
+        dt = float(step_mm) / span_abs if step_mm is not None else 0.0
+        if dt <= 1e-12:
+            return _snap_linear(c)
+
+        if step_round == "round":
+            tq = round(t / dt) * dt
+        elif step_round == "ceil":
+            tq = math.ceil(t / dt) * dt
+        else:  # "floor"
+            tq = math.floor(t / dt) * dt
+
+        tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
+        return float(axis_at_min + tq * (axis_at_max - axis_at_min))
+
+    use_step = (step_mm is not None) and (float(step_mm) > 0.0)
+    snap_for_coord = _snap_step if use_step else _snap_linear
+
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-    # 초기값/방향 설정
     c0 = _coord(0)
-    nodes[0][axis_key] = _snap_axis_for_coord(c0)
+    nodes[0][axis_key] = float(snap_for_coord(c0))
 
-    # dir_mode: "fwd"(coord_min→coord_max로 가는 동안 axis_at_min→axis_at_max), "bwd"(반대)
+    # 초기 진행 방향
     if _at_min(c0):
         dir_mode = "fwd"
     elif _at_max(c0):
         dir_mode = "bwd"
     else:
-        # 첫 유효 Δcoord로 방향 추정
         dir_mode = "fwd"
-        for j in range(1, n):
-            dc = _coord(j) - c0
-            if abs(dc) > 1e-9:
-                dir_mode = "fwd" if dc > 0 else "bwd"
-                break
 
-    # 진행
-    for i in range(n - 1):
-        ci = _coord(i)
-        cj = _coord(i + 1)
+    # 매크로 왕복 추적용 상태
+    macro_peak = c0
+    macro_valley = c0
+    turn_thresh = max(float(deadband_mm) * 3.0, span_abs * 0.05)  # 예: 4000 span이면 200mm
 
-        # 현재가 경계면 방향 강제
-        if _at_min(ci):
-            nodes[i][axis_key] = float(axis_at_min)
-            dir_mode = "fwd"
-        elif _at_max(ci):
-            nodes[i][axis_key] = float(axis_at_max)
-            dir_mode = "bwd"
+    ai = float(nodes[0][axis_key])
 
-        ai = float(nodes[i][axis_key])
+    for i in range(1, n):
+        ci = _coord(i - 1)
+        cj = _coord(i)
 
-        # 이 스텝( i -> i+1 )에서 진행할지 여부
+        # 새 레이어 시작 시 방향 리셋
+        zi = float(nodes[i - 1].get("z", 0.0))
+        zj = float(nodes[i].get("z", 0.0))
+        if abs(zj - zi) > 1e-4:
+            idx_next = min(n - 1, i + 50)
+            c_next = float(nodes[idx_next].get(coord_key, cj))
+            dir_mode = "fwd" if (c_next - cj) >= 0.0 else "bwd"
+            macro_peak = cj
+            macro_valley = cj
+
+        # 경계에 정확히 안 닿아도, 충분한 반전이 생기면 왕복 방향 전환
+        if dir_mode == "fwd":
+            if cj > macro_peak:
+                macro_peak = cj
+            elif (macro_peak - cj) >= turn_thresh:
+                dir_mode = "bwd"
+                macro_valley = cj
+        else:
+            if cj < macro_valley:
+                macro_valley = cj
+            elif (cj - macro_valley) >= turn_thresh:
+                dir_mode = "fwd"
+                macro_peak = cj
+
         active = True
         if apply_print_only:
-            active = bool(extr_node[i + 1])
+            active = bool(extr_node[i - 1])
 
         dcoord = float(cj - ci)
+
+        if abs(dcoord) < float(deadband_mm):
+            nodes[i][axis_key] = float(ai)
+            continue
+
         if (not active) or abs(dcoord) <= 1e-12:
             aj = ai
         else:
-            # ✅ 핵심: 방향은 유지, 크기는 |Δcoord|만 반영
-            step = axis_per_mm * abs(dcoord)
-            if dir_mode == "fwd":
-                aj = ai + step
+            if _at_min(cj):
+                aj = float(axis_at_min)
+                dir_mode = "fwd"
+                macro_peak = cj
+                macro_valley = cj
+
+            elif _at_max(cj):
+                aj = float(axis_at_max)
+                dir_mode = "bwd"
+                macro_peak = cj
+                macro_valley = cj
+
             else:
-                aj = ai - step
+                # 현재 왕복 방향과 같은 방향일 때만 축 이동
+                if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
+                    step = float(axis_per_mm) * abs(dcoord)
+                    aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
+                else:
+                    aj = ai
 
-        # 다음 노드 경계 스냅 + 방향 갱신
-        if _at_min(cj):
-            aj = float(axis_at_min)
-            dir_mode = "fwd"
-        elif _at_max(cj):
-            aj = float(axis_at_max)
-            dir_mode = "bwd"
+                lo = min(float(axis_at_min), float(axis_at_max))
+                hi = max(float(axis_at_min), float(axis_at_max))
+                if aj < lo:
+                    aj = lo
+                if aj > hi:
+                    aj = hi
 
-        # clamp
-        lo = min(axis_at_min, axis_at_max)
-        hi = max(axis_at_min, axis_at_max)
-        if aj < lo: aj = lo
-        if aj > hi: aj = hi
+                # 축이 실제 끝점에 닿은 경우도 방향 전환
+                if abs(aj - float(axis_at_min)) <= 1e-9:
+                    dir_mode = "fwd"
+                    macro_peak = cj
+                    macro_valley = cj
+                elif abs(aj - float(axis_at_max)) <= 1e-9:
+                    dir_mode = "bwd"
+                    macro_peak = cj
+                    macro_valley = cj
 
-        nodes[i + 1][axis_key] = float(aj)
+        nodes[i][axis_key] = float(aj)
+        ai = float(aj)
 
-    # travel interpolation (옵션)
+        ai = float(aj)
+
+    # travel 구간 보간(기존 동작 유지)
     if travel_interp and apply_print_only:
-        # travel 구간(비활성)들을 앞/뒤 active 사이로 선형 보간
-        active_node = [bool(extr_node[i]) for i in range(n)]
+        active_node = extr_node
         if any(active_node):
             i = 0
             while i < n:
@@ -1108,28 +1235,28 @@ def _apply_const_speed_profile_on_nodes(
                     i += 1
                     continue
                 t0 = i
-                while i < n and (not active_node[i]):
+                while i < n and not active_node[i]:
                     i += 1
                 t1 = i - 1
-                prev_idx = t0 - 1 if t0 - 1 >= 0 else None
+
+                prev_idx = t0 - 1 if (t0 - 1) >= 0 else None
                 next_idx = i if i < n else None
+
                 if prev_idx is None or next_idx is None:
-                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
+                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else (
+                        float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
+                    )
                     for k in range(t0, t1 + 1):
                         nodes[k][axis_key] = base
                     continue
+
                 a0 = float(nodes[prev_idx][axis_key])
                 a1 = float(nodes[next_idx][axis_key])
                 total = max(1, (t1 - t0 + 1))
                 for kk, k in enumerate(range(t0, t1 + 1)):
                     u = (kk + 1) / float(total + 1)
-                    nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
+                    nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
-    # 마지막으로 경계 강제(보간이 경계를 덮어쓰지 않도록)
-    for i in range(n):
-        c = _coord(i)
-        if _at_min(c):
-            nodes[i][axis_key] = float(axis_at_min)
         elif _at_max(c):
             nodes[i][axis_key] = float(axis_at_max)
 
@@ -1333,6 +1460,9 @@ def gcode_to_cone1500_module(
             "a4": float(a4_list[i]),
             "extr": bool(is_extruding_list[i]),
         })
+    # (수정) A2용 좌표: S = raw_y + a4
+    for nd in nodes:
+        nd["coord_s"] = float(nd.get("raw_y", 0.0)) + float(nd.get("a4", 0.0))
 
     # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
@@ -1354,22 +1484,42 @@ def gcode_to_cone1500_module(
             nd["a1"] = 0.0
 
     if bool(enable_a2_const):
-        _apply_const_speed_profile_on_nodes(
-            nodes=nodes,
-            axis_key="a2",
-            coord_key="raw_y",
-            coord_min=float(y_min),
-            coord_max=float(y_max),
-            axis_at_min=float(a2_at_ymin),
-            axis_at_max=float(a2_at_ymax),
-            speed_mm_s=float(speed_mm_s),
-            eps_mm=float(boundary_eps_mm),
-            apply_print_only=bool(apply_print_only),
-            travel_interp=bool(travel_interp),
-        )
+        use_step = bool(st.session_state.get("extconsta2usestep", False))
+        if use_step:
+            _apply_const_speed_profile_on_nodes(
+                nodes=nodes,
+                axis_key="a2",
+                coord_key="coord_s",   # (Y + A4) step mode
+                coord_min=float(y_min),
+                coord_max=float(y_max),
+                axis_at_min=float(a2_at_ymin),
+                axis_at_max=float(a2_at_ymax),
+                speed_mm_s=float(speed_mm_s),
+                eps_mm=float(boundary_eps_mm),
+                apply_print_only=bool(apply_print_only),
+                travel_interp=bool(travel_interp),
+                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
+                step_round="floor",
+            )
+        else:
+            _apply_const_speed_profile_on_nodes(
+                nodes=nodes,
+                axis_key="a2",
+                coord_key="raw_y",     # (중요) rawy 아님
+                coord_min=float(y_min),
+                coord_max=float(y_max),
+                axis_at_min=float(a2_at_ymin),
+                axis_at_max=float(a2_at_ymax),
+                speed_mm_s=float(speed_mm_s),
+                eps_mm=float(boundary_eps_mm),
+                apply_print_only=bool(apply_print_only),
+                travel_interp=bool(travel_interp),
+            )
     else:
         for nd in nodes:
             nd["a2"] = 0.0
+
+
 
     lines_out = []
     for nd in nodes:
@@ -1452,6 +1602,27 @@ if KEY_OK:
                 "Apply printing-only blocks (E 증가 구간만)",
                 value=bool(st.session_state.ext_const_apply_print_only)
             )
+            # (추가) A2를 (Y + A4) 기준으로 계단식 적용
+            if "extconsta2usestep" not in st.session_state:
+                st.session_state.extconsta2usestep = True
+            if "extconsta2stepmm" not in st.session_state:
+                st.session_state.extconsta2stepmm = 60.0
+            
+            st.session_state.extconsta2usestep = st.checkbox(
+                "A2 step mode uses (Y + A4)",
+                value=bool(st.session_state.extconsta2usestep),
+            )
+            
+            st.session_state.extconsta2stepmm = st.number_input(
+                "A2 step length (Y+A4) mm",
+                min_value=0.0,
+                max_value=10000.0,
+                value=float(st.session_state.extconsta2stepmm),
+                step=1.0,
+                format="%.3f",
+                disabled=not bool(st.session_state.extconsta2usestep),
+            )
+
             st.session_state.ext_const_travel_interp = st.checkbox(
                 "Interpolate across travel blocks",
                 value=bool(st.session_state.ext_const_travel_interp)
@@ -1674,8 +1845,8 @@ with right_col:
 if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
-    DRAW_LIMIT = 15000
-    draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
+    DRAW_LIMIT = 150000
+    draw_stride = 1
 
     built = st.session_state.paths_anim_buf["built_upto"]
     prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
