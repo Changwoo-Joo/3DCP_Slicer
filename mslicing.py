@@ -1299,7 +1299,7 @@ def _apply_const_speed_profile_on_nodes(
 # =========================
 # Rapid Converter (UPDATED)
 # =========================
-def gcode_to_cone1500_module(
+def convert_gcode_to_rapid(
     gcode_text: str,
     rx: float,
     ry: float,
@@ -1529,8 +1529,8 @@ def gcode_to_cone1500_module(
                 nodes=nodes,
                 axis_key="a2",
                 coord_key="rawy",
-                coord_min=float(ymin),
-                coord_max=float(ymax),
+                coord_min=float(y_min),
+                coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
                 axis_at_max=float(a2_at_ymax),
                 speed_mm_s=float(speed_mm_s),
@@ -1545,8 +1545,8 @@ def gcode_to_cone1500_module(
                 nodes=nodes,
                 axis_key="a2",
                 coord_key="rawy",
-                coord_min=float(ymin),
-                coord_max=float(ymax),
+                coord_min=float(y_min),
+                coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
                 axis_at_max=float(a2_at_ymax),
                 speed_mm_s=float(speed_mm_s),
@@ -1781,7 +1781,7 @@ if KEY_OK:
         elif over:
             st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
         elif save_rapid_clicked:
-            st.session_state.rapid_text = gcode_to_cone1500_module(
+            st.session_state.rapid_text = convert_gcode_to_rapid(
                 gtxt,
                 rx=st.session_state.rapid_rx,
                 ry=st.session_state.rapid_ry,
