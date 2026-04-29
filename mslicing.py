@@ -1706,46 +1706,18 @@ if KEY_OK:
             
                 # 2) 출력 범위 칸도 별도 줄로 분리
                 if axis_key == "X":
-                    cols_out = st.columns(2)
                     if "A4_out" in PAX:
-                        a4_0 = cols_out[0].number_input(
-                            "A4_out[0] (X)",
-                            value=float(PAX.get("A4_out", [0.0, 0.0])[0]),
-                            step=50.0,
-                            format="%.1f",
-                            key=f"{title_key}_X_a40"
-                        )
-                        a4_1 = cols_out[1].number_input(
-                            "A4_out[1] (X)",
-                            value=float(PAX.get("A4_out", [0.0, 0.0])[1]),
-                            step=50.0,
-                            format="%.1f",
-                            key=f"{title_key}_X_a41"
-                        )
+                        cols2 = st.columns(2)
+                        a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
+                        a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
                         PAX["A4_out"] = [float(a4_0), float(a4_1)]
-                    else:
-                        cols_out[0].info("A4_out(X) 미사용 프리셋")
-            
+                
                 elif axis_key == "Y":
-                    cols_out = st.columns(2)
                     if "A4_out" in PAX:
-                        a4_0 = cols_out[0].number_input(
-                            "A4_out[0] (Y)",
-                            value=float(PAX.get("A4_out", [0.0, 0.0])[0]),
-                            step=50.0,
-                            format="%.1f",
-                            key=f"{title_key}_Y_a40"
-                        )
-                        a4_1 = cols_out[1].number_input(
-                            "A4_out[1] (Y)",
-                            value=float(PAX.get("A4_out", [0.0, 0.0])[1]),
-                            step=50.0,
-                            format="%.1f",
-                            key=f"{title_key}_Y_a41"
-                        )
+                        cols2 = st.columns(2)
+                        a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
+                        a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
                         PAX["A4_out"] = [float(a4_0), float(a4_1)]
-                    else:
-                        cols_out[0].info("A4_out(Y) 미사용 프리셋")
             
                 else:
                     cols_out = st.columns(2)
