@@ -843,6 +843,10 @@ if "ext_const_apply_print_only" not in st.session_state:
     st.session_state.ext_const_apply_print_only = False
 if "ext_const_travel_interp" not in st.session_state:
     st.session_state.ext_const_travel_interp = True
+if "extconsta2usestep" not in st.session_state:
+    st.session_state.extconsta2usestep = False
+if "extconsta2stepmm" not in st.session_state:
+    st.session_state.extconsta2stepmm = 60.0
 
 ensure_anim_buffers()
 
@@ -1615,74 +1619,50 @@ if KEY_OK:
             st.session_state.rapid_rz = float(rz_preset)
 
         with st.sidebar.expander("외부축 (A1/A2 등속 왕복 · 경계정지)", expanded=True):
-            st.caption("A1은 raw X, A2는 raw Y 기준. A1은 |ΔX|로만, A2는 |ΔY|로만 진행합니다. "
-                       "X가 xmin/xmax에 '있을 때'는 A1 고정, 경계에서 '벗어나면' 바로 진행합니다.")
+            st.caption("X/Y 입력 범위를 실제 외부축 A1/A2 위치로 매핑합니다.")
 
-            st.session_state.ext_const_speed_mm_s = st.number_input(
-                "축 기준 속도 (mm/s)",
-                min_value=1.0, max_value=2000.0,
-                value=float(st.session_state.ext_const_speed_mm_s),
-                step=10.0, format="%.1f"
-            )
-            st.session_state.ext_const_eps_mm = st.number_input(
-                "경계 스냅/유지 허용값 eps (mm)",
-                min_value=0.0, max_value=50.0,
-                value=float(st.session_state.ext_const_eps_mm),
-                step=0.1, format="%.2f"
-            )
-            st.session_state.ext_const_apply_print_only = st.checkbox(
-                "출력 구간 블록에만 적용 (E 증가 구간만)",
-                value=bool(st.session_state.ext_const_apply_print_only)
-            )
-            # (추가) A2를 (Y + A4) 기준으로 계단식 적용
-            if "extconsta2usestep" not in st.session_state:
-                st.session_state.extconsta2usestep = True
-            if "extconsta2stepmm" not in st.session_state:
-                st.session_state.extconsta2stepmm = 60.0
-            
-            st.session_state.extconsta2usestep = st.checkbox(
-                "A2 스텝 모드에 (Y + A4) 사용",
-                value=bool(st.session_state.extconsta2usestep),
-            )
-            
-            st.session_state.extconsta2stepmm = st.number_input(
-                "A2 스텝 길이 (Y+A4) mm",
-                min_value=0.0,
-                max_value=10000.0,
-                value=float(st.session_state.extconsta2stepmm),
-                step=1.0,
-                format="%.3f",
-                disabled=not bool(st.session_state.extconsta2usestep),
-            )
+            # 일반 화면에서는 고급 옵션을 고정값으로 사용해 혼동을 줄인다.
+            st.session_state.ext_const_apply_print_only = False
+            st.session_state.ext_const_travel_interp = True
+            st.session_state.extconsta2usestep = False
 
-            st.session_state.ext_const_travel_interp = st.checkbox(
-                "Travel 블록 사이 보간",
-                value=bool(st.session_state.ext_const_travel_interp)
-            )
-
-            st.markdown("**A1 (raw X → A1)**")
+            st.markdown("**A1 설정 (X → A1)**")
             st.session_state.ext_const_enable_a1 = st.checkbox(
-                "A1 등속 프로파일 활성화",
+                "A1 사용",
                 value=bool(st.session_state.ext_const_enable_a1)
             )
             cols = st.columns(2)
-            st.session_state.ext_const_xmin = cols[0].number_input("Xmin (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
-            st.session_state.ext_const_xmax = cols[1].number_input("Xmax (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
+            st.session_state.ext_const_xmin = cols[0].number_input("X 입력 최소값 (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
+            st.session_state.ext_const_xmax = cols[1].number_input("X 입력 최대값 (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
             cols2 = st.columns(2)
-            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input("A1 @ Xmin", value=float(st.session_state.ext_const_a1_at_xmin), step=50.0, format="%.3f")
-            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 @ Xmax", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
+            st.session_state.ext_const_a1_at_xmin = cols2[0].number_input("A1 최소 위치", value=float(st.session_state.ext_const_a1_at_xmin), step=50.0, format="%.3f")
+            st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 최대 위치", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
 
-            st.markdown("**A2 (raw Y → A2)**")
+            st.markdown("**A2 설정 (Y → A2)**")
             st.session_state.ext_const_enable_a2 = st.checkbox(
-                "A2 등속 프로파일 활성화",
+                "A2 사용",
                 value=bool(st.session_state.ext_const_enable_a2)
             )
             cols3 = st.columns(2)
-            st.session_state.ext_const_ymin = cols3[0].number_input("Ymin (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
-            st.session_state.ext_const_ymax = cols3[1].number_input("Ymax (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
+            st.session_state.ext_const_ymin = cols3[0].number_input("Y 입력 최소값 (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
+            st.session_state.ext_const_ymax = cols3[1].number_input("Y 입력 최대값 (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
             cols4 = st.columns(2)
-            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("A2 @ Ymin", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f")
-            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 @ Ymax", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
+            st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("A2 최소 위치", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f")
+            st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 최대 위치", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
+
+            with st.expander("고급 설정", expanded=False):
+                st.session_state.ext_const_speed_mm_s = st.number_input(
+                    "축 기준 속도 (mm/s)",
+                    min_value=1.0, max_value=2000.0,
+                    value=float(st.session_state.ext_const_speed_mm_s),
+                    step=10.0, format="%.1f"
+                )
+                st.session_state.ext_const_eps_mm = st.number_input(
+                    "경계 허용값 eps (mm)",
+                    min_value=0.0, max_value=50.0,
+                    value=float(st.session_state.ext_const_eps_mm),
+                    step=0.1, format="%.2f"
+                )
 
         with st.sidebar.expander("매핑 프리셋 (편집/저장/불러오기)", expanded=False):
             st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
