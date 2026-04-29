@@ -13,7 +13,7 @@ from pathlib import Path
 # =========================
 # App basics
 # =========================
-st.set_page_config(page_title="3DCP Slicer", layout="wide")
+st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
 
 # ── 전역 CSS ──
 st.markdown(
@@ -54,7 +54,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.sidebar.markdown("<div class='sidebar-title'>3DCP Slicer</div>", unsafe_allow_html=True)
+st.sidebar.markdown("<div class='sidebar-title'>3DCP 슬라이서</div>", unsafe_allow_html=True)
 
 EXTRUSION_K = 0.05
 
@@ -834,11 +834,11 @@ if "ext_const_travel_interp" not in st.session_state:
 ensure_anim_buffers()
 
 # =========================
-# Access
+# 접근 권한
 # =========================
-st.sidebar.header("Access")
+st.sidebar.header("접근 권한")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
-access_key = st.sidebar.text_input("Access Key", type="password", key="access_key")
+access_key = st.sidebar.text_input("접근 키", type="password", key="access_key")
 
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
@@ -870,49 +870,49 @@ if access_key:
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.warning("Access Key를 입력하세요.")
+    st.sidebar.warning("접근 키를 입력하세요.")
 
-uploaded = st.sidebar.file_uploader("Upload STL", type=["stl"], disabled=not KEY_OK)
+uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], disabled=not KEY_OK)
 
 # =========================
-# Parameters
+# 파라미터
 # =========================
-st.sidebar.header("Parameters")
-z_int = st.sidebar.number_input("Z interval (mm)", 1.0, 1000.0, 15.0)
-feed = st.sidebar.number_input("Feedrate (F)", 1, 100000, 2000)
-ref_x = st.sidebar.number_input("Reference X", value=0.0)
-ref_y = st.sidebar.number_input("Reference Y", value=0.0)
+st.sidebar.header("기본 파라미터")
+z_int = st.sidebar.number_input("Z 간격 (mm)", 1.0, 1000.0, 15.0)
+feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
+ref_x = st.sidebar.number_input("기준 X", value=0.0)
+ref_y = st.sidebar.number_input("기준 Y", value=0.0)
 
-st.sidebar.subheader("Extrusion options")
-e_on = st.sidebar.checkbox("Insert E values")
-start_e_on = st.sidebar.checkbox("Continuous Layer Printing", value=False, disabled=not e_on)
-start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (e_on and start_e_on))
-e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
+st.sidebar.subheader("압출 옵션")
+e_on = st.sidebar.checkbox("E 값 삽입")
+start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
+start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
+e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
 
-st.sidebar.subheader("Path processing")
+st.sidebar.subheader("경로 처리")
 enable_corner = st.sidebar.checkbox(
-    "Enable corner neighbor points",
+    "코너 주변점 활성화",
     value=True,
     key="enable_corner_points",
 )
 
 corner_d = st.sidebar.number_input(
-    "Corner neighbor distance (mm)",
+    "코너 주변 거리 (mm)",
     0.0, 1000.0, 5.0, 1.0,
     key="corner_neighbor_distance_mm",
     disabled=not enable_corner,   # (선택) OFF면 입력 비활성
 )
 
-trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
-min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
-corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
-auto_start = st.sidebar.checkbox("Start next layer near previous start")
-m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
+trim_dist = st.sidebar.number_input("트림/레이어 폭 (mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("최소 점 간격 (mm)", 0.0, 1000.0, 5.0)
+corner_d = st.sidebar.number_input("코너 주변 거리 (mm)", 0.0, 1000.0, 5.0, 1.0)
+auto_start = st.sidebar.checkbox("이전 시작점 근처에서 다음 레이어 시작")
+m30_on = st.sidebar.checkbox("끝에 M30 추가", value=False)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
-slice_clicked = b1.button("Slice Model", use_container_width=True)
-gen_clicked = b2.button("Generate G-Code", use_container_width=True)
+slice_clicked = b1.button("모델 슬라이싱", use_container_width=True)
+gen_clicked = b2.button("G-code 생성", use_container_width=True)
 
 # =========================
 # Load mesh on upload
@@ -923,7 +923,7 @@ if uploaded is not None:
         tmp_path = tmp.name
     mesh = trimesh.load_mesh(tmp_path)
     if not isinstance(mesh, trimesh.Trimesh):
-        st.error("STL must contain a single mesh")
+        st.error("STL 파일에는 단일 메시만 포함되어야 합니다.")
         st.stop()
     # Z 아주 미세 확장 (절단면 인식)
     scale_matrix = np.eye(4)
@@ -1570,36 +1570,36 @@ def gcode_to_cone1500_module(
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
 if KEY_OK:
-    if st.sidebar.button("Generate Rapid", use_container_width=True):
+    if st.sidebar.button("Rapid 생성", use_container_width=True):
         st.session_state.show_rapid_panel = True
 
     if st.session_state.show_rapid_panel:
-        with st.sidebar.expander("Rapid Settings", expanded=True):
+        with st.sidebar.expander("Rapid 설정", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
 
-            rz_preset = st.selectbox("Rz (deg) preset", options=[0.00, 90.0, -90.0],
+            rz_preset = st.selectbox("Rz (deg) 프리셋", options=[0.00, 90.0, -90.0],
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
-        with st.sidebar.expander("External Axis (A1/A2 등속 왕복 · 경계정지)", expanded=True):
+        with st.sidebar.expander("외부축 (A1/A2 등속 왕복 · 경계정지)", expanded=True):
             st.caption("A1은 raw X, A2는 raw Y 기준. A1은 |ΔX|로만, A2는 |ΔY|로만 진행합니다. "
                        "X가 xmin/xmax에 '있을 때'는 A1 고정, 경계에서 '벗어나면' 바로 진행합니다.")
 
             st.session_state.ext_const_speed_mm_s = st.number_input(
-                "Axis speed base (mm/s)",
+                "축 기준 속도 (mm/s)",
                 min_value=1.0, max_value=2000.0,
                 value=float(st.session_state.ext_const_speed_mm_s),
                 step=10.0, format="%.1f"
             )
             st.session_state.ext_const_eps_mm = st.number_input(
-                "Boundary snap/hold eps (mm)",
+                "경계 스냅/유지 허용값 eps (mm)",
                 min_value=0.0, max_value=50.0,
                 value=float(st.session_state.ext_const_eps_mm),
                 step=0.1, format="%.2f"
             )
             st.session_state.ext_const_apply_print_only = st.checkbox(
-                "Apply printing-only blocks (E 증가 구간만)",
+                "출력 구간 블록에만 적용 (E 증가 구간만)",
                 value=bool(st.session_state.ext_const_apply_print_only)
             )
             # (추가) A2를 (Y + A4) 기준으로 계단식 적용
@@ -1609,12 +1609,12 @@ if KEY_OK:
                 st.session_state.extconsta2stepmm = 60.0
             
             st.session_state.extconsta2usestep = st.checkbox(
-                "A2 step mode uses (Y + A4)",
+                "A2 스텝 모드에 (Y + A4) 사용",
                 value=bool(st.session_state.extconsta2usestep),
             )
             
             st.session_state.extconsta2stepmm = st.number_input(
-                "A2 step length (Y+A4) mm",
+                "A2 스텝 길이 (Y+A4) mm",
                 min_value=0.0,
                 max_value=10000.0,
                 value=float(st.session_state.extconsta2stepmm),
@@ -1624,13 +1624,13 @@ if KEY_OK:
             )
 
             st.session_state.ext_const_travel_interp = st.checkbox(
-                "Interpolate across travel blocks",
+                "Travel 블록 사이 보간",
                 value=bool(st.session_state.ext_const_travel_interp)
             )
 
             st.markdown("**A1 (raw X → A1)**")
             st.session_state.ext_const_enable_a1 = st.checkbox(
-                "Enable A1 constant-speed profile",
+                "A1 등속 프로파일 활성화",
                 value=bool(st.session_state.ext_const_enable_a1)
             )
             cols = st.columns(2)
@@ -1642,7 +1642,7 @@ if KEY_OK:
 
             st.markdown("**A2 (raw Y → A2)**")
             st.session_state.ext_const_enable_a2 = st.checkbox(
-                "Enable A2 constant-speed profile",
+                "A2 등속 프로파일 활성화",
                 value=bool(st.session_state.ext_const_enable_a2)
             )
             cols3 = st.columns(2)
@@ -1652,10 +1652,10 @@ if KEY_OK:
             st.session_state.ext_const_a2_at_ymin = cols4[0].number_input("A2 @ Ymin", value=float(st.session_state.ext_const_a2_at_ymin), step=50.0, format="%.3f")
             st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 @ Ymax", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
 
-        with st.sidebar.expander("Mapping Presets (편집/저장/불러오기)", expanded=False):
+        with st.sidebar.expander("매핑 프리셋 (편집/저장/불러오기)", expanded=False):
             st.caption("Rz 프리셋(0, +90, -90)에 대해 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
 
-            up_json = st.file_uploader("Load preset JSON", type=["json"], key="mapping_preset_loader")
+            up_json = st.file_uploader("프리셋 JSON 불러오기", type=["json"], key="mapping_preset_loader")
             if up_json is not None:
                 try:
                     loaded = json.loads(up_json.read().decode("utf-8"))
@@ -1709,7 +1709,7 @@ if KEY_OK:
                 edit_axis(key_title, "Z")
 
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-            st.download_button("Save preset JSON", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
+            st.download_button("프리셋 JSON 저장", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
         gtxt = st.session_state.get("gcode_text")
         over = None
@@ -1717,9 +1717,9 @@ if KEY_OK:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > MAX_LINES)
 
-        save_rapid_clicked = st.sidebar.button("Save Rapid (.modx)", use_container_width=True, disabled=(gtxt is None))
+        save_rapid_clicked = st.sidebar.button("Rapid 저장 (.modx)", use_container_width=True, disabled=(gtxt is None))
         if gtxt is None:
-            st.sidebar.info("먼저 Generate G-Code로 G-code를 생성하세요.")
+            st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
         elif over:
             st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
         elif save_rapid_clicked:
@@ -1774,35 +1774,35 @@ with right_col:
     if st.session_state.get("ui_banner"):
         st.success(st.session_state.ui_banner)
 
-    st.subheader("View Options")
+    st.subheader("보기 옵션")
     apply_offsets = st.checkbox(
-        "Apply layer width",
+        "레이어 폭 적용",
         value=bool(st.session_state.get("apply_offsets_flag", False)),
-        help="Trim/Layer Width (mm)를 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
+        help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
         disabled=(segments is None)
     )
     st.session_state.apply_offsets_flag = bool(apply_offsets)
 
     include_z_climb = st.checkbox(
-        "Include Z-climb offsets",
+        "Z 상승 오프셋 포함",
         value=True,
         help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
         disabled=(segments is None or not apply_offsets)
     )
 
     emphasize_caps = st.checkbox(
-        "Emphasize caps",
+        "캡 강조",
         value=False,
         help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
         disabled=(segments is None or not apply_offsets)
     )
 
     if e_on:
-        show_dotted = st.checkbox("Show dotted travel lines", value=True, disabled=(segments is None))
+        show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=True, disabled=(segments is None))
         travel_mode = "dotted" if show_dotted else "hidden"
     else:
-        st.checkbox("Show dotted travel lines", value=False, disabled=True,
-                    help="Insert E values OFF이면 travel은 실선으로 표기")
+        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True,
+                    help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
         travel_mode = "solid"
     prev_mode = st.session_state.get("paths_travel_mode", "solid")
     st.session_state.paths_travel_mode = travel_mode
@@ -1815,7 +1815,7 @@ with right_col:
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
-        scrub = st.slider("진행(segments)", 0, int(total_segments), int(default_val), 1,
+        scrub = st.slider("진행(세그먼트)", 0, int(total_segments), int(default_val), 1,
                           help="해당 세그먼트까지 누적 표시")
         scrub_num = st.number_input("행 번호", 0, int(total_segments),
                                     int(default_val), 1,
@@ -1884,7 +1884,7 @@ else:
 
 # ---- 중앙: 탭 뷰어 ----
 with center_col:
-    tab_paths, tab_stl, tab_gcode = st.tabs(["Sliced Paths (3D)", "STL Preview", "G-code Viewer"])
+    tab_paths, tab_stl, tab_gcode = st.tabs(["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"])
 
     with tab_paths:
         if segments is not None and total_segments > 0:
@@ -1900,15 +1900,15 @@ with center_col:
 
             tm = st.session_state.paths_travel_mode
             if not e_on:
-                travel_lbl = "Travel: solid (Insert E OFF)"
+                travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
             else:
-                travel_lbl = "Travel: dotted" if tm == "dotted" else ("Travel: hidden" if tm == "hidden" else "Travel: solid")
+                travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
             st.caption(
                 f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-                + (f" | Offsets: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
-                + (" | Caps 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
+                + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
+                + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
-                + (f" | Viz stride: ×{st.session_state.paths_anim_buf.get('stride',1)}"
+                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}"
                    if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
@@ -1932,4 +1932,4 @@ with center_col:
             st.info("G-code를 생성하세요.")
 
 if not KEY_OK:
-    st.warning("유효한 Access Key를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+    st.warning("유효한 접근 키를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
