@@ -886,6 +886,13 @@ else:
     st.sidebar.warning("접근 키를 입력하세요.")
 
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], disabled=not KEY_OK)
+stl_unit_mode = st.sidebar.selectbox(
+    "STL 단위",
+    ["자동 감지", "mm", "m → mm (×1000)"],
+    index=0,
+    disabled=not KEY_OK,
+    help="첨부한 column_1x1x3_m.stl처럼 좌표가 0~3이면 m 단위로 보고 mm로 변환해야 합니다."
+)
 
 # =========================
 # 파라미터
@@ -938,6 +945,15 @@ if uploaded is not None:
     if not isinstance(mesh, trimesh.Trimesh):
         st.error("STL 파일에는 단일 메시만 포함되어야 합니다.")
         st.stop()
+    extents = np.asarray(mesh.extents, dtype=float)
+    max_extent = float(np.max(extents)) if extents.size else 0.0
+    scale_to_mm = 1.0
+    if stl_unit_mode == "m → mm (×1000)" or (stl_unit_mode == "자동 감지" and 0.0 < max_extent <= 20.0):
+        scale_to_mm = 1000.0
+        mesh.apply_scale(scale_to_mm)
+        st.sidebar.info(f"STL 단위 자동 변환: m → mm (최대 치수 {max_extent:.3f} → {max_extent * scale_to_mm:.1f} mm)")
+    else:
+        st.sidebar.info(f"STL 단위: mm 기준 사용 (최대 치수 {max_extent:.1f} mm)")
     # Z 아주 미세 확장 (절단면 인식)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
@@ -964,7 +980,10 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     st.session_state.paths_scrub = max_seg
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
-    st.session_state.ui_banner = "Slicing complete"
+    if max_seg == 0:
+        st.session_state.ui_banner = "슬라이싱 결과가 없습니다. STL 단위, Z 간격, 트림/레이어 폭, 최소 점 간격을 확인하세요."
+    else:
+        st.session_state.ui_banner = f"슬라이싱 완료: 세그먼트 {max_seg:,}개"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
