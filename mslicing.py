@@ -1501,7 +1501,7 @@ def gcode_to_cone1500_module(
         })
     # (수정) A2용 좌표: S = raw_y + a4
     for nd in nodes:
-        nd["coord_s"] = float(nd.get("raw_y", 0.0)) + float(nd.get("a4", 0.0))
+        nd["coords"] = float(nd.get("rawy", 0.0))
 
     # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
@@ -1528,9 +1528,9 @@ def gcode_to_cone1500_module(
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="coord_s",   # (Y + A4) step mode
-                coord_min=float(y_min),
-                coord_max=float(y_max),
+                coord_key="rawy",
+                coord_min=float(ymin),
+                coord_max=float(ymax),
                 axis_at_min=float(a2_at_ymin),
                 axis_at_max=float(a2_at_ymax),
                 speed_mm_s=float(speed_mm_s),
@@ -1544,9 +1544,9 @@ def gcode_to_cone1500_module(
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="raw_y",     # (중요) rawy 아님
-                coord_min=float(y_min),
-                coord_max=float(y_max),
+                coord_key="rawy",
+                coord_min=float(ymin),
+                coord_max=float(ymax),
                 axis_at_min=float(a2_at_ymin),
                 axis_at_max=float(a2_at_ymax),
                 speed_mm_s=float(speed_mm_s),
