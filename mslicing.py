@@ -3,7 +3,6 @@ import streamlit as st
 import numpy as np
 import math
 import json
-import time
 import trimesh
 import tempfile
 import plotly.graph_objects as go
@@ -229,57 +228,6 @@ def densify_sparse_corners(poly: np.ndarray,
     s_targets.sort()
     return _resample_polyline_by_s(pts, s_targets)
 
-
-def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
-                             collinear_eps: float = 1e-12,
-                             min_sep_eps: float = 1e-6) -> np.ndarray:
-    pts = np.asarray(poly, dtype=float)
-    n = len(pts)
-    if n < 3 or d_mm <= 0:
-        return pts.copy()
-
-    out = [pts[0].copy()]
-
-    for i in range(1, n - 1):
-        p0 = pts[i - 1]
-        p1 = pts[i]
-        p2 = pts[i + 1]
-
-        v1 = p1 - p0
-        v2 = p2 - p1
-        L1 = float(np.linalg.norm(v1[:2]))
-        L2 = float(np.linalg.norm(v2[:2]))
-
-        cross = v1[0]*v2[1] - v1[1]*v2[0]
-        is_corner = abs(cross) > collinear_eps and L1 > 1e-9 and L2 > 1e-9
-
-        if not is_corner:
-            out.append(p1.copy())
-            continue
-
-        # before point
-        if L1 > d_mm + min_sep_eps:
-            u1 = v1 / L1
-            p_before = p1 - u1 * d_mm
-            if np.linalg.norm((p_before - out[-1])[:2]) > min_sep_eps:
-                out.append(p_before)
-
-        # corner itself
-        if np.linalg.norm((p1 - out[-1])[:2]) > min_sep_eps:
-            out.append(p1.copy())
-
-        # after point
-        if L2 > d_mm + min_sep_eps:
-            u2 = v2 / L2
-            p_after = p1 + u2 * d_mm
-            if np.linalg.norm((p_after - out[-1])[:2]) > min_sep_eps:
-                out.append(p_after)
-
-    if np.linalg.norm((pts[-1] - out[-1])[:2]) > min_sep_eps:
-        out.append(pts[-1].copy())
-
-    return np.asarray(out, dtype=float)
-
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -292,25 +240,11 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
         color="#888888", opacity=0.6, flatshading=True,
         lighting=dict(ambient=0.6, diffuse=0.9, roughness=0.9, specular=0.1)
     )])
-    # 카메라 줌 퍼센트 적용
-    # orthographic 줌 트릭: aspectratio 스케일링
-    zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    scale = zoom_pct / 100.0 
-
     fig.update_layout(
-        scene=dict(
-            aspectmode="manual", 
-            aspectratio=dict(x=scale, y=scale, z=scale),
-            camera=dict(
-                projection=dict(type="orthographic")
-            )
-        ),
-        height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision=zoom_pct
+        scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
+        height=height, margin=dict(l=0, r=0, t=10, b=0)
     )
     return fig
-
-
 
 # =========================
 # G-code generator
@@ -324,12 +258,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    
-    if not z_values:
-        z_values = [z_max]
-    elif abs(z_max - z_values[-1]) > 1e-3:
+    if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    
     z_values.append(z_max + 0.01)
 
     prev_start_xy = None
@@ -362,8 +292,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            if enable_corner:
-               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
+            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
 
             if i_seg > 0:
                 s = simplified[0]
@@ -408,12 +337,8 @@ def compute_slice_paths_with_travel(
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
     z_max = mesh.bounds[1, 2]
     z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    
-    if not z_values:
-        z_values = [z_max]
-    elif abs(z_max - z_values[-1]) > 1e-3:
+    if abs(z_max - z_values[-1]) > 1e-3:
         z_values.append(z_max)
-    
     z_values.append(z_max + 0.01)
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -445,8 +370,7 @@ def compute_slice_paths_with_travel(
             shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
             trimmed = trim_closed_ring_tail(shifted, trim_dist)
             simplified = simplify_segment(trimmed, min_spacing)
-            if enable_corner:
-               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
+            simplified = densify_sparse_corners(simplified, step_mm=5.0, window_mm=30.0)
             layer_polys.append(simplified.copy())
             if i_seg == 0:
                 prev_start_xy = simplified[0][:2]
@@ -680,76 +604,29 @@ def add_global_endcaps_into_buffers(segments, upto, half_width, samples=32, stor
 
 def make_base_fig(height=820) -> go.Figure:
     fig = go.Figure()
-    
-    # 1. 궤적 Trace 추가 (0 ~ 4)
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT), showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT), showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY), showlegend=False))
-    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines", line=dict(width=6, dash="solid", color=CAP_COLOR), showlegend=False))
-    
-    # 2. 줌 퍼센트 적용
-    zoom_pct = st.session_state.get("camera_zoom_pct", 100)
-    scale = zoom_pct / 100.0
-
-    xr = yr = zr = 1.0
-    x_range = y_range = z_range = [-1, 1]
-
-    # 모델 크기를 측정하여 고정된 범위를 계산
-    if st.session_state.get("mesh") is not None:
-        bounds = st.session_state.mesh.bounds
-        x_min, x_max = float(bounds[0][0]), float(bounds[1][0])
-        y_min, y_max = float(bounds[0][1]), float(bounds[1][1])
-        z_min, z_max = float(bounds[0][2]), float(bounds[1][2])
-        
-        # 외곽선이 잘리지 않게 5% 여백
-        pad_x = (x_max - x_min) * 0.05
-        pad_y = (y_max - y_min) * 0.05
-        pad_z = (z_max - z_min) * 0.05
-        
-        x_range = [x_min - pad_x, x_max + pad_x]
-        y_range = [y_min - pad_y, y_max + pad_y]
-        z_range = [z_min - pad_z, z_max + pad_z]
-        
-        xr = x_range[1] - x_range[0]
-        yr = y_range[1] - y_range[0]
-        zr = z_range[1] - z_range[0]
-
-    mr = max(xr, yr, zr)
-    if mr == 0: mr = 1.0
-
-    # 3. [Trace 5] 투명 박스 - 1:1:1 비율을 강제 유지하기 위해 가장 긴 축(mr)을 기준으로 상자를 그림
-    # 이렇게 하면 Autoscale이 켜지더라도 항상 이 가장 긴 상자 크기에 맞춰지므로 비율이 무너지지 않음
-    x_mid = (x_range[0] + x_range[1]) / 2.0
-    y_mid = (y_range[0] + y_range[1]) / 2.0
-    z_mid = (z_range[0] + z_range[1]) / 2.0
-
-    fig.add_trace(go.Scatter3d(
-        x=[x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2, x_mid - mr/2, x_mid + mr/2],
-        y=[y_mid - mr/2, y_mid - mr/2, y_mid + mr/2, y_mid + mr/2, y_mid - mr/2, y_mid - mr/2, y_mid + mr/2, y_mid + mr/2],
-        z=[z_mid - mr/2, z_mid - mr/2, z_mid - mr/2, z_mid - mr/2, z_mid + mr/2, z_mid + mr/2, z_mid + mr/2, z_mid + mr/2],
-        mode='markers', marker=dict(size=0, opacity=0), showlegend=False, hoverinfo='skip'
-    ))
-
-    # 4. 레이아웃: aspectmode를 'manual'로 돌리고 scale을 다시 적용
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
+                               showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
+                               showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
+                               showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
+                               showlegend=False))
+    fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
+                               line=dict(width=6, dash="solid", color=CAP_COLOR),
+                               name="Caps Emphasis", showlegend=False))
     fig.update_layout(
-        scene=dict(
-            # 투명박스 덕분에 범위를 고정할 필요가 없으므로 autorange는 그냥 둠
-            aspectmode="manual", 
-            # 정육면체(투명박스)를 넣었으므로 aspectratio는 1:1:1에 scale만 곱해줌
-            aspectratio=dict(x=1.0*scale, y=1.0*scale, z=1.0*scale),
-            camera=dict(projection=dict(type="orthographic"))
-        ),
+        scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
-        uirevision="constant_scale", transition={'duration': 0}
+        uirevision="keep", transition={'duration': 0}
     )
     return fig
 
-
-
-
-
-def ensure_traces(fig: go.Figure, want=6):
+def ensure_traces(fig: go.Figure, want=5):
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
@@ -771,11 +648,7 @@ def ensure_traces(fig: go.Figure, want=6):
         if n == 0: add_solid()
         elif n == 1: add_dot()
         elif n in (2, 3): add_off()
-        elif n == 4: add_caps()
-        else: 
-            # 5번째는 투명 바운딩 박스 자리이므로 빈 마커 추가
-            fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode='markers', marker=dict(size=0, opacity=0), showlegend=False))
-
+        else: add_caps()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
     ensure_traces(fig, want=5)
@@ -867,15 +740,6 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
-
-if "is_playing" not in st.session_state:
-    st.session_state.is_playing = False
-if "camera_zoom_pct" not in st.session_state:
-    st.session_state.camera_zoom_pct = 100
-if "anim_speed" not in st.session_state:
-    st.session_state.anim_speed = 100
-if "anim_step" not in st.session_state:
-    st.session_state.anim_step = 30
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -973,22 +837,8 @@ start_e_val = st.sidebar.number_input("Start E value", value=0.1, disabled=not (
 e0_on = st.sidebar.checkbox("Add E0 at loop end", value=False, disabled=not e_on)
 
 st.sidebar.subheader("Path processing")
-enable_corner = st.sidebar.checkbox(
-    "Enable corner neighbor points",
-    value=True,
-    key="enable_corner_points",
-)
-
-corner_d = st.sidebar.number_input(
-    "Corner neighbor distance (mm)",
-    0.0, 1000.0, 5.0, 1.0,
-    key="corner_neighbor_distance_mm",
-    disabled=not enable_corner,   # (선택) OFF면 입력 비활성
-)
-
 trim_dist = st.sidebar.number_input("Trim/Layer Width (mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("Minimum point spacing (mm)", 0.0, 1000.0, 5.0)
-corner_d = st.sidebar.number_input("Corner neighbor distance (mm)", 0.0, 1000.0, 5.0, 1.0)
 auto_start = st.sidebar.checkbox("Start next layer near previous start")
 m30_on = st.sidebar.checkbox("Append M30 at end", value=False)
 
@@ -1081,19 +931,19 @@ def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
 
 DEFAULT_PRESET = {
     "0": {
-        "X": {"in": [0.0, 6500.0], "A3_out": [0.0, 500.0]},
+        "X": {"in": [0.0, 6500.0], "A4_out": [0.0, 500.0]},
         "Y": {"in": [0.0, 1000.0]},
-        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
+        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
     },
     "90": {
         "X": {"in": [0.0, 6500.0]},
-        "Y": {"in": [0.0, 1000.0], "A3_out": [500.0, 0.0]},
-        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
+        "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
     },
     "-90": {
         "X": {"in": [0.0, 6500.0]},
-        "Y": {"in": [0.0, 1000.0], "A3_out": [0.0, 500.0]},
-        "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
+        "Y": {"in": [0.0, 1000.0], "A4_out": [0.0, 500.0]},
+        "Z": {"in": [0.0, 3000.0], "A3_out": [0.0, 1000.0]},
     },
 }
 
@@ -1133,12 +983,9 @@ def _apply_const_speed_profile_on_nodes(
     axis_at_min: float,
     axis_at_max: float,
     speed_mm_s: float = 200.0,
-    deadband_mm: float = 11.0,
     eps_mm: float = 0.5,
     apply_print_only: bool = False,
-    travel_interp: bool = True,
-    step_mm: float = 0.0,             # (추가) 0이면 기존처럼 연속, >0이면 계단
-    step_round: str = "floor",        # (추가) "floor" / "round" / "ceil"
+    travel_interp: bool = True
 ) -> None:
     if not nodes or axis_key not in ("a1", "a2"):
         return
@@ -1159,158 +1006,101 @@ def _apply_const_speed_profile_on_nodes(
             nd[axis_key] = float(axis_at_min)
         return
 
+    # axis per mm (속도 파라미터는 출력 포지션에선 상쇄되지만, 인터페이스 호환 위해 유지)
     axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
 
     def _coord(i: int) -> float:
-        return float(nodes[i].get(coord_key, 0.0))
+        return float(nodes[i][coord_key])
 
+    # 경계 판정: <= / >= 로 잡아서 오차에 강하게
     def _at_min(c: float) -> bool:
         return c <= coord_min + eps
 
     def _at_max(c: float) -> bool:
         return c >= coord_max - eps
 
-    def _snap_linear(c: float) -> float:
+    def _snap_axis_for_coord(c: float) -> float:
         if _at_min(c):
             return float(axis_at_min)
         if _at_max(c):
             return float(axis_at_max)
+        # 내부면 선형 맵(시작점이 내부에서 시작할 때 점프 방지)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
         return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
-    def _snap_step(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
-
-        t = (c - coord_min) / span_abs
-        t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-
-        dt = float(step_mm) / span_abs if step_mm is not None else 0.0
-        if dt <= 1e-12:
-            return _snap_linear(c)
-
-        if step_round == "round":
-            tq = round(t / dt) * dt
-        elif step_round == "ceil":
-            tq = math.ceil(t / dt) * dt
-        else:  # "floor"
-            tq = math.floor(t / dt) * dt
-
-        tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
-        return float(axis_at_min + tq * (axis_at_max - axis_at_min))
-
-    use_step = (step_mm is not None) and (float(step_mm) > 0.0)
-    snap_for_coord = _snap_step if use_step else _snap_linear
-
+    # apply_print_only이면 "다음 노드가 extruding(True)일 때"만 진행(세그먼트 기준)
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
+    # 초기값/방향 설정
     c0 = _coord(0)
-    nodes[0][axis_key] = float(snap_for_coord(c0))
+    nodes[0][axis_key] = _snap_axis_for_coord(c0)
 
-    # 초기 진행 방향
+    # dir_mode: "fwd"(coord_min→coord_max로 가는 동안 axis_at_min→axis_at_max), "bwd"(반대)
     if _at_min(c0):
         dir_mode = "fwd"
     elif _at_max(c0):
         dir_mode = "bwd"
     else:
+        # 첫 유효 Δcoord로 방향 추정
         dir_mode = "fwd"
+        for j in range(1, n):
+            dc = _coord(j) - c0
+            if abs(dc) > 1e-9:
+                dir_mode = "fwd" if dc > 0 else "bwd"
+                break
 
-    # 매크로 왕복 추적용 상태
-    macro_peak = c0
-    macro_valley = c0
-    turn_thresh = max(float(deadband_mm) * 3.0, span_abs * 0.05)  # 예: 4000 span이면 200mm
+    # 진행
+    for i in range(n - 1):
+        ci = _coord(i)
+        cj = _coord(i + 1)
 
-    ai = float(nodes[0][axis_key])
+        # 현재가 경계면 방향 강제
+        if _at_min(ci):
+            nodes[i][axis_key] = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(ci):
+            nodes[i][axis_key] = float(axis_at_max)
+            dir_mode = "bwd"
 
-    for i in range(1, n):
-        ci = _coord(i - 1)
-        cj = _coord(i)
+        ai = float(nodes[i][axis_key])
 
-        # 새 레이어 시작 시 방향 리셋
-        zi = float(nodes[i - 1].get("z", 0.0))
-        zj = float(nodes[i].get("z", 0.0))
-        if abs(zj - zi) > 1e-4:
-            idx_next = min(n - 1, i + 50)
-            c_next = float(nodes[idx_next].get(coord_key, cj))
-            dir_mode = "fwd" if (c_next - cj) >= 0.0 else "bwd"
-            macro_peak = cj
-            macro_valley = cj
-
-        # 경계에 정확히 안 닿아도, 충분한 반전이 생기면 왕복 방향 전환
-        if dir_mode == "fwd":
-            if cj > macro_peak:
-                macro_peak = cj
-            elif (macro_peak - cj) >= turn_thresh:
-                dir_mode = "bwd"
-                macro_valley = cj
-        else:
-            if cj < macro_valley:
-                macro_valley = cj
-            elif (cj - macro_valley) >= turn_thresh:
-                dir_mode = "fwd"
-                macro_peak = cj
-
+        # 이 스텝( i -> i+1 )에서 진행할지 여부
         active = True
         if apply_print_only:
-            active = bool(extr_node[i - 1])
+            active = bool(extr_node[i + 1])
 
         dcoord = float(cj - ci)
-
-        if abs(dcoord) < float(deadband_mm):
-            nodes[i][axis_key] = float(ai)
-            continue
-
         if (not active) or abs(dcoord) <= 1e-12:
             aj = ai
         else:
-            if _at_min(cj):
-                aj = float(axis_at_min)
-                dir_mode = "fwd"
-                macro_peak = cj
-                macro_valley = cj
-
-            elif _at_max(cj):
-                aj = float(axis_at_max)
-                dir_mode = "bwd"
-                macro_peak = cj
-                macro_valley = cj
-
+            # ✅ 핵심: 방향은 유지, 크기는 |Δcoord|만 반영
+            step = axis_per_mm * abs(dcoord)
+            if dir_mode == "fwd":
+                aj = ai + step
             else:
-                # 현재 왕복 방향과 같은 방향일 때만 축 이동
-                if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
-                    step = float(axis_per_mm) * abs(dcoord)
-                    aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
-                else:
-                    aj = ai
+                aj = ai - step
 
-                lo = min(float(axis_at_min), float(axis_at_max))
-                hi = max(float(axis_at_min), float(axis_at_max))
-                if aj < lo:
-                    aj = lo
-                if aj > hi:
-                    aj = hi
+        # 다음 노드 경계 스냅 + 방향 갱신
+        if _at_min(cj):
+            aj = float(axis_at_min)
+            dir_mode = "fwd"
+        elif _at_max(cj):
+            aj = float(axis_at_max)
+            dir_mode = "bwd"
 
-                # 축이 실제 끝점에 닿은 경우도 방향 전환
-                if abs(aj - float(axis_at_min)) <= 1e-9:
-                    dir_mode = "fwd"
-                    macro_peak = cj
-                    macro_valley = cj
-                elif abs(aj - float(axis_at_max)) <= 1e-9:
-                    dir_mode = "bwd"
-                    macro_peak = cj
-                    macro_valley = cj
+        # clamp
+        lo = min(axis_at_min, axis_at_max)
+        hi = max(axis_at_min, axis_at_max)
+        if aj < lo: aj = lo
+        if aj > hi: aj = hi
 
-        nodes[i][axis_key] = float(aj)
-        ai = float(aj)
+        nodes[i + 1][axis_key] = float(aj)
 
-        ai = float(aj)
-
-    # travel 구간 보간(기존 동작 유지)
+    # travel interpolation (옵션)
     if travel_interp and apply_print_only:
-        active_node = extr_node
+        # travel 구간(비활성)들을 앞/뒤 active 사이로 선형 보간
+        active_node = [bool(extr_node[i]) for i in range(n)]
         if any(active_node):
             i = 0
             while i < n:
@@ -1318,28 +1108,28 @@ def _apply_const_speed_profile_on_nodes(
                     i += 1
                     continue
                 t0 = i
-                while i < n and not active_node[i]:
+                while i < n and (not active_node[i]):
                     i += 1
                 t1 = i - 1
-
-                prev_idx = t0 - 1 if (t0 - 1) >= 0 else None
+                prev_idx = t0 - 1 if t0 - 1 >= 0 else None
                 next_idx = i if i < n else None
-
                 if prev_idx is None or next_idx is None:
-                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else (
-                        float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
-                    )
+                    base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
                     for k in range(t0, t1 + 1):
                         nodes[k][axis_key] = base
                     continue
-
                 a0 = float(nodes[prev_idx][axis_key])
                 a1 = float(nodes[next_idx][axis_key])
                 total = max(1, (t1 - t0 + 1))
                 for kk, k in enumerate(range(t0, t1 + 1)):
                     u = (kk + 1) / float(total + 1)
-                    nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
+                    nodes[k][axis_key] = a0 + (a1 - a0) * float(u)
 
+    # 마지막으로 경계 강제(보간이 경계를 덮어쓰지 않도록)
+    for i in range(n):
+        c = _coord(i)
+        if _at_min(c):
+            nodes[i][axis_key] = float(axis_at_min)
         elif _at_max(c):
             nodes[i][axis_key] = float(axis_at_max)
 
@@ -1384,12 +1174,12 @@ def gcode_to_cone1500_module(
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
 
-    a3_on_x = "A3_out" in P.get("X", {})
-    a3_on_y = "A3_out" in P.get("Y", {})
-    a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
-    a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
+    a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
 
-    a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
+    a4_on_x = "A4_out" in P.get("X", {})
+    a4_on_y = "A4_out" in P.get("Y", {})
+    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
+    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
         span_in = abs(float(in1) - float(in0))
@@ -1453,23 +1243,43 @@ def gcode_to_cone1500_module(
         if ce is not None:
             prev_e = ce
 
-        # A3(절대: Rz=0 → X, Rz=±90 → Y)
-        if a3_on_x:
-            a3_abs = _linmap(cx, x0, x1, a3x_0, a3x_1)
-        elif a3_on_y:
-            a3_abs = _linmap(cy, y0, y1, a3y_0, a3y_1)
-        else:
-            a3_abs = 0.0
+        # A3(절대)
+        a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
 
-        # A4(절대: Z축 기반)
-        cur_a4 = _linmap(cz, z0, z1, a4_0, a4_1)
+        # A4(기존 유지: 분해축)
+        if not have_prev:
+            if a4_on_x:
+                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y:
+                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
+            else:
+                cur_a4 = 0.0
+            have_prev = True
+        else:
+            dx, dy = cx - prev_x, cy - prev_y
+            if a4_on_x and abs(dx) > 0:
+                cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
+            elif a4_on_y and abs(dy) > 0:
+                cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
 
         # clamp A4
-        lo, hi = (a4_0, a4_1) if a4_0 <= a4_1 else (a4_1, a4_0)
+        if a4_on_x:
+            lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
+        elif a4_on_y:
+            lo, hi = (a4y_0, a4y_1) if a4y_0 <= a4y_1 else (a4y_1, a4y_0)
+        else:
+            lo, hi = (0.0, 0.0)
         cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
 
-        # 좌표 보정
-        x_out, y_out, z_out = cx, cy, cz - cur_a4
+        # 좌표 보정 (기존 유지)
+        x_out, y_out, z_out = cx, cy, cz - a3_abs
+        if key == "90":
+            y_out = cy - cur_a4
+        elif key == "0":
+            x_out = cx - cur_a4
+        elif key == "-90":
+            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
+            y_out = cy - (a4_max - cur_a4)
 
         # 저장
         raw_xs.append(float(cx))
@@ -1523,9 +1333,6 @@ def gcode_to_cone1500_module(
             "a4": float(a4_list[i]),
             "extr": bool(is_extruding_list[i]),
         })
-    # (수정) A2용 좌표: S = raw_y + a4
-    for nd in nodes:
-        nd["coord_s"] = float(nd.get("raw_y", 0.0)) + float(nd.get("a4", 0.0))
 
     # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
@@ -1547,42 +1354,22 @@ def gcode_to_cone1500_module(
             nd["a1"] = 0.0
 
     if bool(enable_a2_const):
-        use_step = bool(st.session_state.get("extconsta2usestep", False))
-        if use_step:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="coord_s",   # (Y + A4) step mode
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
-                step_round="floor",
-            )
-        else:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",     # (중요) rawy 아님
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-            )
+        _apply_const_speed_profile_on_nodes(
+            nodes=nodes,
+            axis_key="a2",
+            coord_key="raw_y",
+            coord_min=float(y_min),
+            coord_max=float(y_max),
+            axis_at_min=float(a2_at_ymin),
+            axis_at_max=float(a2_at_ymax),
+            speed_mm_s=float(speed_mm_s),
+            eps_mm=float(boundary_eps_mm),
+            apply_print_only=bool(apply_print_only),
+            travel_interp=bool(travel_interp),
+        )
     else:
         for nd in nodes:
             nd["a2"] = 0.0
-
-
 
     lines_out = []
     for nd in nodes:
@@ -1594,8 +1381,8 @@ def gcode_to_cone1500_module(
         z = _fmt_pos(float(nd["z"]))
 
         if swap_a3_a4:
-            a3_v = nd["a3"]
-            a4_v = nd["a4"]
+            a3_v = nd["a4"]
+            a4_v = nd["a3"]
         else:
             a3_v = nd["a3"]
             a4_v = nd["a4"]
@@ -1665,27 +1452,6 @@ if KEY_OK:
                 "Apply printing-only blocks (E 증가 구간만)",
                 value=bool(st.session_state.ext_const_apply_print_only)
             )
-            # (추가) A2를 (Y + A4) 기준으로 계단식 적용
-            if "extconsta2usestep" not in st.session_state:
-                st.session_state.extconsta2usestep = True
-            if "extconsta2stepmm" not in st.session_state:
-                st.session_state.extconsta2stepmm = 60.0
-            
-            st.session_state.extconsta2usestep = st.checkbox(
-                "A2 step mode uses (Y + A4)",
-                value=bool(st.session_state.extconsta2usestep),
-            )
-            
-            st.session_state.extconsta2stepmm = st.number_input(
-                "A2 step length (Y+A4) mm",
-                min_value=0.0,
-                max_value=10000.0,
-                value=float(st.session_state.extconsta2stepmm),
-                step=1.0,
-                format="%.3f",
-                disabled=not bool(st.session_state.extconsta2usestep),
-            )
-
             st.session_state.ext_const_travel_interp = st.checkbox(
                 "Interpolate across travel blocks",
                 value=bool(st.session_state.ext_const_travel_interp)
@@ -1742,26 +1508,26 @@ if KEY_OK:
 
                 if axis_key == "X":
                     cols2 = st.columns(2)
-                    if "A3_out" in PAX:
-                        a3_0 = cols2[0].number_input("A3_out[0] (X)", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a30")
-                        a3_1 = cols2[1].number_input("A3_out[1] (X)", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a31")
-                        PAX["A3_out"] = [float(a3_0), float(a3_1)]
+                    if "A4_out" in PAX:
+                        a4_0 = cols2[0].number_input("A4_out[0] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_X_a40")
+                        a4_1 = cols2[1].number_input("A4_out[1] (X)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_X_a41")
+                        PAX["A4_out"] = [float(a4_0), float(a4_1)]
                     else:
-                        cols2[0].info("A3_out(X) 미사용 프리셋")
+                        cols2[0].info("A4_out(X) 미사용 프리셋")
 
                 elif axis_key == "Y":
                     cols2 = st.columns(2)
-                    if "A3_out" in PAX:
-                        a3_0 = cols2[0].number_input("A3_out[0] (Y)", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a30")
-                        a3_1 = cols2[1].number_input("A3_out[1] (Y)", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a31")
-                        PAX["A3_out"] = [float(a3_0), float(a3_1)]
+                    if "A4_out" in PAX:
+                        a4_0 = cols2[0].number_input("A4_out[0] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Y_a40")
+                        a4_1 = cols2[1].number_input("A4_out[1] (Y)", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Y_a41")
+                        PAX["A4_out"] = [float(a4_0), float(a4_1)]
                     else:
-                        cols2[0].info("A3_out(Y) 미사용 프리셋")
+                        cols2[0].info("A4_out(Y) 미사용 프리셋")
 
                 else:
-                    a4_0 = cols[2].number_input("A4_out[0]", value=float(PAX.get("A4_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a40")
-                    a4_1 = cols[3].number_input("A4_out[1]", value=float(PAX.get("A4_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a41")
-                    PAX["A4_out"] = [float(a4_0), float(a4_1)]
+                    a3_0 = cols[2].number_input("A3_out[0]", value=float(PAX.get("A3_out", [0.0,0.0])[0]), step=50.0, format="%.1f", key=f"{title_key}_Z_a30")
+                    a3_1 = cols[3].number_input("A3_out[1]", value=float(PAX.get("A3_out", [0.0,0.0])[1]), step=50.0, format="%.1f", key=f"{title_key}_Z_a31")
+                    PAX["A3_out"] = [float(a3_0), float(a3_1)]
 
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
 
@@ -1792,7 +1558,7 @@ if KEY_OK:
                 ry=st.session_state.rapid_ry,
                 rz=st.session_state.rapid_rz,
                 preset=st.session_state.mapping_preset,
-                swap_a3_a4=False,
+                swap_a3_a4=True,
                 enable_a1_const=bool(st.session_state.ext_const_enable_a1),
                 enable_a2_const=bool(st.session_state.ext_const_enable_a2),
                 x_min=float(st.session_state.ext_const_xmin),
@@ -1867,31 +1633,11 @@ with right_col:
         st.checkbox("Show dotted travel lines", value=False, disabled=True,
                     help="Insert E values OFF이면 travel은 실선으로 표기")
         travel_mode = "solid"
-    
-        # === 실수로 지워졌던 부분 복구 ===
     prev_mode = st.session_state.get("paths_travel_mode", "solid")
     st.session_state.paths_travel_mode = travel_mode
 
-    # === 카메라 줌 UI 파트 ===
     dims_placeholder = st.empty()
-
-    new_zoom = st.number_input(
-        "카메라 줌 비율 (%)",
-        min_value=10,
-        max_value=500,
-        value=st.session_state.camera_zoom_pct,
-        step=10,
-        help="100%가 기본 크기입니다. 50%면 더 멀리서 보이고, 200%면 더 확대됩니다."
-    )
-    if new_zoom != st.session_state.camera_zoom_pct:
-        st.session_state.camera_zoom_pct = new_zoom
-        if "paths_base_fig" in st.session_state:
-            del st.session_state["paths_base_fig"]
-        st.rerun()
-
     st.markdown("---")
-
-
 
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
@@ -1911,31 +1657,9 @@ with right_col:
             target = int(scrub_num)
 
         target = int(clamp(target, 0, total_segments))
-        
-        # ★ 추가됨: 슬라이더 조작 시 재생 멈춤
-        if scrub != default_val or scrub_num != default_val:
-            st.session_state.is_playing = False
-            
         st.session_state.paths_scrub = target
 
-        # ★ 추가됨: 재생 컨트롤 패널
-        st.markdown("---")
-        st.markdown("##### ▶ 경로 애니메이션")
-        col_p1, col_p2 = st.columns(2)
-        if col_p1.button("▶ Play", use_container_width=True):
-            st.session_state.is_playing = True
-            if st.session_state.paths_scrub >= total_segments:
-                st.session_state.paths_scrub = 1
-            st.rerun()
-        if col_p2.button("⏹ Stop", use_container_width=True):
-            st.session_state.is_playing = False
-            st.rerun()
-
-        st.session_state.anim_speed = st.number_input("지연 속도 (ms)", min_value=1, value=st.session_state.anim_speed, step=10)
-        st.session_state.anim_step = st.number_input("스킵 (Step)", min_value=1, value=st.session_state.anim_step, step=10)
-
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
-
         if layer_z is not None and layer_len is not None:
             st.caption(
                 f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · "
@@ -1950,8 +1674,8 @@ with right_col:
 if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
-    DRAW_LIMIT = 150000
-    draw_stride = 1
+    DRAW_LIMIT = 15000
+    draw_stride = max(1, math.ceil(max(1, target) / DRAW_LIMIT))
 
     built = st.session_state.paths_anim_buf["built_upto"]
     prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
@@ -1986,48 +1710,6 @@ else:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
-# ---- 깜빡임 방지용 Fragment 렌더링 함수 ----
-@st.fragment(run_every="0.05s")
-def render_animation_fragment(segments, total_segments, emphasize_caps):
-    if st.session_state.get("is_playing", False) and st.session_state.paths_scrub < total_segments:
-        current_target = st.session_state.paths_scrub
-        built = st.session_state.paths_anim_buf["built_upto"]
-        
-        if current_target >= built:
-            append_segments_to_buffers(segments, built, current_target, stride=1)
-        elif current_target < built:
-            rebuild_buffers_to(segments, current_target, stride=1)
-        
-        # ★ 추가된 부분: 만약 세션스테이트에 fig가 없으면 다시 만들어준다
-        if "paths_base_fig" not in st.session_state:
-            st.session_state.paths_base_fig = make_base_fig(height=820)
-            
-        fig = st.session_state.paths_base_fig
-
-        # 애니메이션 중에는 오프셋 계산을 꺼서 속도를 올림
-        update_fig_with_buffers(fig, show_offsets=False, show_caps=False)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        # 설정한 스킵(Step) 수치만큼 타겟 전진
-        st.session_state.paths_scrub += int(st.session_state.anim_step)
-        
-        # 지연 시간(ms) 적용
-        time.sleep(int(st.session_state.anim_speed) / 1000.0)
-
-        # 끝까지 도달하면 정지
-        if st.session_state.paths_scrub > total_segments:
-            st.session_state.is_playing = False
-            st.rerun()
-    else:
-        # 재생 중이 아닐 때(정지 상태)는 기존처럼 완벽하게 그림
-        fig = st.session_state.paths_base_fig
-        update_fig_with_buffers(
-            fig, 
-            show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), 
-            show_caps=bool(st.session_state.get("apply_offsets_flag", False) and emphasize_caps)
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
 
 # ---- 중앙: 탭 뷰어 ----
 with center_col:
@@ -2037,9 +1719,13 @@ with center_col:
         if segments is not None and total_segments > 0:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
-            
-            # ★ 기존의 st.plotly_chart 호출 부분을 지우고 새로 만든 함수로 교체!
-            render_animation_fragment(segments, total_segments, emphasize_caps)
+            fig = st.session_state.paths_base_fig
+            update_fig_with_buffers(
+                fig,
+                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
+                show_caps=bool(emphasize_caps)
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             tm = st.session_state.paths_travel_mode
             if not e_on:
