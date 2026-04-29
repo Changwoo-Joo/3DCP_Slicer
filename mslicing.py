@@ -297,6 +297,27 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     )
     return fig
 
+def make_slice_z_values(mesh, z_int: float) -> List[float]:
+    z_min = float(mesh.bounds[0, 2])
+    z_max = float(mesh.bounds[1, 2])
+    height = z_max - z_min
+
+    if not np.isfinite(z_min) or not np.isfinite(z_max) or height <= 1e-9:
+        return []
+
+    z_step = max(float(z_int), 1e-9)
+
+    # 기존 동작은 유지하되, 모델 높이/위치 조건 때문에 np.arange 결과가
+    # 비어 있을 때 z_values[-1]에서 IndexError가 나지 않도록 보완한다.
+    z_values = list(np.arange(z_step, z_max + 0.001, z_step))
+    if not z_values:
+        z_values = [z_min + height * 0.5]
+
+    if abs(z_max - z_values[-1]) > 1e-3:
+        z_values.append(z_max)
+    z_values.append(z_max + 0.01)
+    return z_values
+
 # =========================
 # G-code generator
 # =========================
@@ -307,11 +328,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     if e_on:
         g.append("M83")
 
-    z_max = mesh.bounds[1, 2]
-    z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    if abs(z_max - z_values[-1]) > 1e-3:
-        z_values.append(z_max)
-    z_values.append(z_max + 0.01)
+    z_values = make_slice_z_values(mesh, z_int)
 
     prev_start_xy = None
     for z in z_values:
@@ -387,11 +404,7 @@ def compute_slice_paths_with_travel(
     auto_start=False,
     e_on=False
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
-    z_max = mesh.bounds[1, 2]
-    z_values = list(np.arange(z_int, z_max + 0.001, z_int))
-    if abs(z_max - z_values[-1]) > 1e-3:
-        z_values.append(z_max)
-    z_values.append(z_max + 0.01)
+    z_values = make_slice_z_values(mesh, z_int)
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
     prev_layer_last_end: Optional[np.ndarray] = None
