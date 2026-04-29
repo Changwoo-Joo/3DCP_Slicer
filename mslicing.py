@@ -1337,12 +1337,12 @@ def gcode_to_cone1500_module(
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
 
-    a3_0, a3_1 = gi(P, ["Z","A3_out",0], 0.0), gi(P, ["Z","A3_out",1], 0.0)
-
-    a4_on_x = "A4_out" in P.get("X", {})
-    a4_on_y = "A4_out" in P.get("Y", {})
-    a4x_0, a4x_1 = (gi(P, ["X","A4_out",0], 0.0), gi(P, ["X","A4_out",1], 0.0)) if a4_on_x else (0.0, 0.0)
-    a4y_0, a4y_1 = (gi(P, ["Y","A4_out",0], 0.0), gi(P, ["Y","A4_out",1], 0.0)) if a4_on_y else (0.0, 0.0)
+    a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
+    
+    a3_on_x = "A3_out" in P.get("X", {})
+    a3_on_y = "A3_out" in P.get("Y", {})
+    a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
+    a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
         span_in = abs(float(in1) - float(in0))
@@ -1361,7 +1361,7 @@ def gcode_to_cone1500_module(
     have_prev = False
     prev_x = prev_y = prev_z = 0.0
     prev_e = None
-    cur_a4 = 0.0
+    cur_a3 = 0.0
 
     xs_out: List[float] = []
     ys_out: List[float] = []
@@ -1406,43 +1406,46 @@ def gcode_to_cone1500_module(
         if ce is not None:
             prev_e = ce
 
-        # A3(절대)
-        a3_abs = _linmap(cz, z0, z1, a3_0, a3_1)
-
-        # A4(기존 유지: 분해축)
+        # A4(절대, Z축 보정)
+        a4_abs = _linmap(cz, z0, z1, a4_0, a4_1)
+        
+        # 기본 좌표 보정: Z에서 A4를 뺌
+        x_out, y_out, z_out = cx, cy, cz - a4_abs
+        
+        # A3(분해축): Rz에 따라 X 또는 Y에서 계산
         if not have_prev:
-            if a4_on_x:
-                cur_a4 = _linmap(cx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y:
-                cur_a4 = _linmap(cy, y0, y1, a4y_0, a4y_1)
+            if key == "0" and a3_on_x:
+                cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
+            elif key in ("90", "-90") and a3_on_y:
+                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
             else:
-                cur_a4 = 0.0
+                cur_a3 = 0.0
             have_prev = True
         else:
             dx, dy = cx - prev_x, cy - prev_y
-            if a4_on_x and abs(dx) > 0:
-                cur_a4 += _prop_split_local(dx, x0, x1, a4x_0, a4x_1)
-            elif a4_on_y and abs(dy) > 0:
-                cur_a4 += _prop_split_local(dy, y0, y1, a4y_0, a4y_1)
-
-        # clamp A4
-        if a4_on_x:
-            lo, hi = (a4x_0, a4x_1) if a4x_0 <= a4x_1 else (a4x_1, a4x_0)
-        elif a4_on_y:
-            lo, hi = (a4y_0, a4y_1) if a4y_0 <= a4y_1 else (a4y_1, a4y_0)
+            if key == "0" and a3_on_x and abs(dx) > 0:
+                cur_a3 += _prop_split_local(dx, x0, x1, a3x_0, a3x_1)
+            elif key in ("90", "-90") and a3_on_y and abs(dy) > 0:
+                cur_a3 += _prop_split_local(dy, y0, y1, a3y_0, a3y_1)
+        
+        # clamp A3
+        if key == "0" and a3_on_x:
+            lo, hi = (a3x_0, a3x_1) if a3x_0 <= a3x_1 else (a3x_1, a3x_0)
+            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            x_out = cx - cur_a3
+        
+        elif key == "90" and a3_on_y:
+            lo, hi = (a3y_0, a3y_1) if a3y_0 <= a3y_1 else (a3y_1, a3y_0)
+            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            y_out = cy - cur_a3
+        
+        elif key == "-90" and a3_on_y:
+            lo, hi = (a3y_0, a3y_1) if a3y_0 <= a3y_1 else (a3y_1, a3y_0)
+            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            y_out = cy - cur_a3
+        
         else:
-            lo, hi = (0.0, 0.0)
-        cur_a4 = lo if cur_a4 < lo else hi if cur_a4 > hi else cur_a4
-
-        # 좌표 보정 (기존 유지)
-        x_out, y_out, z_out = cx, cy, cz - a3_abs
-        if key == "90":
-            y_out = cy - cur_a4
-        elif key == "0":
-            x_out = cx - cur_a4
-        elif key == "-90":
-            a4_max = max(a4y_0, a4y_1) if a4_on_y else 0.0
-            y_out = cy - (a4_max - cur_a4)
+            cur_a3 = 0.0
 
         # 저장
         raw_xs.append(float(cx))
@@ -1452,8 +1455,8 @@ def gcode_to_cone1500_module(
         zs_out.append(float(z_out))
         a1_list.append(0.0)
         a2_list.append(0.0)
-        a3_list.append(float(a3_abs))
-        a4_list.append(float(cur_a4))
+        a3_list.append(float(cur_a3))
+        a4_list.append(float(a4_abs))
         is_extruding_list.append(bool(is_extruding))
 
         if len(xs_out) >= MAX_LINES:
