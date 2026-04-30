@@ -1682,13 +1682,13 @@ if KEY_OK:
                     step=0.1, format="%.2f"
                 )
 
-        with st.sidebar.expander("외부축(A3/A4)", expanded=False):
-            st.caption("현재 선택된 Rz 프리셋의 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
-
+        with st.sidebar.expander("A3/A4", expanded=False):
+            st.caption("Rz 프리셋에 따라 XYZ → A3/A4 매핑을 설정합니다.")
+        
             def edit_axis(title_key: str, axis_key: str):
                 use_a3 = bool(st.session_state.get("ext_use_a3", False))
                 use_a4 = bool(st.session_state.get("ext_use_a4", False))
-            
+        
                 visible = False
                 if axis_key == "Z" and use_a4:
                     visible = True
@@ -1696,25 +1696,33 @@ if KEY_OK:
                     visible = True
                 elif title_key in ("90", "-90") and axis_key == "Y" and use_a3:
                     visible = True
-            
+        
                 if not visible:
                     return
-            
+        
                 st.write(f"Rz {title_key} · {axis_key}")
-            
-                PAX = st.session_state.mapping_preset[title_key].get(axis_key, {})
+        
+                if title_key not in st.session_state.mapping_preset:
+                    st.session_state.mapping_preset[title_key] = {}
+                if axis_key not in st.session_state.mapping_preset[title_key]:
+                    st.session_state.mapping_preset[title_key][axis_key] = {}
+        
+                PAX = st.session_state.mapping_preset[title_key][axis_key]
+        
+                base = DEFAULT_PRESET.get(title_key, {}).get(axis_key, {})
+        
                 if "in" not in PAX:
-                    PAX["in"] = [0.0, 0.0]
-            
-                col_in0, col_in1 = st.columns(2)
-                in0 = col_in0.number_input(
+                    PAX["in"] = list(base.get("in", [0.0, 0.0]))
+        
+                cols_in = st.columns(2)
+                in0 = cols_in[0].number_input(
                     "in0",
                     value=float(PAX["in"][0]),
                     step=50.0,
                     format="%.1f",
                     key=f"{title_key}_{axis_key}_in0",
                 )
-                in1 = col_in1.number_input(
+                in1 = cols_in[1].number_input(
                     "in1",
                     value=float(PAX["in"][1]),
                     step=50.0,
@@ -1722,20 +1730,21 @@ if KEY_OK:
                     key=f"{title_key}_{axis_key}_in1",
                 )
                 PAX["in"] = [float(in0), float(in1)]
-            
-                col_out0, col_out1 = st.columns(2)
-            
-                if axis_key == "X":
+        
+                cols_out = st.columns(2)
+        
+                if axis_key in ("X", "Y"):
                     if "A3_out" not in PAX:
-                        PAX["A3_out"] = [0.0, 0.0]
-                    a30 = col_out0.number_input(
+                        PAX["A3_out"] = list(base.get("A3_out", [0.0, 0.0]))
+        
+                    a30 = cols_out[0].number_input(
                         "A3out0",
                         value=float(PAX["A3_out"][0]),
                         step=50.0,
                         format="%.1f",
                         key=f"{title_key}_{axis_key}_a30",
                     )
-                    a31 = col_out1.number_input(
+                    a31 = cols_out[1].number_input(
                         "A3out1",
                         value=float(PAX["A3_out"][1]),
                         step=50.0,
@@ -1743,37 +1752,19 @@ if KEY_OK:
                         key=f"{title_key}_{axis_key}_a31",
                     )
                     PAX["A3_out"] = [float(a30), float(a31)]
-            
-                elif axis_key == "Y":
-                    if "A3_out" not in PAX:
-                        PAX["A3_out"] = [0.0, 0.0]
-                    a30 = col_out0.number_input(
-                        "A3out0",
-                        value=float(PAX["A3_out"][0]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a30",
-                    )
-                    a31 = col_out1.number_input(
-                        "A3out1",
-                        value=float(PAX["A3_out"][1]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a31",
-                    )
-                    PAX["A3_out"] = [float(a30), float(a31)]
-            
+        
                 elif axis_key == "Z":
                     if "A4_out" not in PAX:
-                        PAX["A4_out"] = [0.0, 0.0]
-                    a40 = col_out0.number_input(
+                        PAX["A4_out"] = list(base.get("A4_out", [0.0, 0.0]))
+        
+                    a40 = cols_out[0].number_input(
                         "A4out0",
                         value=float(PAX["A4_out"][0]),
                         step=50.0,
                         format="%.1f",
                         key=f"{title_key}_{axis_key}_a40",
                     )
-                    a41 = col_out1.number_input(
+                    a41 = cols_out[1].number_input(
                         "A4out1",
                         value=float(PAX["A4_out"][1]),
                         step=50.0,
@@ -1781,21 +1772,21 @@ if KEY_OK:
                         key=f"{title_key}_{axis_key}_a41",
                     )
                     PAX["A4_out"] = [float(a40), float(a41)]
-            
+        
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
-                
-                st.session_state.ext_use_a3 = st.checkbox(
-                    "A3 사용",
-                    value=bool(st.session_state.get("ext_use_a3", False))
-                )
-                
-                st.session_state.ext_use_a4 = st.checkbox(
-                    "A4 사용",
-                    value=bool(st.session_state.get("ext_use_a4", False))
-                )
-            
+        
+            st.session_state.ext_use_a3 = st.checkbox(
+                "A3 사용",
+                value=bool(st.session_state.get("ext_use_a3", False)),
+                key="ext_use_a3_checkbox"
+            )
+            st.session_state.ext_use_a4 = st.checkbox(
+                "A4 사용",
+                value=bool(st.session_state.get("ext_use_a4", False)),
+                key="ext_use_a4_checkbox"
+            )
+        
             current_rz = float(st.session_state.get("rapid_rz", 0.0))
-
             if abs(current_rz - 0.0) < 1e-6:
                 key_title = "0"
             elif abs(current_rz - 90.0) < 1e-6:
@@ -1804,14 +1795,20 @@ if KEY_OK:
                 key_title = "-90"
             else:
                 key_title = "0"
-            
-            st.markdown(f"---\n**Rz = {key_title}°**")
+        
+            st.markdown(f"---\n### Rz {key_title} 프리셋")
             edit_axis(key_title, "X")
             edit_axis(key_title, "Y")
             edit_axis(key_title, "Z")
-            
+        
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-            st.download_button("프리셋 JSON 저장", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
+            st.download_button(
+                "매핑 프리셋 JSON 저장",
+                preset_json,
+                file_name="mapping_preset.json",
+                mime="application/json",
+                use_container_width=True
+            )
 
         gtxt = st.session_state.get("gcode_text")
         over = None
