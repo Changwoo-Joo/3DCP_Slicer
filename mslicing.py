@@ -1363,10 +1363,10 @@ def convert_gcode_to_rapid(
     singularity_lift_z: float = 300.0,
 ) -> str:
 
-    def _needs_singularity_avoid(z_prev: float, z_curr: float, z_trigger: float) -> bool:
-        z_lo = min(float(z_prev), float(z_curr))
-        z_hi = max(float(z_prev), float(z_curr))
-        return (z_lo - 1e-9) <= float(z_trigger) <= (z_hi + 1e-9) and abs(z_curr - z_prev) > 1e-9
+    def _needs_singularity_avoid(z_prev_out: float, z_curr_out: float, z_trigger: float) -> bool:
+        z_lo = min(float(z_prev_out), float(z_curr_out))
+        z_hi = max(float(z_prev_out), float(z_curr_out))
+        return (z_lo - 1e-9) <= float(z_trigger) <= (z_hi + 1e-9) and abs(z_curr_out - z_prev_out) > 1e-9
 
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -1461,6 +1461,9 @@ def convert_gcode_to_rapid(
 
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
+        prev_a4_nominal = _linmap(prev_z, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
+        prev_a4_abs = prev_a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
+        prev_z_out = prev_z - prev_a4_abs
 
         # A3(분해축): Rz에 따라 분담 축 결정
         if key == "0" and a3_on_x:
@@ -1483,7 +1486,7 @@ def convert_gcode_to_rapid(
             and bool(singularity_avoid)
             and (not singularity_applied)
             and have_prev
-            and _needs_singularity_avoid(prev_z, cz, float(singularity_z_trigger))
+            and _needs_singularity_avoid(prev_z_out, z_out, float(singularity_z_trigger))
         ):
             z_bump = float(singularity_lift_z)
 
@@ -1498,15 +1501,15 @@ def convert_gcode_to_rapid(
                     f"강제 상승(하강) 수치를 조정하세요."
                 )
 
-            if abs(cz - prev_z) > 1e-12:
-                t_cross = (float(singularity_z_trigger) - float(prev_z)) / (float(cz) - float(prev_z))
+            if abs(z_out - prev_z_out) > 1e-12:
+                t_cross = (float(singularity_z_trigger) - float(prev_z_out)) / (float(z_out) - float(prev_z_out))
             else:
                 t_cross = 0.0
             t_cross = max(0.0, min(1.0, t_cross))
 
             cross_x = float(prev_x + (cx - prev_x) * t_cross)
             cross_y = float(prev_y + (cy - prev_y) * t_cross)
-            cross_z_raw = float(singularity_z_trigger)
+            cross_z_raw = float(prev_z + (cz - prev_z) * t_cross)
 
             if key == "0" and a3_on_x:
                 cross_a3 = _linmap(cross_x, x0, x1, a3x_0, a3x_1)
