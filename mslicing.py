@@ -1456,14 +1456,6 @@ def convert_gcode_to_rapid(
         # A4(절대, Z축 보정)
         a4_abs = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
 
-        if bool(enable_a4) and bool(singularity_avoid):
-            if a4_abs - float(singularity_lift_z) < 0.0:
-                raise ValueError(
-                    f"싱귤러리티 회피 불가: A4 값 {a4_abs:.3f} 에서 "
-                    f"{float(singularity_lift_z):.3f} mm 하강하면 음수가 됩니다. "
-                    f"강제 상승(하강) 수치를 조정하세요."
-                )
-
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
 
@@ -1491,27 +1483,60 @@ def convert_gcode_to_rapid(
         ):
             z_bump = float(singularity_lift_z)
 
-            avoid_x = float(cx)
-            avoid_y = float(cy)
-            avoid_z_raw = float(cz) + z_bump
-            avoid_a4 = float(a4_abs) - z_bump
-            avoid_z_out = avoid_z_raw - avoid_a4
+            trigger_a4 = _linmap(float(singularity_z_trigger), z0, z1, a4_0, a4_1)
+            avoid_a4 = float(trigger_a4) - z_bump
 
             if avoid_a4 < 0.0:
                 raise ValueError(
-                    f"싱귤러리티 회피 불가: A4 값 {a4_abs:.3f} 에서 "
-                    f"{z_bump:.3f} mm 하강하면 음수가 됩니다. "
+                    f"싱귤러리티 회피 불가: 발생 Z={float(singularity_z_trigger):.3f} mm 에서 "
+                    f"A4 예상값 {trigger_a4:.3f} 에 "
+                    f"{z_bump:.3f} mm 하강을 적용하면 음수가 됩니다. "
                     f"강제 상승(하강) 수치를 조정하세요."
                 )
 
-            raw_xs.append(float(cx))
-            raw_ys.append(float(cy))
+            if abs(cz - prev_z) > 1e-12:
+                t_cross = (float(singularity_z_trigger) - float(prev_z)) / (float(cz) - float(prev_z))
+            else:
+                t_cross = 0.0
+            t_cross = max(0.0, min(1.0, t_cross))
+
+            cross_x = float(prev_x + (cx - prev_x) * t_cross)
+            cross_y = float(prev_y + (cy - prev_y) * t_cross)
+            cross_z_raw = float(singularity_z_trigger)
+
+            if key == "0" and a3_on_x:
+                cross_a3 = _linmap(cross_x, x0, x1, a3x_0, a3x_1)
+            elif key == "90" and a3_on_y:
+                cross_a3 = _linmap(cross_y, y0, y1, a3y_0, a3y_1)
+            elif key == "-90" and a3_on_y:
+                cross_a3 = _linmap(cross_y, y0, y1, a3y_0, a3y_1)
+            else:
+                cross_a3 = 0.0
+
+            avoid_z_raw = cross_z_raw + z_bump
+            avoid_z_out = avoid_z_raw - avoid_a4
+
+            if key == "0" and a3_on_x:
+                avoid_x = cross_x - cross_a3
+                avoid_y = cross_y
+            elif key == "90" and a3_on_y:
+                avoid_x = cross_x
+                avoid_y = cross_y - cross_a3
+            elif key == "-90" and a3_on_y:
+                avoid_x = cross_x
+                avoid_y = cross_y + cross_a3
+            else:
+                avoid_x = cross_x
+                avoid_y = cross_y
+
+            raw_xs.append(float(cross_x))
+            raw_ys.append(float(cross_y))
             xs_out.append(float(avoid_x))
             ys_out.append(float(avoid_y))
             zs_out.append(float(avoid_z_out))
             a1_list.append(0.0)
             a2_list.append(0.0)
-            a3_list.append(float(cur_a3))
+            a3_list.append(float(cross_a3))
             a4_list.append(float(avoid_a4))
             is_extruding_list.append(False)
 
