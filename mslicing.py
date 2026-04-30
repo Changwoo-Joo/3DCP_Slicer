@@ -1686,11 +1686,10 @@ if KEY_OK:
             st.caption("현재 선택된 Rz 프리셋의 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
 
             def edit_axis(title_key: str, axis_key: str):
-                # 현재 Rz에서 실제로 쓰는 축만 표시
-                visible = False
                 use_a3 = bool(st.session_state.get("ext_use_a3", False))
                 use_a4 = bool(st.session_state.get("ext_use_a4", False))
             
+                visible = False
                 if axis_key == "Z" and use_a4:
                     visible = True
                 elif title_key == "0" and axis_key == "X" and use_a3:
@@ -1701,91 +1700,87 @@ if KEY_OK:
                 if not visible:
                     return
             
-                st.write(f"**Rz = {title_key}° — {axis_key}**")
+                st.write(f"Rz {title_key} · {axis_key}")
             
                 PAX = st.session_state.mapping_preset[title_key].get(axis_key, {})
-            
                 if "in" not in PAX:
                     PAX["in"] = [0.0, 0.0]
             
-                cols_in = st.columns(2)
-                in0 = cols_in[0].number_input(
-                    "in[0]",
+                col_in0, col_in1 = st.columns(2)
+                in0 = col_in0.number_input(
+                    "in0",
                     value=float(PAX["in"][0]),
                     step=50.0,
                     format="%.1f",
-                    key=f"{title_key}_{axis_key}_in0"
+                    key=f"{title_key}_{axis_key}_in0",
                 )
-                in1 = cols_in[1].number_input(
-                    "in[1]",
+                in1 = col_in1.number_input(
+                    "in1",
                     value=float(PAX["in"][1]),
                     step=50.0,
                     format="%.1f",
-                    key=f"{title_key}_{axis_key}_in1"
+                    key=f"{title_key}_{axis_key}_in1",
                 )
                 PAX["in"] = [float(in0), float(in1)]
             
-                cols_out = st.columns(2)
+                col_out0, col_out1 = st.columns(2)
             
                 if axis_key == "X":
                     if "A3_out" not in PAX:
                         PAX["A3_out"] = [0.0, 0.0]
-            
-                    a3_0 = cols_out[0].number_input(
-                        "A3_out[0]",
-                        value=float(PAX.get("A3_out", [0.0, 0.0])[0]),
+                    a30 = col_out0.number_input(
+                        "A3out0",
+                        value=float(PAX["A3_out"][0]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_X_a30"
+                        key=f"{title_key}_{axis_key}_a30",
                     )
-                    a3_1 = cols_out[1].number_input(
-                        "A3_out[1]",
-                        value=float(PAX.get("A3_out", [0.0, 0.0])[1]),
+                    a31 = col_out1.number_input(
+                        "A3out1",
+                        value=float(PAX["A3_out"][1]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_X_a31"
+                        key=f"{title_key}_{axis_key}_a31",
                     )
-                    PAX["A3_out"] = [float(a3_0), float(a3_1)]
+                    PAX["A3_out"] = [float(a30), float(a31)]
             
                 elif axis_key == "Y":
                     if "A3_out" not in PAX:
                         PAX["A3_out"] = [0.0, 0.0]
-            
-                    a3_0 = cols_out[0].number_input(
-                        "A3_out[0]",
-                        value=float(PAX.get("A3_out", [0.0, 0.0])[0]),
+                    a30 = col_out0.number_input(
+                        "A3out0",
+                        value=float(PAX["A3_out"][0]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_Y_a30"
+                        key=f"{title_key}_{axis_key}_a30",
                     )
-                    a3_1 = cols_out[1].number_input(
-                        "A3_out[1]",
-                        value=float(PAX.get("A3_out", [0.0, 0.0])[1]),
+                    a31 = col_out1.number_input(
+                        "A3out1",
+                        value=float(PAX["A3_out"][1]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_Y_a31"
+                        key=f"{title_key}_{axis_key}_a31",
                     )
-                    PAX["A3_out"] = [float(a3_0), float(a3_1)]
+                    PAX["A3_out"] = [float(a30), float(a31)]
             
                 elif axis_key == "Z":
                     if "A4_out" not in PAX:
                         PAX["A4_out"] = [0.0, 0.0]
-            
-                    a4_0 = cols_out[0].number_input(
-                        "A4_out[0]",
-                        value=float(PAX.get("A4_out", [0.0, 0.0])[0]),
+                    a40 = col_out0.number_input(
+                        "A4out0",
+                        value=float(PAX["A4_out"][0]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_Z_a40"
+                        key=f"{title_key}_{axis_key}_a40",
                     )
-                    a4_1 = cols_out[1].number_input(
-                        "A4_out[1]",
-                        value=float(PAX.get("A4_out", [0.0, 0.0])[1]),
+                    a41 = col_out1.number_input(
+                        "A4out1",
+                        value=float(PAX["A4_out"][1]),
                         step=50.0,
                         format="%.1f",
-                        key=f"{title_key}_Z_a41"
+                        key=f"{title_key}_{axis_key}_a41",
                     )
-                    PAX["A4_out"] = [float(a4_0), float(a4_1)]
+                    PAX["A4_out"] = [float(a40), float(a41)]
             
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
                 
