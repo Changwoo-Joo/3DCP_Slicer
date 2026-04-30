@@ -1412,40 +1412,23 @@ def convert_gcode_to_rapid(
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
         
-        # A3(분해축): Rz에 따라 X 또는 Y에서 계산
-        if not have_prev:
-            if key == "0" and a3_on_x:
-                cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
-            elif key in ("90", "-90") and a3_on_y:
-                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            else:
-                cur_a3 = 0.0
-            have_prev = True
-        else:
-            dx, dy = cx - prev_x, cy - prev_y
-            if key == "0" and a3_on_x and abs(dx) > 0:
-                cur_a3 += _prop_split_local(dx, x0, x1, a3x_0, a3x_1)
-            elif key in ("90", "-90") and a3_on_y and abs(dy) > 0:
-                cur_a3 += _prop_split_local(dy, y0, y1, a3y_0, a3y_1)
-        
-        # clamp A3
+        # A3(분해축): 현재 좌표 기준 직접 매핑
         if key == "0" and a3_on_x:
-            lo, hi = (a3x_0, a3x_1) if a3x_0 <= a3x_1 else (a3x_1, a3x_0)
-            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
             x_out = cx - cur_a3
-        
+
         elif key == "90" and a3_on_y:
-            lo, hi = (a3y_0, a3y_1) if a3y_0 <= a3y_1 else (a3y_1, a3y_0)
-            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
             y_out = cy - cur_a3
-        
+
         elif key == "-90" and a3_on_y:
-            lo, hi = (a3y_0, a3y_1) if a3y_0 <= a3y_1 else (a3y_1, a3y_0)
-            cur_a3 = lo if cur_a3 < lo else hi if cur_a3 > hi else cur_a3
+            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
             y_out = cy - cur_a3
-        
+
         else:
             cur_a3 = 0.0
+
+        have_prev = True
 
         # 저장
         raw_xs.append(float(cx))
@@ -1499,9 +1482,6 @@ def convert_gcode_to_rapid(
             "a4": float(a4_list[i]),
             "extr": bool(is_extruding_list[i]),
         })
-    # (수정) A2용 좌표: S = raw_y + a4
-    for nd in nodes:
-        nd["coords"] = float(nd.get("rawy", 0.0))
 
     # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
     if bool(enable_a1_const):
@@ -1528,7 +1508,7 @@ def convert_gcode_to_rapid(
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="rawy",
+                coord_key="raw_y",
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
@@ -1544,7 +1524,7 @@ def convert_gcode_to_rapid(
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
                 axis_key="a2",
-                coord_key="rawy",
+                coord_key="raw_y",
                 coord_min=float(y_min),
                 coord_max=float(y_max),
                 axis_at_min=float(a2_at_ymin),
