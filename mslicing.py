@@ -1363,18 +1363,6 @@ def convert_gcode_to_rapid(
     singularity_lift_z: float = 300.0,
 ) -> str:
 
-    def _raw_height(z_out_val: float, a4_val: float) -> float:
-        return float(z_out_val) + float(a4_val)
-
-    def _needs_singularity_avoid(h_prev: float, h_curr: float, h_trigger: float) -> bool:
-        if abs(float(h_curr) - float(h_trigger)) <= 1e-9:
-            return True
-        if abs(float(h_prev) - float(h_trigger)) <= 1e-9:
-            return True
-        h_lo = min(float(h_prev), float(h_curr))
-        h_hi = max(float(h_prev), float(h_curr))
-        return (h_lo - 1e-9) <= float(h_trigger) <= (h_hi + 1e-9) and abs(h_curr - h_prev) > 1e-9
-
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
@@ -1471,8 +1459,8 @@ def convert_gcode_to_rapid(
         prev_a4_nominal = _linmap(prev_z, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
         prev_a4_abs = prev_a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
         prev_z_out = prev_z - prev_a4_abs
-        prev_h_raw = _raw_height(prev_z_out, prev_a4_abs)
-        curr_h_raw = _raw_height(z_out, a4_abs)
+        prev_h_raw = float(prev_z_out + prev_a4_abs)
+        curr_h_raw = float(z_out + a4_abs)
 
         # A3(분해축): Rz에 따라 분담 축 결정
         if key == "0" and a3_on_x:
@@ -1494,68 +1482,23 @@ def convert_gcode_to_rapid(
             bool(enable_a4)
             and bool(singularity_avoid)
             and (not singularity_applied)
-            and have_prev
-            and _needs_singularity_avoid(prev_h_raw, curr_h_raw, float(singularity_z_trigger))
+            and curr_h_raw >= float(singularity_z_trigger) - 1e-9
         ):
             z_bump = float(singularity_lift_z)
 
-            trigger_a4_nominal = _linmap(float(singularity_z_trigger), z0, z1, a4_0, a4_1)
+            trigger_a4_nominal = a4_nominal
             trigger_a4_after = float(trigger_a4_nominal) - (singularity_a4_offset + z_bump)
 
             if trigger_a4_after < 0.0:
                 raise ValueError(
-                    f"싱귤러리티 회피 불가: 발생 Z={float(singularity_z_trigger):.3f} mm 에서 "
-                    f"A4 예상값 {trigger_a4_nominal:.3f} 에 "
+                    f"싱귤러리티 회피 불가: 발생 높이={float(singularity_z_trigger):.3f} mm 에서 "
+                    f"A4 현재값 {trigger_a4_nominal:.3f} 에 "
                     f"누적 보정 {singularity_a4_offset:.3f} 및 추가 하강 {z_bump:.3f} mm 를 적용하면 음수가 됩니다. "
                     f"강제 상승(하강) 수치를 조정하세요."
                 )
 
-            if abs(curr_h_raw - prev_h_raw) > 1e-12:
-                t_cross = (float(singularity_z_trigger) - float(prev_h_raw)) / (float(curr_h_raw) - float(prev_h_raw))
-            else:
-                t_cross = 1.0 if abs(curr_h_raw - float(singularity_z_trigger)) <= 1e-9 else 0.0
-            t_cross = max(0.0, min(1.0, t_cross))
-
-            cross_x = float(prev_x + (cx - prev_x) * t_cross)
-            cross_y = float(prev_y + (cy - prev_y) * t_cross)
-            cross_z_raw = float(prev_z + (cz - prev_z) * t_cross)
-
-            if key == "0" and a3_on_x:
-                cross_a3 = _linmap(cross_x, x0, x1, a3x_0, a3x_1)
-            elif key == "90" and a3_on_y:
-                cross_a3 = _linmap(cross_y, y0, y1, a3y_0, a3y_1)
-            elif key == "-90" and a3_on_y:
-                cross_a3 = _linmap(cross_y, y0, y1, a3y_0, a3y_1)
-            else:
-                cross_a3 = 0.0
-
+            singularity_a4_offset += z_bump
             singularity_applied = True
-            avoid_a4 = float(trigger_a4_nominal) - singularity_a4_offset
-            avoid_z_out = cross_z_raw - avoid_a4
-
-            if key == "0" and a3_on_x:
-                avoid_x = cross_x - cross_a3
-                avoid_y = cross_y
-            elif key == "90" and a3_on_y:
-                avoid_x = cross_x
-                avoid_y = cross_y - cross_a3
-            elif key == "-90" and a3_on_y:
-                avoid_x = cross_x
-                avoid_y = cross_y + cross_a3
-            else:
-                avoid_x = cross_x
-                avoid_y = cross_y
-
-            raw_xs.append(float(cross_x))
-            raw_ys.append(float(cross_y))
-            xs_out.append(float(avoid_x))
-            ys_out.append(float(avoid_y))
-            zs_out.append(float(avoid_z_out))
-            a1_list.append(0.0)
-            a2_list.append(0.0)
-            a3_list.append(float(cross_a3))
-            a4_list.append(float(avoid_a4))
-            is_extruding_list.append(False)
 
             a4_abs = a4_nominal - singularity_a4_offset
             z_out = cz - a4_abs
