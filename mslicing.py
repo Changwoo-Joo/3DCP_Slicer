@@ -1363,10 +1363,17 @@ def convert_gcode_to_rapid(
     singularity_lift_z: float = 300.0,
 ) -> str:
 
-    def _needs_singularity_avoid(z_prev_out: float, z_curr_out: float, z_trigger: float) -> bool:
-        z_lo = min(float(z_prev_out), float(z_curr_out))
-        z_hi = max(float(z_prev_out), float(z_curr_out))
-        return (z_lo - 1e-9) <= float(z_trigger) <= (z_hi + 1e-9) and abs(z_curr_out - z_prev_out) > 1e-9
+    def _raw_height(z_out_val: float, a4_val: float) -> float:
+        return float(z_out_val) + float(a4_val)
+
+    def _needs_singularity_avoid(h_prev: float, h_curr: float, h_trigger: float) -> bool:
+        if abs(float(h_curr) - float(h_trigger)) <= 1e-9:
+            return True
+        if abs(float(h_prev) - float(h_trigger)) <= 1e-9:
+            return True
+        h_lo = min(float(h_prev), float(h_curr))
+        h_hi = max(float(h_prev), float(h_curr))
+        return (h_lo - 1e-9) <= float(h_trigger) <= (h_hi + 1e-9) and abs(h_curr - h_prev) > 1e-9
 
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -1464,6 +1471,8 @@ def convert_gcode_to_rapid(
         prev_a4_nominal = _linmap(prev_z, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
         prev_a4_abs = prev_a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
         prev_z_out = prev_z - prev_a4_abs
+        prev_h_raw = _raw_height(prev_z_out, prev_a4_abs)
+        curr_h_raw = _raw_height(z_out, a4_abs)
 
         # A3(분해축): Rz에 따라 분담 축 결정
         if key == "0" and a3_on_x:
@@ -1486,7 +1495,7 @@ def convert_gcode_to_rapid(
             and bool(singularity_avoid)
             and (not singularity_applied)
             and have_prev
-            and _needs_singularity_avoid(prev_z_out, z_out, float(singularity_z_trigger))
+            and _needs_singularity_avoid(prev_h_raw, curr_h_raw, float(singularity_z_trigger))
         ):
             z_bump = float(singularity_lift_z)
 
@@ -1501,10 +1510,10 @@ def convert_gcode_to_rapid(
                     f"강제 상승(하강) 수치를 조정하세요."
                 )
 
-            if abs(z_out - prev_z_out) > 1e-12:
-                t_cross = (float(singularity_z_trigger) - float(prev_z_out)) / (float(z_out) - float(prev_z_out))
+            if abs(curr_h_raw - prev_h_raw) > 1e-12:
+                t_cross = (float(singularity_z_trigger) - float(prev_h_raw)) / (float(curr_h_raw) - float(prev_h_raw))
             else:
-                t_cross = 0.0
+                t_cross = 1.0 if abs(curr_h_raw - float(singularity_z_trigger)) <= 1e-9 else 0.0
             t_cross = max(0.0, min(1.0, t_cross))
 
             cross_x = float(prev_x + (cx - prev_x) * t_cross)
