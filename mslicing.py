@@ -913,25 +913,28 @@ start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disable
 start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
 e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
 
-st.sidebar.subheader("경로 처리")
-enable_corner = st.sidebar.checkbox(
-    "코너 주변점 활성화",
-    value=True,
-    key="enable_corner_points",
-)
+st.sidebar.subheader("경로처리")
 
-corner_d = st.sidebar.number_input(
-    "코너 주변 거리 (mm)",
-    0.0, 1000.0, 5.0, 1.0,
-    key="corner_neighbor_distance_mm",
-    disabled=not enable_corner,   # (선택) OFF면 입력 비활성
-)
+with st.sidebar.expander("코너 주변점 옵션", expanded=False):
+    enablecorner = st.checkbox(
+        "코너 주변점 활성화",
+        value=False,
+        key="enable_corner_points"
+    )
+    cornerd = st.number_input(
+        "거리(mm)",
+        min_value=0.0,
+        max_value=1000.0,
+        value=5.0,
+        step=1.0,
+        key="corner_neighbor_distance_mm",
+        disabled=not enablecorner
+    )
 
-trim_dist = st.sidebar.number_input("트림/레이어 폭 (mm)", 0.0, 1000.0, 50.0)
-min_spacing = st.sidebar.number_input("최소 점 간격 (mm)", 0.0, 1000.0, 5.0)
-corner_d = st.sidebar.number_input("코너 주변 거리 (mm)", 0.0, 1000.0, 5.0, 1.0)
-auto_start = st.sidebar.checkbox("이전 시작점 근처에서 다음 레이어 시작")
-m30_on = st.sidebar.checkbox("끝에 M30 추가", value=False)
+trimdist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
+minspacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
+autostart = st.sidebar.checkbox("자동 시작점 연결")
+m30on = st.sidebar.checkbox("M30 추가", value=False)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
