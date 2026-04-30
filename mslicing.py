@@ -1356,7 +1356,9 @@ def convert_gcode_to_rapid(
 
     a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
     
+    a3_on_x = "A3_out" in P.get("X", {})
     a3_on_y = "A3_out" in P.get("Y", {})
+    a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
