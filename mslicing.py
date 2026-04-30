@@ -978,12 +978,12 @@ if uploaded is not None:
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
-        zint=zint,
-        refptuser=(refx, refy),
-        trimdist=trimdist,
-        minspacing=minspacing,
-        autostart=autostart,
-        eon=eon
+        z_int=z_int,
+        ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        e_on=e_on
     )
     st.session_state.paths_items = items
     segs = items_to_segments(items, e_on=e_on)
@@ -999,17 +999,17 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh,
-        zint=zint,
+        z_int=z_int,
         feed=feed,
-        refptuser=(refx, refy),
-        eon=eon,
-        starteon=starteon,
-        starteval=starteval,
-        e0on=e0on,
-        trimdist=trimdist,
-        minspacing=minspacing,
-        autostart=autostart,
-        m30on=m30on
+        ref_pt_user=(ref_x, ref_y),
+        e_on=e_on,
+        start_e_on=start_e_on,
+        start_e_val=start_e_val,
+        e0_on=e0_on,
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
