@@ -1483,21 +1483,12 @@ def convert_gcode_to_rapid(
             "extr": bool(is_extruding_list[i]),
         })
 
-    # A1 계산용 기준 좌표
-    # A3로 빠진 만큼 반영한 실효 X를 기준으로 A1 경계 판정
-    for nd in nodes:
-        if key in ("90", "-90") and a3_on_y:
-            nd["coord_a1"] = float(nd.get("raw_x", 0.0)) - float(nd.get("a3", 0.0))
-        elif key == "0" and a3_on_x:
-            nd["coord_a1"] = float(nd.get("raw_x", 0.0)) - float(nd.get("a3", 0.0))
-        else:
-            nd["coord_a1"] = float(nd.get("raw_x", 0.0))
 
     if bool(enable_a1_const):
         _apply_const_speed_profile_on_nodes(
             nodes=nodes,
             axis_key="a1",
-            coord_key="coord_a1",
+            coord_key="raw_x",
             coord_min=float(x_min),
             coord_max=float(x_max),
             axis_at_min=float(a1_at_xmin),
