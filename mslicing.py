@@ -1356,9 +1356,7 @@ def convert_gcode_to_rapid(
 
     a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
     
-    a3_on_x = "A3_out" in P.get("X", {})
     a3_on_y = "A3_out" in P.get("Y", {})
-    a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
     def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
@@ -1430,9 +1428,16 @@ def convert_gcode_to_rapid(
         x_out, y_out, z_out = cx, cy, cz - a4_abs
         
         # A3(분해축): 현재 좌표 기준 직접 매핑
-        if key == "0" and a3_on_x:
-            cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
-            x_out = cx - cur_a3
+        if key == "90" and a3_on_y:
+            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
+            y_out = cy - cur_a3
+
+        elif key == "-90" and a3_on_y:
+            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
+            y_out = cy - cur_a3
+
+        else:
+            cur_a3 = 0.0
 
         elif key == "90" and a3_on_y:
             cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
