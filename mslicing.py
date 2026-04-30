@@ -920,25 +920,25 @@ e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not
 st.sidebar.subheader("경로처리")
 
 with st.sidebar.expander("코너 주변점 옵션", expanded=False):
-    enablecorner = st.checkbox(
+    enable_corner = st.checkbox(
         "코너 주변점 활성화",
         value=False,
         key="enable_corner_points"
     )
-    cornerd = st.number_input(
+    corner_d = st.number_input(
         "거리(mm)",
         min_value=0.0,
         max_value=1000.0,
         value=5.0,
         step=1.0,
         key="corner_neighbor_distance_mm",
-        disabled=not enablecorner
+        disabled=not enable_corner
     )
 
-trimdist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
-minspacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-autostart = st.sidebar.checkbox("자동 시작점 연결")
-m30on = st.sidebar.checkbox("M30 추가", value=False)
+trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
+auto_start = st.sidebar.checkbox("자동 시작점 연결")
+m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
@@ -978,12 +978,12 @@ if uploaded is not None:
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh,
-        zint=zint,
-        refptuser=(refx, refy),
-        trimdist=trimdist,
-        minspacing=minspacing,
-        autostart=autostart,
-        eon=eon
+        z_int=z_int,
+        ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        e_on=e_on
     )
     st.session_state.paths_items = items
     segs = items_to_segments(items, e_on=e_on)
@@ -999,17 +999,17 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh,
-        zint=zint,
+        z_int=z_int,
         feed=feed,
-        refptuser=(refx, refy),
-        eon=eon,
-        starteon=starteon,
-        starteval=starteval,
-        e0on=e0on,
-        trimdist=trimdist,
-        minspacing=minspacing,
-        autostart=autostart,
-        m30on=m30on
+        ref_pt_user=(ref_x, ref_y),
+        e_on=e_on,
+        start_e_on=start_e_on,
+        start_e_val=start_e_val,
+        e0_on=e0_on,
+        trim_dist=trim_dist,
+        min_spacing=min_spacing,
+        auto_start=auto_start,
+        m30_on=m30_on
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
