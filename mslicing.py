@@ -1863,88 +1863,88 @@ if KEY_OK:
             )
 
         with st.sidebar.expander("싱귤러리티 회피", expanded=False):
-        a4_enabled_now = bool(st.session_state.get("ext_use_a4", False))
-    
-        st.session_state.singularity_avoid_enable = st.checkbox(
-            "싱귤러리티 회피 사용",
-            value=bool(st.session_state.get("singularity_avoid_enable", False)),
-            disabled=not a4_enabled_now,
-            help="A4 사용 시에만 적용됩니다."
-        )
-    
-        st.session_state.singularity_z_trigger = st.number_input(
-            "싱귤러리티 발생 Z 높이 (mm)",
-            value=float(st.session_state.get("singularity_z_trigger", 0.0)),
-            step=10.0,
-            format="%.3f",
-            disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
-        )
-    
-        st.session_state.singularity_lift_z = st.number_input(
-            "강제 상승/하강 거리 (mm)",
-            value=float(st.session_state.get("singularity_lift_z", 300.0)),
-            step=10.0,
-            format="%.3f",
-            disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
-        )
-    
-        if not a4_enabled_now:
-            st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
-
-        gtxt = st.session_state.get("gcode_text")
-        over = None
-        if gtxt is not None:
-            xyz_count = _extract_xyz_lines_count(gtxt)
-            over = (xyz_count > MAX_LINES)
-
-        save_rapid_clicked = st.sidebar.button("Rapid 저장 (.modx)", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            try:
-                st.session_state.rapid_text = convert_gcode_to_rapid(
-                    gtxt,
-                    rx=st.session_state.rapid_rx,
-                    ry=st.session_state.rapid_ry,
-                    rz=st.session_state.rapid_rz,
-                    preset=st.session_state.mapping_preset,
-                    swap_a3_a4=False,
-                    enable_a1_const=bool(st.session_state.ext_const_enable_a1),
-                    enable_a2_const=bool(st.session_state.ext_const_enable_a2),
-                    enable_a3=bool(st.session_state.get("ext_use_a3", False)),
-                    enable_a4=bool(st.session_state.get("ext_use_a4", False)),
-                    x_min=float(st.session_state.ext_const_xmin),
-                    x_max=float(st.session_state.ext_const_xmax),
-                    a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
-                    a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
-                    y_min=float(st.session_state.ext_const_ymin),
-                    y_max=float(st.session_state.ext_const_ymax),
-                    a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
-                    a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                    speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
-                    boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
-                    apply_print_only=bool(st.session_state.ext_const_apply_print_only),
-                    travel_interp=bool(st.session_state.ext_const_travel_interp),
-                    singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
-                    singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
-                    singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
-                )
-                st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
-            except ValueError as e:
-                st.session_state.rapid_text = None
-                st.sidebar.warning(str(e), icon="⚠️")
-
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
+            a4_enabled_now = bool(st.session_state.get("ext_use_a4", False))
+        
+            st.session_state.singularity_avoid_enable = st.checkbox(
+                "싱귤러리티 회피 사용",
+                value=bool(st.session_state.get("singularity_avoid_enable", False)),
+                disabled=not a4_enabled_now,
+                help="A4 사용 시에만 적용됩니다."
             )
+        
+            st.session_state.singularity_z_trigger = st.number_input(
+                "싱귤러리티 발생 Z 높이 (mm)",
+                value=float(st.session_state.get("singularity_z_trigger", 0.0)),
+                step=10.0,
+                format="%.3f",
+                disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
+            )
+        
+            st.session_state.singularity_lift_z = st.number_input(
+                "강제 상승/하강 거리 (mm)",
+                value=float(st.session_state.get("singularity_lift_z", 300.0)),
+                step=10.0,
+                format="%.3f",
+                disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
+            )
+        
+            if not a4_enabled_now:
+                st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
+    
+            gtxt = st.session_state.get("gcode_text")
+            over = None
+            if gtxt is not None:
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
+    
+            save_rapid_clicked = st.sidebar.button("Rapid 저장 (.modx)", use_container_width=True, disabled=(gtxt is None))
+            if gtxt is None:
+                st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
+            elif over:
+                st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+            elif save_rapid_clicked:
+                try:
+                    st.session_state.rapid_text = convert_gcode_to_rapid(
+                        gtxt,
+                        rx=st.session_state.rapid_rx,
+                        ry=st.session_state.rapid_ry,
+                        rz=st.session_state.rapid_rz,
+                        preset=st.session_state.mapping_preset,
+                        swap_a3_a4=False,
+                        enable_a1_const=bool(st.session_state.ext_const_enable_a1),
+                        enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                        enable_a3=bool(st.session_state.get("ext_use_a3", False)),
+                        enable_a4=bool(st.session_state.get("ext_use_a4", False)),
+                        x_min=float(st.session_state.ext_const_xmin),
+                        x_max=float(st.session_state.ext_const_xmax),
+                        a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
+                        a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
+                        y_min=float(st.session_state.ext_const_ymin),
+                        y_max=float(st.session_state.ext_const_ymax),
+                        a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
+                        a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
+                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
+                        boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                        apply_print_only=bool(st.session_state.ext_const_apply_print_only),
+                        travel_interp=bool(st.session_state.ext_const_travel_interp),
+                        singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
+                        singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
+                        singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
+                    )
+                    st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+                except ValueError as e:
+                    st.session_state.rapid_text = None
+                    st.sidebar.warning(str(e), icon="⚠️")
+    
+            if st.session_state.get("rapid_text"):
+                base = st.session_state.get("base_name", "output")
+                st.sidebar.download_button(
+                    "Rapid 저장 (.modx)",
+                    st.session_state.rapid_text,
+                    file_name=f"{base}.modx",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
 # =========================
 # Layout (Center + Right)
