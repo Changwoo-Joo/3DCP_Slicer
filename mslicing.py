@@ -1212,6 +1212,23 @@ def _apply_const_speed_profile_on_nodes(
 
         dcoord = float(cj - ci)
 
+        # 경계 근처는 deadband보다 우선해서 즉시 끝값 스냅
+        if _at_min(cj):
+            nodes[i][axis_key] = float(axis_at_min)
+            ai = float(axis_at_min)
+            dir_mode = "fwd"
+            macro_peak = cj
+            macro_valley = cj
+            continue
+
+        if _at_max(cj):
+            nodes[i][axis_key] = float(axis_at_max)
+            ai = float(axis_at_max)
+            dir_mode = "bwd"
+            macro_peak = cj
+            macro_valley = cj
+            continue
+
         if abs(dcoord) < float(deadband_mm):
             nodes[i][axis_key] = float(ai)
             continue
