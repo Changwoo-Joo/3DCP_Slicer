@@ -1702,7 +1702,25 @@ if KEY_OK:
                     key=f"{title_key}_{axis_key}_in1"
                 )
                 PAX["in"] = [float(in0), float(in1)]
-            
+
+                if axis_key in ("X", "Y"):
+                    if "A3_out" in PAX:
+                        cols_out = st.columns(2)
+                        a3_0 = cols_out[0].number_input(
+                            f"A3_out[0] ({axis_key})",
+                            value=float(PAX.get("A3_out", [0.0, 0.0])[0]),
+                            step=50.0,
+                            format="%.1f",
+                            key=f"{title_key}_{axis_key}_a30"
+                        )
+                        a3_1 = cols_out[1].number_input(
+                            f"A3_out[1] ({axis_key})",
+                            value=float(PAX.get("A3_out", [0.0, 0.0])[1]),
+                            step=50.0,
+                            format="%.1f",
+                            key=f"{title_key}_{axis_key}_a31"
+                        )
+                        PAX["A3_out"] = [float(a3_0), float(a3_1)]
 
                     else:
                         cols_out[0].info(f"A3_out({axis_key}) 미사용 프리셋")
