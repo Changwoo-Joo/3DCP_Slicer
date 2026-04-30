@@ -1722,8 +1722,6 @@ if KEY_OK:
                         )
                         PAX["A3_out"] = [float(a3_0), float(a3_1)]
 
-                    else:
-                        cols_out[0].info(f"A3_out({axis_key}) 미사용 프리셋")
             
                 else:
                     cols_out = st.columns(2)
