@@ -1409,6 +1409,7 @@ def convert_gcode_to_rapid(
     prev_x = prev_y = prev_z = 0.0
     prev_e = None
     cur_a3 = 0.0
+    singularity_a4_offset = 0.0
 
     xs_out: List[float] = []
     ys_out: List[float] = []
@@ -1454,7 +1455,8 @@ def convert_gcode_to_rapid(
             prev_e = ce
 
         # A4(절대, Z축 보정)
-        a4_abs = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
+        a4_nominal = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
+        a4_abs = a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
 
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
@@ -1483,14 +1485,14 @@ def convert_gcode_to_rapid(
         ):
             z_bump = float(singularity_lift_z)
 
-            trigger_a4 = _linmap(float(singularity_z_trigger), z0, z1, a4_0, a4_1)
-            avoid_a4 = float(trigger_a4) - z_bump
+            trigger_a4_nominal = _linmap(float(singularity_z_trigger), z0, z1, a4_0, a4_1)
+            trigger_a4_after = float(trigger_a4_nominal) - (singularity_a4_offset + z_bump)
 
-            if avoid_a4 < 0.0:
+            if trigger_a4_after < 0.0:
                 raise ValueError(
                     f"싱귤러리티 회피 불가: 발생 Z={float(singularity_z_trigger):.3f} mm 에서 "
-                    f"A4 예상값 {trigger_a4:.3f} 에 "
-                    f"{z_bump:.3f} mm 하강을 적용하면 음수가 됩니다. "
+                    f"A4 예상값 {trigger_a4_nominal:.3f} 에 "
+                    f"누적 보정 {singularity_a4_offset:.3f} 및 추가 하강 {z_bump:.3f} mm 를 적용하면 음수가 됩니다. "
                     f"강제 상승(하강) 수치를 조정하세요."
                 )
 
@@ -1513,8 +1515,9 @@ def convert_gcode_to_rapid(
             else:
                 cross_a3 = 0.0
 
-            avoid_z_raw = cross_z_raw + z_bump
-            avoid_z_out = avoid_z_raw - avoid_a4
+            singularity_a4_offset += z_bump
+            avoid_a4 = float(trigger_a4_nominal) - singularity_a4_offset
+            avoid_z_out = cross_z_raw - avoid_a4
 
             if key == "0" and a3_on_x:
                 avoid_x = cross_x - cross_a3
@@ -1539,6 +1542,8 @@ def convert_gcode_to_rapid(
             a3_list.append(float(cross_a3))
             a4_list.append(float(avoid_a4))
             is_extruding_list.append(False)
+
+            a4_abs = a4_nominal - singularity_a4_offset
 
         have_prev = True
                 
