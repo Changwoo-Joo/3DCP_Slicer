@@ -812,9 +812,13 @@ if "ui_banner" not in st.session_state:
 
 # --- A1/A2 Constant-Speed defaults ---
 if "ext_const_enable_a1" not in st.session_state:
-    st.session_state.ext_const_enable_a1 = True
+    st.session_state.ext_const_enable_a1 = False
 if "ext_const_enable_a2" not in st.session_state:
-    st.session_state.ext_const_enable_a2 = True
+    st.session_state.ext_const_enable_a2 = False
+if "ext_use_a3" not in st.session_state:
+    st.session_state.ext_use_a3 = False
+if "ext_use_a4" not in st.session_state:
+    st.session_state.ext_use_a4 = False
 
 # 기본값(네 범위 기준)
 if "ext_const_xmin" not in st.session_state:
@@ -1326,8 +1330,10 @@ def convert_gcode_to_rapid(
     rz: float,
     preset: Dict[str, Any],
     swap_a3_a4: bool = False,
-    enable_a1_const: bool = True,
-    enable_a2_const: bool = True,
+    enable_a1_const: bool = False,
+    enable_a2_const: bool = False,
+    enable_a3: bool = False,
+    enable_a4: bool = False,
     x_min: float = 0.0,
     x_max: float = 6000.0,
     a1_at_xmin: float = 4000.0,
@@ -1359,8 +1365,8 @@ def convert_gcode_to_rapid(
 
     a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
     
-    a3_on_x = "A3_out" in P.get("X", {})
-    a3_on_y = "A3_out" in P.get("Y", {})
+    a3_on_x = bool(enable_a3) and ("A3_out" in P.get("X", {}))
+    a3_on_y = bool(enable_a3) and ("A3_out" in P.get("Y", {}))
     a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
@@ -1427,7 +1433,7 @@ def convert_gcode_to_rapid(
             prev_e = ce
 
         # A4(절대, Z축 보정)
-        a4_abs = _linmap(cz, z0, z1, a4_0, a4_1)
+        a4_abs = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
 
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
@@ -1667,30 +1673,20 @@ if KEY_OK:
                     step=0.1, format="%.2f"
                 )
 
-        with st.sidebar.expander("매핑 프리셋 (편집/저장/불러오기)", expanded=False):
+        with st.sidebar.expander("외부축(A3/A4)", expanded=False):
             st.caption("현재 선택된 Rz 프리셋의 X/Y/Z 입력 구간과 A3/A4 출력 구간을 편집하세요.")
-
-            up_json = st.file_uploader("프리셋 JSON 불러오기", type=["json"], key="mapping_preset_loader")
-            if up_json is not None:
-                try:
-                    loaded = json.loads(up_json.read().decode("utf-8"))
-                    if isinstance(loaded, dict) and all(k in loaded for k in ["0","90","-90"]):
-                        st.session_state.mapping_preset = loaded
-                        st.success("프리셋을 불러왔습니다.")
-                    else:
-                        st.error("프리셋 형식이 올바르지 않습니다. (keys: '0','90','-90')")
-                except Exception as e:
-                    st.error(f"프리셋 로드 실패: {e}")
 
             def edit_axis(title_key: str, axis_key: str):
                 # 현재 Rz에서 실제로 쓰는 축만 표시
                 visible = False
+                use_a3 = bool(st.session_state.get("ext_use_a3", False))
+                use_a4 = bool(st.session_state.get("ext_use_a4", False))
             
-                if axis_key == "Z":
+                if axis_key == "Z" and use_a4:
                     visible = True
-                elif title_key == "0" and axis_key == "X":
+                elif title_key == "0" and axis_key == "X" and use_a3:
                     visible = True
-                elif title_key in ("90", "-90") and axis_key == "Y":
+                elif title_key in ("90", "-90") and axis_key == "Y" and use_a3:
                     visible = True
             
                 if not visible:
@@ -1783,7 +1779,17 @@ if KEY_OK:
                     PAX["A4_out"] = [float(a4_0), float(a4_1)]
             
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
-
+                
+                st.session_state.ext_use_a3 = st.checkbox(
+                    "A3 사용",
+                    value=bool(st.session_state.get("ext_use_a3", False))
+                )
+                
+                st.session_state.ext_use_a4 = st.checkbox(
+                    "A4 사용",
+                    value=bool(st.session_state.get("ext_use_a4", False))
+                )
+            
             current_rz = float(st.session_state.get("rapid_rz", 0.0))
 
             if abs(current_rz - 0.0) < 1e-6:
@@ -1824,6 +1830,8 @@ if KEY_OK:
                 swap_a3_a4=False,
                 enable_a1_const=bool(st.session_state.ext_const_enable_a1),
                 enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                enable_a3=bool(st.session_state.get("ext_use_a3", False)),
+                enable_a4=bool(st.session_state.get("ext_use_a4", False)),
                 x_min=float(st.session_state.ext_const_xmin),
                 x_max=float(st.session_state.ext_const_xmax),
                 a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
