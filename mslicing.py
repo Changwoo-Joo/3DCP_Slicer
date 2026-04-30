@@ -851,7 +851,12 @@ if "extconsta2usestep" not in st.session_state:
     st.session_state.extconsta2usestep = False
 if "extconsta2stepmm" not in st.session_state:
     st.session_state.extconsta2stepmm = 60.0
-
+if "singularity_avoid_enable" not in st.session_state:
+    st.session_state.singularity_avoid_enable = False
+if "singularity_z_trigger" not in st.session_state:
+    st.session_state.singularity_z_trigger = 0.0
+if "singularity_lift_z" not in st.session_state:
+    st.session_state.singularity_lift_z = 300.0
 ensure_anim_buffers()
 
 # =========================
@@ -1326,8 +1331,6 @@ def _apply_const_speed_profile_on_nodes(
                     u = (kk + 1) / float(total + 1)
                     nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
-        elif _at_max(c):
-            nodes[i][axis_key] = float(axis_at_max)
 
 # =========================
 # Rapid Converter (UPDATED)
@@ -1355,7 +1358,16 @@ def convert_gcode_to_rapid(
     boundary_eps_mm: float = 0.5,
     apply_print_only: bool = False,
     travel_interp: bool = True,
+    singularity_avoid: bool = False,
+    singularity_z_trigger: float = 0.0,
+    singularity_lift_z: float = 300.0,
 ) -> str:
+
+    def _needs_singularity_avoid(z_prev: float, z_curr: float, z_trigger: float) -> bool:
+        z_lo = min(float(z_prev), float(z_curr))
+        z_hi = max(float(z_prev), float(z_curr))
+        return (z_lo - 1e-9) <= float(z_trigger) <= (z_hi + 1e-9) and abs(z_curr - z_prev) > 1e-9
+
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
@@ -1444,6 +1456,14 @@ def convert_gcode_to_rapid(
         # A4(절대, Z축 보정)
         a4_abs = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
 
+        if bool(enable_a4) and bool(singularity_avoid):
+            if a4_abs - float(singularity_lift_z) < 0.0:
+                raise ValueError(
+                    f"싱귤러리티 회피 불가: A4 값 {a4_abs:.3f} 에서 "
+                    f"{float(singularity_lift_z):.3f} mm 하강하면 음수가 됩니다. "
+                    f"강제 상승(하강) 수치를 조정하세요."
+                )
+
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
 
@@ -1463,8 +1483,40 @@ def convert_gcode_to_rapid(
         else:
             cur_a3 = 0.0
 
-        have_prev = True
+        if (
+            bool(enable_a4)
+            and bool(singularity_avoid)
+            and have_prev
+            and _needs_singularity_avoid(prev_z, cz, float(singularity_z_trigger))
+        ):
+            z_bump = float(singularity_lift_z)
 
+            avoid_x = float(cx)
+            avoid_y = float(cy)
+            avoid_z_raw = float(cz) + z_bump
+            avoid_a4 = float(a4_abs) - z_bump
+            avoid_z_out = avoid_z_raw - avoid_a4
+
+            if avoid_a4 < 0.0:
+                raise ValueError(
+                    f"싱귤러리티 회피 불가: A4 값 {a4_abs:.3f} 에서 "
+                    f"{z_bump:.3f} mm 하강하면 음수가 됩니다. "
+                    f"강제 상승(하강) 수치를 조정하세요."
+                )
+
+            raw_xs.append(float(cx))
+            raw_ys.append(float(cy))
+            xs_out.append(float(avoid_x))
+            ys_out.append(float(avoid_y))
+            zs_out.append(float(avoid_z_out))
+            a1_list.append(0.0)
+            a2_list.append(0.0)
+            a3_list.append(float(cur_a3))
+            a4_list.append(float(avoid_a4))
+            is_extruding_list.append(False)
+
+        have_prev = True
+                
         # 저장
         raw_xs.append(float(cx))
         raw_ys.append(float(cy))
@@ -1682,8 +1734,8 @@ if KEY_OK:
                     step=0.1, format="%.2f"
                 )
 
-        with st.sidebar.expander("A3/A4", expanded=False):
-            st.caption("Rz 프리셋에 따라 XYZ → A3/A4 매핑을 설정합니다.")
+
+            
         
             def edit_axis(title_key: str, axis_key: str):
                 use_a3 = bool(st.session_state.get("ext_use_a3", False))
@@ -1810,6 +1862,35 @@ if KEY_OK:
                 use_container_width=True
             )
 
+        with st.sidebar.expander("싱귤러리티 회피", expanded=False):
+        a4_enabled_now = bool(st.session_state.get("ext_use_a4", False))
+    
+        st.session_state.singularity_avoid_enable = st.checkbox(
+            "싱귤러리티 회피 사용",
+            value=bool(st.session_state.get("singularity_avoid_enable", False)),
+            disabled=not a4_enabled_now,
+            help="A4 사용 시에만 적용됩니다."
+        )
+    
+        st.session_state.singularity_z_trigger = st.number_input(
+            "싱귤러리티 발생 Z 높이 (mm)",
+            value=float(st.session_state.get("singularity_z_trigger", 0.0)),
+            step=10.0,
+            format="%.3f",
+            disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
+        )
+    
+        st.session_state.singularity_lift_z = st.number_input(
+            "강제 상승/하강 거리 (mm)",
+            value=float(st.session_state.get("singularity_lift_z", 300.0)),
+            step=10.0,
+            format="%.3f",
+            disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
+        )
+    
+        if not a4_enabled_now:
+            st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
+
         gtxt = st.session_state.get("gcode_text")
         over = None
         if gtxt is not None:
@@ -1822,31 +1903,38 @@ if KEY_OK:
         elif over:
             st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
         elif save_rapid_clicked:
-            st.session_state.rapid_text = convert_gcode_to_rapid(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=False,
-                enable_a1_const=bool(st.session_state.ext_const_enable_a1),
-                enable_a2_const=bool(st.session_state.ext_const_enable_a2),
-                enable_a3=bool(st.session_state.get("ext_use_a3", False)),
-                enable_a4=bool(st.session_state.get("ext_use_a4", False)),
-                x_min=float(st.session_state.ext_const_xmin),
-                x_max=float(st.session_state.ext_const_xmax),
-                a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
-                a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
-                y_min=float(st.session_state.ext_const_ymin),
-                y_max=float(st.session_state.ext_const_ymax),
-                a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
-                a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
-                boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
-                apply_print_only=bool(st.session_state.ext_const_apply_print_only),
-                travel_interp=bool(st.session_state.ext_const_travel_interp),
-            )
-            st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+            try:
+                st.session_state.rapid_text = convert_gcode_to_rapid(
+                    gtxt,
+                    rx=st.session_state.rapid_rx,
+                    ry=st.session_state.rapid_ry,
+                    rz=st.session_state.rapid_rz,
+                    preset=st.session_state.mapping_preset,
+                    swap_a3_a4=False,
+                    enable_a1_const=bool(st.session_state.ext_const_enable_a1),
+                    enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                    enable_a3=bool(st.session_state.get("ext_use_a3", False)),
+                    enable_a4=bool(st.session_state.get("ext_use_a4", False)),
+                    x_min=float(st.session_state.ext_const_xmin),
+                    x_max=float(st.session_state.ext_const_xmax),
+                    a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
+                    a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
+                    y_min=float(st.session_state.ext_const_ymin),
+                    y_max=float(st.session_state.ext_const_ymax),
+                    a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
+                    a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
+                    speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
+                    boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                    apply_print_only=bool(st.session_state.ext_const_apply_print_only),
+                    travel_interp=bool(st.session_state.ext_const_travel_interp),
+                    singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
+                    singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
+                    singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
+                )
+                st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+            except ValueError as e:
+                st.session_state.rapid_text = None
+                st.sidebar.warning(str(e), icon="⚠️")
 
         if st.session_state.get("rapid_text"):
             base = st.session_state.get("base_name", "output")
