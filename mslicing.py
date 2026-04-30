@@ -1410,6 +1410,7 @@ def convert_gcode_to_rapid(
     prev_e = None
     cur_a3 = 0.0
     singularity_a4_offset = 0.0
+    singularity_applied = False
 
     xs_out: List[float] = []
     ys_out: List[float] = []
@@ -1480,6 +1481,7 @@ def convert_gcode_to_rapid(
         if (
             bool(enable_a4)
             and bool(singularity_avoid)
+            and (not singularity_applied)
             and have_prev
             and _needs_singularity_avoid(prev_z, cz, float(singularity_z_trigger))
         ):
@@ -1515,7 +1517,7 @@ def convert_gcode_to_rapid(
             else:
                 cross_a3 = 0.0
 
-            singularity_a4_offset += z_bump
+            singularity_applied = True
             avoid_a4 = float(trigger_a4_nominal) - singularity_a4_offset
             avoid_z_out = cross_z_raw - avoid_a4
 
@@ -1544,6 +1546,24 @@ def convert_gcode_to_rapid(
             is_extruding_list.append(False)
 
             a4_abs = a4_nominal - singularity_a4_offset
+            z_out = cz - a4_abs
+
+            if key == "0" and a3_on_x:
+                cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
+                x_out = cx - cur_a3
+                y_out = cy
+            elif key == "90" and a3_on_y:
+                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
+                x_out = cx
+                y_out = cy - cur_a3
+            elif key == "-90" and a3_on_y:
+                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
+                x_out = cx
+                y_out = cy + cur_a3
+            else:
+                cur_a3 = 0.0
+                x_out = cx
+                y_out = cy
 
         have_prev = True
                 
