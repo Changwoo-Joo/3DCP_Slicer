@@ -1425,21 +1425,14 @@ def convert_gcode_to_rapid(
 
         # A4(절대, Z축 보정)
         a4_abs = _linmap(cz, z0, z1, a4_0, a4_1)
-        
+
         # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
-        
-        # A3(분해축): 현재 좌표 기준 직접 매핑
-        if key == "90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy - cur_a3
 
-        elif key == "-90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy - cur_a3
-
-        else:
-            cur_a3 = 0.0
+        # A3(분해축): Rz에 따라 분담 축 결정
+        if key == "0" and a3_on_x:
+            cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
+            x_out = cx - cur_a3
 
         elif key == "90" and a3_on_y:
             cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
@@ -1447,7 +1440,7 @@ def convert_gcode_to_rapid(
 
         elif key == "-90" and a3_on_y:
             cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy - cur_a3
+            y_out = cy + cur_a3
 
         else:
             cur_a3 = 0.0
