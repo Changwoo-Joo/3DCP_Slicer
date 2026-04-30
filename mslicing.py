@@ -1468,75 +1468,84 @@ def convert_gcode_to_rapid(
         return header + open_decl + body + close_decl
 
     # nodes
-    nodes = []
-    for i in range(len(xs_out)):
-        nodes.append({
-            "x": float(xs_out[i]),
-            "y": float(ys_out[i]),
-            "z": float(zs_out[i]),
-            "raw_x": float(raw_xs[i]),
-            "raw_y": float(raw_ys[i]),
-            "a1": float(a1_list[i]),
-            "a2": float(a2_list[i]),
-            "a3": float(a3_list[i]),
-            "a4": float(a4_list[i]),
-            "extr": bool(is_extruding_list[i]),
-        })
-
-    # ✅ A1/A2 const-speed: raw_x/raw_y 기반, 블록 경계 없어도 계속 진행
-    if bool(enable_a1_const):
-        _apply_const_speed_profile_on_nodes(
-            nodes=nodes,
-            axis_key="a1",
-            coord_key="raw_x",
-            coord_min=float(x_min),
-            coord_max=float(x_max),
-            axis_at_min=float(a1_at_xmin),
-            axis_at_max=float(a1_at_xmax),
-            speed_mm_s=float(speed_mm_s),
-            eps_mm=float(boundary_eps_mm),
-            apply_print_only=bool(apply_print_only),
-            travel_interp=bool(travel_interp),
-        )
-    else:
+        nodes = []
+        for i in range(len(xs_out)):
+            nodes.append({
+                "x": float(xs_out[i]),
+                "y": float(ys_out[i]),
+                "z": float(zs_out[i]),
+                "raw_x": float(raw_xs[i]),
+                "raw_y": float(raw_ys[i]),
+                "a1": float(a1_list[i]),
+                "a2": float(a2_list[i]),
+                "a3": float(a3_list[i]),
+                "a4": float(a4_list[i]),
+                "extr": bool(is_extruding_list[i]),
+            })
+    
+        # A1 계산용 기준 좌표
+        # A3로 빠진 만큼 반영한 실효 X를 기준으로 A1 경계 판정
         for nd in nodes:
-            nd["a1"] = 0.0
-
-    if bool(enable_a2_const):
-        use_step = bool(st.session_state.get("extconsta2usestep", False))
-        if use_step:
+            if key in ("90", "-90") and a3_on_y:
+                nd["coord_a1"] = float(nd.get("raw_x", 0.0)) - float(nd.get("a3", 0.0))
+            elif key == "0" and a3_on_x:
+                nd["coord_a1"] = float(nd.get("raw_x", 0.0)) - float(nd.get("a3", 0.0))
+            else:
+                nd["coord_a1"] = float(nd.get("raw_x", 0.0))
+    
+        if bool(enable_a1_const):
             _apply_const_speed_profile_on_nodes(
                 nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
+                axis_key="a1",
+                coord_key="coord_a1",
+                coord_min=float(x_min),
+                coord_max=float(x_max),
+                axis_at_min=float(a1_at_xmin),
+                axis_at_max=float(a1_at_xmax),
                 speed_mm_s=float(speed_mm_s),
                 eps_mm=float(boundary_eps_mm),
                 apply_print_only=bool(apply_print_only),
                 travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
-                step_round="floor",
             )
         else:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-            )
-    else:
-        for nd in nodes:
-            nd["a2"] = 0.0
+            for nd in nodes:
+                nd["a1"] = 0.0
+    
+        if bool(enable_a2_const):
+            use_step = bool(st.session_state.get("extconsta2usestep", False))
+            if use_step:
+                _apply_const_speed_profile_on_nodes(
+                    nodes=nodes,
+                    axis_key="a2",
+                    coord_key="raw_y",
+                    coord_min=float(y_min),
+                    coord_max=float(y_max),
+                    axis_at_min=float(a2_at_ymin),
+                    axis_at_max=float(a2_at_ymax),
+                    speed_mm_s=float(speed_mm_s),
+                    eps_mm=float(boundary_eps_mm),
+                    apply_print_only=bool(apply_print_only),
+                    travel_interp=bool(travel_interp),
+                    step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
+                    step_round="floor",
+                )
+            else:
+                _apply_const_speed_profile_on_nodes(
+                    nodes=nodes,
+                    axis_key="a2",
+                    coord_key="raw_y",
+                    coord_min=float(y_min),
+                    coord_max=float(y_max),
+                    axis_at_min=float(a2_at_ymin),
+                    axis_at_max=float(a2_at_ymax),
+                    speed_mm_s=float(speed_mm_s),
+                    eps_mm=float(boundary_eps_mm),
+                    apply_print_only=bool(apply_print_only),
+                    travel_interp=bool(travel_interp),
+                )
+        else:
+            for nd in nodes:
+                nd["a2"] = 0.0
 
 
 
