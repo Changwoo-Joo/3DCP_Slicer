@@ -319,9 +319,6 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
     return z_values
 
 # =========================
-# G-code generator
-# =========================
-# =========================
 # G-code generator 
 # =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
@@ -384,8 +381,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 simplified = simplify_segment(trimmed, min_spacing)
                 
                 if st.session_state.get('enable_corner_points', False):
-                   corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                   simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
                 if i_seg > 0:
                     s = simplified[0]
@@ -477,8 +474,8 @@ def compute_slice_paths_with_travel(
                 simplified = simplify_segment(trimmed, min_spacing)
                 
                 if st.session_state.get('enable_corner_points', False):
-                   corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                   simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
                    
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
@@ -512,7 +509,7 @@ def compute_slice_paths_with_travel(
 
             prev_layer_last_end = layer_polys[-1][-1]
 
-        # 순차 출력일 때만 다음 글로 넘어갈 때 시각적 Z상승(뷰어용) 추가
+        # 순차 출력일 때만 다음 객체로 넘어갈 때 시각적 Z상승(뷰어용) 추가
         if seq_print and sub_idx < len(sub_meshes) - 1 and prev_layer_last_end is not None:
             safe_pt_up = prev_layer_last_end.copy()
             safe_pt_up[2] = safe_z_clearance
