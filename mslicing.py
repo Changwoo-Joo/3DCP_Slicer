@@ -17,7 +17,7 @@ st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
 
 # ── 전역 CSS ──
 st.markdown(
-    """
+    '''
     <style>
     footer {visibility: hidden;}
     [data-testid="stFooter"] {visibility: hidden;}
@@ -50,7 +50,7 @@ st.markdown(
       font-variant-numeric: tabular-nums;
     }
     </style>
-    """,
+    ''',
     unsafe_allow_html=True
 )
 
@@ -174,60 +174,16 @@ def _resample_polyline_by_s(poly: np.ndarray, s_targets: np.ndarray) -> np.ndarr
 
     out = []
     j = 0
-    for st in s_targets:
-        while j < len(lens) - 1 and s[j+1] < st:
+    for st_val in s_targets:
+        while j < len(lens) - 1 and s[j+1] < st_val:
             j += 1
         d = float(lens[j])
         if d < 1e-12:
             out.append(pts[j].copy())
         else:
-            t = (st - s[j]) / d
+            t = (st_val - s[j]) / d
             out.append((1.0 - t) * pts[j] + t * pts[j+1])
     return np.asarray(out, dtype=float)
-
-def densify_sparse_corners(poly: np.ndarray,
-                           step_mm: float = 5.0,
-                           window_mm: float = 30.0,
-                           collinear_eps: float = 1e-12) -> np.ndarray:
-    pts = np.asarray(poly, dtype=float)
-    if len(pts) < 3 or step_mm <= 0 or window_mm <= 0:
-        return pts.copy()
-
-    s = _poly_arclen_s_xy(pts)
-    total = float(s[-1])
-    if total < 1e-9:
-        return pts.copy()
-
-    s_targets = [0.0, total]
-
-    for i in range(1, len(pts) - 1):
-        v1 = pts[i] - pts[i-1]
-        v2 = pts[i+1] - pts[i]
-
-        # 각도 임계값 없이: '완전 일직선'만 제외
-        cross = v1[0]*v2[1] - v1[1]*v2[0]
-        if abs(cross) <= collinear_eps:
-            continue
-
-        # 코너에서 앞/뒤 인접 점 간격이 window_mm보다 큰 경우에만 발동
-        gap_prev = float(s[i] - s[i-1])
-        gap_next = float(s[i+1] - s[i])
-        if not (gap_prev > window_mm or gap_next > window_mm):
-            continue
-
-        si = float(s[i])
-        a = max(0.0, si - window_mm)
-        b = min(total, si + window_mm)
-
-        n = int(max(2, math.floor((b - a) / step_mm) + 1))
-        ss = a + step_mm * np.arange(n, dtype=float)
-        ss = ss[ss <= b + 1e-6]
-        s_targets.extend(ss.tolist())
-
-    s_targets = np.unique(np.round(np.asarray(s_targets, dtype=float), 6))
-    s_targets.sort()
-    return _resample_polyline_by_s(pts, s_targets)
-
 
 def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
                              collinear_eps: float = 1e-12,
@@ -307,8 +263,6 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
 
     z_step = max(float(z_int), 1e-9)
 
-    # 기존 동작은 유지하되, 모델 높이/위치 조건 때문에 np.arange 결과가
-    # 비어 있을 때 z_values[-1]에서 IndexError가 나지 않도록 보완한다.
     z_values = list(np.arange(z_step, z_max + 0.001, z_step))
     if not z_values:
         z_values = [z_min + height * 0.5]
@@ -332,9 +286,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     if seq_print:
         raw_sub_meshes = mesh.split(only_watertight=False)
         raw_sub_meshes = sorted(raw_sub_meshes, key=lambda m: m.bounds[0][0])
-        
+
         if seq_group_inner:
-            # XY 바운딩 박스 겹침을 확인하여 내부/외부(O, B 형태)를 한 그룹으로 묶음
             groups = []
             for m in raw_sub_meshes:
                 b1 = m.bounds
@@ -357,16 +310,15 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     else:
         submeshes = [mesh]
 
-    # 안전높이 150.0 하드코딩 고정
     safe_z_clearance = float(mesh.bounds[1][2]) + 150.0
     prev_start_xy = None
-    
+
     for subidx, submesh in enumerate(submeshes):
         if seq_print:
             g.append(f"\n; ==========================================")
             g.append(f"; Object {subidx + 1} of {len(submeshes)}")
             g.append(f"; ==========================================")
-            
+
         z_values = make_slice_z_values(submesh, z_int)
 
         for zidx, z in enumerate(z_values):
@@ -391,13 +343,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                 trimmed = trim_closed_ring_tail(shifted, trim_dist)
                 simplified = simplify_segment(trimmed, min_spacing)
-                
+
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
                 start = simplified[0]
-                
+
                 if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
                     g.append(f"; Moving to new object start at Safe Z")
                     g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
@@ -433,23 +385,37 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 # Slice path computation 
 # =========================
 def compute_slice_paths_with_travel(
-    mesh,
-    z_int=30.0,
-    ref_pt_user=(0.0, 0.0),
-    trim_dist=30.0,
-    min_spacing=5.0,
-    auto_start=False,
-    e_on=False,
-    seq_print=False  # 인자 추가됨
+    mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
+    auto_start=False, e_on=False, seq_print=False, seq_group_inner=True
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
-    
+
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
     prev_layer_last_end: Optional[np.ndarray] = None
     prev_start_xy = None
 
     if seq_print:
-        sub_meshes = mesh.split(only_watertight=False)
-        sub_meshes = sorted(sub_meshes, key=lambda m: m.bounds[0][0])
+        raw_sub_meshes = mesh.split(only_watertight=False)
+        raw_sub_meshes = sorted(raw_sub_meshes, key=lambda m: m.bounds[0][0])
+
+        if seq_group_inner:
+            groups = []
+            for m in raw_sub_meshes:
+                b1 = m.bounds
+                placed = False
+                for g_dict in groups:
+                    b2 = g_dict['bounds']
+                    if not (b1[1][0] < b2[0][0] - 1.0 or b1[0][0] > b2[1][0] + 1.0 or
+                            b1[1][1] < b2[0][1] - 1.0 or b1[0][1] > b2[1][1] + 1.0):
+                        g_dict['mesh'] = g_dict['mesh'] + m
+                        g_dict['bounds'][0] = np.minimum(g_dict['bounds'][0], b1[0])
+                        g_dict['bounds'][1] = np.maximum(g_dict['bounds'][1], b1[1])
+                        placed = True
+                        break
+                if not placed:
+                    groups.append({'mesh': m, 'bounds': [b1[0].copy(), b1[1].copy()]})
+            sub_meshes = [g_dict['mesh'] for g_dict in groups]
+        else:
+            sub_meshes = raw_sub_meshes
     else:
         sub_meshes = [mesh]
 
@@ -483,11 +449,11 @@ def compute_slice_paths_with_travel(
                 shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
                 trimmed = trim_closed_ring_tail(shifted, trim_dist)
                 simplified = simplify_segment(trimmed, min_spacing)
-                
+
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-                   
+
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
@@ -520,7 +486,6 @@ def compute_slice_paths_with_travel(
 
             prev_layer_last_end = layer_polys[-1][-1]
 
-        # 순차 출력일 때만 다음 객체로 넘어갈 때 시각적 Z상승(뷰어용) 추가
         if seq_print and sub_idx < len(sub_meshes) - 1 and prev_layer_last_end is not None:
             safe_pt_up = prev_layer_last_end.copy()
             safe_pt_up[2] = safe_z_clearance
@@ -529,26 +494,25 @@ def compute_slice_paths_with_travel(
             prev_layer_last_end = safe_pt_up
 
     return all_items
-    
-    def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
-    ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-        segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
-        if not items:
-            return segs
-        for poly, e_vals, is_travel in items:
-            if poly is None or len(poly) < 2:
-                continue
-            if e_on and e_vals is not None:
-                for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
-                    is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
-                    segs.append((p1, p2, is_travel, is_extruding))
-            else:
-                for p1, p2 in zip(poly[:-1], poly[1:]):
-                    is_extruding = (not is_travel)
-                    segs.append((p1, p2, is_travel, is_extruding))
-        return segs
 
-# === (NEW) 현재 행 기준 레이어 전체 길이 계산 ===
+def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
+) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
+    segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
+    if not items:
+        return segs
+    for poly, e_vals, is_travel in items:
+        if poly is None or len(poly) < 2:
+            continue
+        if e_on and e_vals is not None:
+            for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
+                is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
+                segs.append((p1, p2, is_travel, is_extruding))
+        else:
+            for p1, p2 in zip(poly[:-1], poly[1:]):
+                is_extruding = (not is_travel)
+                segs.append((p1, p2, is_travel, is_extruding))
+    return segs
+
 def compute_layer_length_for_index(
     segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
     upto_idx: int
@@ -796,11 +760,6 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
 
-    if show_caps:
-        fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
-    else:
-        fig.data[4].x = []; fig.data[4].y = []; fig.data[4].z = []
-
 # ======= 치수 계산 유틸 =======
 def _bbox_from_buffer(buf_dict):
     try:
@@ -868,7 +827,6 @@ if "paths_travel_mode" not in st.session_state:
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
-# --- A1/A2 Constant-Speed defaults ---
 if "ext_const_enable_a1" not in st.session_state:
     st.session_state.ext_const_enable_a1 = False
 if "ext_const_enable_a2" not in st.session_state:
@@ -878,7 +836,6 @@ if "ext_use_a3" not in st.session_state:
 if "ext_use_a4" not in st.session_state:
     st.session_state.ext_use_a4 = False
 
-# 기본값(네 범위 기준)
 if "ext_const_xmin" not in st.session_state:
     st.session_state.ext_const_xmin = 0.0
 if "ext_const_xmax" not in st.session_state:
@@ -985,20 +942,8 @@ seq_print = st.sidebar.checkbox("순차 출력 (1개씩)", value=False)
 seq_group_inner = st.sidebar.checkbox("내부 폐구간 그룹화 (O, B 안쪽 같이 출력)", value=True, disabled=not seq_print)
 
 with st.sidebar.expander("코너 주변점 옵션", expanded=False):
-    enable_corner = st.checkbox(
-        "코너 주변점 활성화",
-        value=False,
-        key="enable_corner_points"
-    )
-    corner_d = st.number_input(
-        "거리(mm)",
-        min_value=0.0,
-        max_value=1000.0,
-        value=5.0,
-        step=1.0,
-        key="corner_neighbor_distance_mm",
-        disabled=not enable_corner
-    )
+    enable_corner = st.checkbox("코너 주변점 활성화", value=False, key="enable_corner_points")
+    corner_d = st.number_input("거리(mm)", min_value=0.0, max_value=1000.0, value=5.0, step=1.0, key="corner_neighbor_distance_mm", disabled=not enable_corner)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
@@ -1010,9 +955,6 @@ b2 = st.sidebar.container()
 slice_clicked = b1.button("모델 슬라이싱", use_container_width=True)
 gen_clicked = b2.button("G-code 생성", use_container_width=True)
 
-# =========================
-# Load mesh on upload
-# =========================
 if uploaded is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
         tmp.write(uploaded.read())
@@ -1030,47 +972,17 @@ if uploaded is not None:
         st.sidebar.info(f"STL 단위 자동 변환: m → mm (최대 치수 {max_extent:.3f} → {max_extent * scale_to_mm:.1f} mm)")
     else:
         st.sidebar.info(f"STL 단위: mm 기준 사용 (최대 치수 {max_extent:.1f} mm)")
-    # Z 아주 미세 확장 (절단면 인식)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
-# === items -> segments ===
-def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
-) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
-    segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
-    if not items:
-        return segs
-    for poly, e_vals, is_travel in items:
-        if poly is None or len(poly) < 2:
-            continue
-        if e_on and e_vals is not None:
-            for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
-                is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
-                segs.append((p1, p2, is_travel, is_extruding))
-        else:
-            for p1, p2 in zip(poly[:-1], poly[1:]):
-                is_extruding = (not is_travel)
-                segs.append((p1, p2, is_travel, is_extruding))
-    return segs
-
-
-# =========================
-# Slicing Actions
-# =========================
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
-        st.session_state.mesh,
-        z_int=z_int,
-        ref_pt_user=(ref_x, ref_y),
-        trim_dist=trim_dist,
-        min_spacing=min_spacing,
-        auto_start=auto_start,
-        e_on=e_on,
-        seq_print=seq_print,
-        seq_group_inner=seq_group_inner
+        st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start,
+        e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner
     )
     st.session_state.paths_items = items
     segs = items_to_segments(items, e_on=e_on)
@@ -1085,18 +997,9 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh,
-        z_int=z_int,
-        feed=feed,
-        ref_pt_user=(ref_x, ref_y),
-        e_on=e_on,
-        start_e_on=start_e_on,
-        start_e_val=start_e_val,
-        e0_on=e0_on,
-        trim_dist=trim_dist,
-        min_spacing=min_spacing,
-        auto_start=auto_start,
-        m30_on=m30_on,
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
+        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on,
         seq_print=seq_print  
     )
     st.session_state.gcode_text = gcode_text
@@ -1112,8 +1015,7 @@ if st.session_state.get("gcode_text"):
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
 def _fmt_pos(v: float) -> str:
-    if abs(v) < 5e-5:
-        v = 0.0
+    if abs(v) < 5e-5: v = 0.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -1121,8 +1023,7 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    if abs(v) < 5e-5:
-        v = 0.0
+    if abs(v) < 5e-5: v = 0.0
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -1130,8 +1031,7 @@ def _fmt_ang(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
-    if abs(a1 - a0) < 1e-12:
-        return float(b0)
+    if abs(a1 - a0) < 1e-12: return float(b0)
     t = (val - a0) / (a1 - a0)
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
     return float(b0 + t * (b1 - b0))
@@ -1174,126 +1074,81 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-# =========================
-# ✅ (FIX) A1/A2 Constant-Speed profile (robust)
-#   - 경계(xmin/xmax, ymin/ymax) 없어도 고정되지 않음
-#   - A1: raw_x의 |ΔX|만으로 진행 (Y로는 절대 진행 X)
-#   - A2: raw_y의 |ΔY|만으로 진행
-#   - 경계에 "있을 때"는 정확히 스냅/홀드, 경계에서 "벗어나는 순간"은 바로 진행
-# =========================
 def _apply_const_speed_profile_on_nodes(
-    nodes: List[Dict[str, Any]],
-    axis_key: str,
-    coord_key: str,
-    coord_min: float,
-    coord_max: float,
-    axis_at_min: float,
-    axis_at_max: float,
-    speed_mm_s: float = 200.0,
-    deadband_mm: float = 11.0,
-    eps_mm: float = 0.5,
-    apply_print_only: bool = False,
-    travel_interp: bool = True,
-    step_mm: float = 0.0,             # (추가) 0이면 기존처럼 연속, >0이면 계단
-    step_round: str = "floor",        # (추가) "floor" / "round" / "ceil"
+    nodes: List[Dict[str, Any]], axis_key: str, coord_key: str, coord_min: float, coord_max: float,
+    axis_at_min: float, axis_at_max: float, speed_mm_s: float = 200.0, deadband_mm: float = 11.0,
+    eps_mm: float = 0.5, apply_print_only: bool = False, travel_interp: bool = True, step_mm: float = 0.0, step_round: str = "floor"
 ) -> None:
-    if not nodes or axis_key not in ("a1", "a2"):
-        return
+    if not nodes or axis_key not in ("a1", "a2"): return
     n = len(nodes)
-    if n == 0:
-        return
+    if n == 0: return
 
     coord_min = float(coord_min)
     coord_max = float(coord_max)
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
     eps = float(max(0.0, eps_mm))
-
     span = float(coord_max - coord_min)
     span_abs = abs(span)
+
     if span_abs <= 1e-9:
-        for nd in nodes:
-            nd[axis_key] = float(axis_at_min)
+        for nd in nodes: nd[axis_key] = float(axis_at_min)
         return
 
-    def _at_min(c: float) -> bool:
-        return c <= coord_min + eps
-
-    def _at_max(c: float) -> bool:
-        return c >= coord_max - eps
+    def _at_min(c: float) -> bool: return c <= coord_min + eps
+    def _at_max(c: float) -> bool: return c >= coord_max - eps
 
     def _snap_linear(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
+        if _at_min(c): return float(axis_at_min)
+        if _at_max(c): return float(axis_at_max)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
         return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
     def _snap_step(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
-
+        if _at_min(c): return float(axis_at_min)
+        if _at_max(c): return float(axis_at_max)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-
         dt = float(step_mm) / span_abs if step_mm is not None else 0.0
-        if dt <= 1e-12:
-            return _snap_linear(c)
+        if dt <= 1e-12: return _snap_linear(c)
 
-        if step_round == "round":
-            tq = round(t / dt) * dt
-        elif step_round == "ceil":
-            tq = math.ceil(t / dt) * dt
-        else:  # "floor"
-            tq = math.floor(t / dt) * dt
-
+        if step_round == "round": tq = round(t / dt) * dt
+        elif step_round == "ceil": tq = math.ceil(t / dt) * dt
+        else: tq = math.floor(t / dt) * dt
         tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
         return float(axis_at_min + tq * (axis_at_max - axis_at_min))
 
     use_step = (step_mm is not None) and (float(step_mm) > 0.0)
     snap_for_coord = _snap_step if use_step else _snap_linear
-
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
     for i in range(n):
         c = float(nodes[i].get(coord_key, 0.0))
         target_val = snap_for_coord(c)
-
         if apply_print_only and not extr_node[i]:
-            if travel_interp:
-                nodes[i][axis_key] = target_val
-            else:
-                nodes[i][axis_key] = nodes[i-1][axis_key] if i > 0 else target_val
-        else:
-            nodes[i][axis_key] = target_val
+            if travel_interp: nodes[i][axis_key] = target_val
+            else: nodes[i][axis_key] = nodes[i-1][axis_key] if i > 0 else target_val
+        else: nodes[i][axis_key] = target_val
 
-    # travel 구간 보간(기존 동작 유지)
     if travel_interp and apply_print_only:
         active_node = extr_node
         if any(active_node):
             i = 0
             while i < n:
                 if active_node[i]:
-                    i += 1
-                    continue
+                    i += 1; continue
                 t0 = i
-                while i < n and not active_node[i]:
-                    i += 1
+                while i < n and not active_node[i]: i += 1
                 t1 = i - 1
 
                 prev_idx = t0 - 1 if (t0 - 1) >= 0 else None
                 next_idx = i if i < n else None
-
                 if prev_idx is None or next_idx is None:
                     base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else (
                         float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
                     )
-                    for k in range(t0, t1 + 1):
-                        nodes[k][axis_key] = base
+                    for k in range(t0, t1 + 1): nodes[k][axis_key] = base
                     continue
 
                 a0 = float(nodes[prev_idx][axis_key])
@@ -1303,100 +1158,46 @@ def _apply_const_speed_profile_on_nodes(
                     u = (kk + 1) / float(total + 1)
                     nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
-# =========================
-# Rapid Converter (UPDATED)
-# =========================
 def convert_gcode_to_rapid(
-    gcode_text: str,
-    rx: float,
-    ry: float,
-    rz: float,
-    preset: Dict[str, Any],
-    swap_a3_a4: bool = False,
-    enable_a1_const: bool = False,
-    enable_a2_const: bool = False,
-    enable_a3: bool = False,
-    enable_a4: bool = False,
-    x_min: float = 0.0,
-    x_max: float = 6000.0,
-    a1_at_xmin: float = 4000.0,
-    a1_at_xmax: float = 0.0,
-    y_min: float = 0.0,
-    y_max: float = 1000.0,
-    a2_at_ymin: float = 0.0,
-    a2_at_ymax: float = 4000.0,
-    speed_mm_s: float = 200.0,
-    boundary_eps_mm: float = 0.5,
-    apply_print_only: bool = False,
-    travel_interp: bool = True,
-    singularity_avoid: bool = False,
-    singularity_z_trigger: float = 0.0,
-    singularity_lift_z: float = 300.0,
+    gcode_text: str, rx: float, ry: float, rz: float, preset: Dict[str, Any], swap_a3_a4: bool = False,
+    enable_a1_const: bool = False, enable_a2_const: bool = False, enable_a3: bool = False, enable_a4: bool = False,
+    x_min: float = 0.0, x_max: float = 6000.0, a1_at_xmin: float = 4000.0, a1_at_xmax: float = 0.0,
+    y_min: float = 0.0, y_max: float = 1000.0, a2_at_ymin: float = 0.0, a2_at_ymax: float = 4000.0,
+    speed_mm_s: float = 200.0, boundary_eps_mm: float = 0.5, apply_print_only: bool = False,
+    travel_interp: bool = True, singularity_avoid: bool = False, singularity_z_trigger: float = 0.0, singularity_lift_z: float = 300.0,
 ) -> str:
-
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
     def gi(d: Dict[str, Any], path: list, default: float) -> float:
         try:
             cur = d
-            for k in path[:-1]:
-                cur = cur[k]
+            for k in path[:-1]: cur = cur[k]
             return float(cur[path[-1]])
-        except Exception:
-            return float(default)
+        except Exception: return float(default)
 
     x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
-
     a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
-    
+
     a3_on_x = bool(enable_a3) and ("A3_out" in P.get("X", {}))
     a3_on_y = bool(enable_a3) and ("A3_out" in P.get("Y", {}))
     a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
-    def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
-        span_in = abs(float(in1) - float(in0))
-        span_out = abs(float(out1) - float(out0))
-        total = span_in + span_out
-        if total <= 1e-12 or span_out <= 1e-12:
-            return 0.0
-        same_dir = ((in1 >= in0 and out1 >= out0) or (in1 <= in0 and out1 <= out0))
-        ext_part = float(delta) * (span_out / total)
-        if not same_dir:
-            ext_part = -ext_part
-        return ext_part
-
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+    have_prev = False; prev_x = prev_y = prev_z = 0.0; prev_e = None; cur_a3 = 0.0
+    singularity_a4_offset = 0.0; singularity_applied = False
 
-    have_prev = False
-    prev_x = prev_y = prev_z = 0.0
-    prev_e = None
-    cur_a3 = 0.0
-    singularity_a4_offset = 0.0
-    singularity_applied = False
-
-    xs_out: List[float] = []
-    ys_out: List[float] = []
-    zs_out: List[float] = []
-    raw_xs: List[float] = []
-    raw_ys: List[float] = []
-    a1_list: List[float] = []
-    a2_list: List[float] = []
-    a3_list: List[float] = []
-    a4_list: List[float] = []
-    is_extruding_list: List[bool] = []
+    xs_out, ys_out, zs_out, raw_xs, raw_ys = [], [], [], [], []
+    a1_list, a2_list, a3_list, a4_list, is_extruding_list = [], [], [], [], []
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01")):
-            continue
-
+        if not t or not t.startswith(("G0","G00","G1","G01")): continue
         cx, cy, cz = prev_x, prev_y, prev_z
-        ce = None
-        has_any = False
+        ce = None; has_any = False
         for p in t.split():
             if p.startswith("X"):
                 try: cx = float(p[1:]); has_any = True
@@ -1410,244 +1211,79 @@ def convert_gcode_to_rapid(
             elif p.startswith("E"):
                 try: ce = float(p[1:])
                 except: ce = None
-        if not has_any:
-            continue
+        if not has_any: continue
 
-        # E 기반 extruding 판정
         is_extruding = False
         if ce is not None and prev_e is not None:
-            if (ce - prev_e) > 1e-12:
-                is_extruding = True
-        if ce is not None:
-            prev_e = ce
+            if (ce - prev_e) > 1e-12: is_extruding = True
+        if ce is not None: prev_e = ce
 
-        # A4(절대, Z축 보정)
         a4_nominal = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
         a4_abs = a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
-
-        # 기본 좌표 보정: Z에서 A4를 뺌
         x_out, y_out, z_out = cx, cy, cz - a4_abs
-        prev_a4_nominal = _linmap(prev_z, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
-        prev_a4_abs = prev_a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
-        prev_z_out = prev_z - prev_a4_abs
-        prev_h_raw = float(prev_z_out + prev_a4_abs)
         curr_h_raw = float(z_out + a4_abs)
 
-        # A3(분해축): Rz에 따라 분담 축 결정
-        if key == "0" and a3_on_x:
-            cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
-            x_out = cx - cur_a3
+        if key == "0" and a3_on_x: cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1); x_out = cx - cur_a3
+        elif key == "90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); y_out = cy - cur_a3
+        elif key == "-90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); y_out = cy + cur_a3
+        else: cur_a3 = 0.0
 
-        elif key == "90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy - cur_a3
-
-        elif key == "-90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy + cur_a3
-
-        else:
-            cur_a3 = 0.0
-
-        if (
-            bool(enable_a4)
-            and bool(singularity_avoid)
-            and (not singularity_applied)
-            and curr_h_raw >= float(singularity_z_trigger) - 1e-9
-        ):
+        if (bool(enable_a4) and bool(singularity_avoid) and (not singularity_applied) and curr_h_raw >= float(singularity_z_trigger) - 1e-9):
             z_bump = float(singularity_lift_z)
-
-            trigger_a4_nominal = a4_nominal
-            trigger_a4_after = float(trigger_a4_nominal) - (singularity_a4_offset + z_bump)
-
+            trigger_a4_after = float(a4_nominal) - (singularity_a4_offset + z_bump)
             if trigger_a4_after < 0.0:
-                raise ValueError(
-                    f"싱귤러리티 회피 불가: 발생 높이={float(singularity_z_trigger):.3f} mm 에서 "
-                    f"A4 현재값 {trigger_a4_nominal:.3f} 에 "
-                    f"누적 보정 {singularity_a4_offset:.3f} 및 추가 하강 {z_bump:.3f} mm 를 적용하면 음수가 됩니다. "
-                    f"강제 상승(하강) 수치를 조정하세요."
-                )
-
+                raise ValueError("싱귤러리티 회피 불가: A4 값이 음수가 됩니다. 강제 상승/하강 수치를 조정하세요.")
             singularity_a4_offset += z_bump
             singularity_applied = True
-
             a4_abs = a4_nominal - singularity_a4_offset
             z_out = cz - a4_abs
 
-            if key == "0" and a3_on_x:
-                cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
-                x_out = cx - cur_a3
-                y_out = cy
-            elif key == "90" and a3_on_y:
-                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-                x_out = cx
-                y_out = cy - cur_a3
-            elif key == "-90" and a3_on_y:
-                cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-                x_out = cx
-                y_out = cy + cur_a3
-            else:
-                cur_a3 = 0.0
-                x_out = cx
-                y_out = cy
+            if key == "0" and a3_on_x: cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1); x_out = cx - cur_a3; y_out = cy
+            elif key == "90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); x_out = cx; y_out = cy - cur_a3
+            elif key == "-90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); x_out = cx; y_out = cy + cur_a3
+            else: cur_a3 = 0.0; x_out = cx; y_out = cy
 
         have_prev = True
-                
-        # 저장
-        raw_xs.append(float(cx))
-        raw_ys.append(float(cy))
-        xs_out.append(float(x_out))
-        ys_out.append(float(y_out))
-        zs_out.append(float(z_out))
-        a1_list.append(0.0)
-        a2_list.append(0.0)
-        a3_list.append(float(cur_a3))
-        a4_list.append(float(a4_abs))
+        raw_xs.append(float(cx)); raw_ys.append(float(cy))
+        xs_out.append(float(x_out)); ys_out.append(float(y_out)); zs_out.append(float(z_out))
+        a1_list.append(0.0); a2_list.append(0.0); a3_list.append(float(cur_a3)); a4_list.append(float(a4_abs))
         is_extruding_list.append(bool(is_extruding))
 
-        if len(xs_out) >= MAX_LINES:
-            break
-
+        if len(xs_out) >= MAX_LINES: break
         prev_x, prev_y, prev_z = cx, cy, cz
 
     if len(xs_out) == 0:
         lines_out = [PAD_LINE] * MAX_LINES
         ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-        header = ("MODULE Converted\n"
-                  "!******************************************************************************************************************************\n"
-                  "!*\n"
-                  f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-                  "!\n"
-                  "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-                  "!\n"
-                  "!******************************************************************************************************************************\n")
-        cnt_str = str(MAX_LINES)
-        open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-        body = ""
-        for i, ln in enumerate(lines_out):
-            q = f'"{ln}"'
-            body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-        close_decl = "];\nENDMODULE\n"
-        return header + open_decl + body + close_decl
+        return (f"MODULE Converted\n!*** Generated {ts}\nVAR string sFileCount:=\"{MAX_LINES}\";\n"
+                f"VAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n" + ",\n".join(f'"{ln}"' for ln in lines_out) + "\n];\nENDMODULE\n")
 
-    # nodes
-    nodes = []
-    for i in range(len(xs_out)):
-        nodes.append({
-            "x": float(xs_out[i]),
-            "y": float(ys_out[i]),
-            "z": float(zs_out[i]),
-            "raw_x": float(raw_xs[i]),
-            "raw_y": float(raw_ys[i]),
-            "a1": float(a1_list[i]),
-            "a2": float(a2_list[i]),
-            "a3": float(a3_list[i]),
-            "a4": float(a4_list[i]),
-            "extr": bool(is_extruding_list[i]),
-        })
-
+    nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
+              "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
 
     if bool(enable_a1_const):
-        _apply_const_speed_profile_on_nodes(
-            nodes=nodes,
-            axis_key="a1",
-            coord_key="raw_x",
-            coord_min=float(x_min),
-            coord_max=float(x_max),
-            axis_at_min=float(a1_at_xmin),
-            axis_at_max=float(a1_at_xmax),
-            speed_mm_s=float(speed_mm_s),
-            eps_mm=float(boundary_eps_mm),
-            apply_print_only=bool(apply_print_only),
-            travel_interp=bool(travel_interp),
-        )
-    else:
-        for nd in nodes:
-            nd["a1"] = 0.0
-
+        _apply_const_speed_profile_on_nodes(nodes, "a1", "raw_x", x_min, x_max, a1_at_xmin, a1_at_xmax, speed_mm_s, 11.0, boundary_eps_mm, apply_print_only, travel_interp)
     if bool(enable_a2_const):
         use_step = bool(st.session_state.get("extconsta2usestep", False))
-        if use_step:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
-                step_round="floor",
-            )
-        else:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-            )
-    else:
-        for nd in nodes:
-            nd["a2"] = 0.0
-
-
+        _apply_const_speed_profile_on_nodes(nodes, "a2", "raw_y", y_min, y_max, a2_at_ymin, a2_at_ymax, speed_mm_s, 11.0, boundary_eps_mm, apply_print_only, travel_interp,
+                                            float(st.session_state.get("extconsta2stepmm", 0.0)) if use_step else 0.0)
 
     lines_out = []
     for nd in nodes:
-        if len(lines_out) >= MAX_LINES:
-            break
-
-        x = _fmt_pos(float(nd["x"]))
-        y = _fmt_pos(float(nd["y"]))
-        z = _fmt_pos(float(nd["z"]))
-
-        if swap_a3_a4:
-            a3_v = nd["a4"]
-            a4_v = nd["a3"]
-        else:
-            a3_v = nd["a3"]
-            a4_v = nd["a4"]
-
-        a1s = _fmt_pos(float(nd["a1"]))
-        a2s = _fmt_pos(float(nd["a2"]))
-        a3s = _fmt_pos(float(a3_v))
-        a4s = _fmt_pos(float(a4_v))
-
+        if len(lines_out) >= MAX_LINES: break
+        x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
+        a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
+        a1s, a2s, a3s, a4s = _fmt_pos(nd["a1"]), _fmt_pos(nd["a2"]), _fmt_pos(a3_v), _fmt_pos(a4_v)
         lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s}")
 
-    while len(lines_out) < MAX_LINES:
-        lines_out.append(PAD_LINE)
+    while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-    header = ("MODULE Converted\n"
-              "!******************************************************************************************************************************\n"
-              "!*\n"
-              f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-              "!\n"
-              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1: raw_x |ΔX| based + boundary snap/hold (leave-boundary resumes)\n"
-              "!*** A2: raw_y |ΔY| based + boundary snap/hold (leave-boundary resumes)\n"
-              "!\n"
-              "!******************************************************************************************************************************\n")
-    cnt_str = str(MAX_LINES)
-    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-    body = ""
-    for i, ln in enumerate(lines_out):
-        q = f'"{ln}"'
-        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-    close_decl = "];\nENDMODULE\n"
-    return header + open_decl + body + close_decl
+    header = ("MODULE Converted\n!*** Generated {0} by Gcode→RAPID converter.\n"
+              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n").format(ts)
+    open_decl = f'VAR string sFileCount:="{MAX_LINES}";\nVAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n'
+    body = ",\n".join(f'"{ln}"' for ln in lines_out) + "\n"
+    return header + open_decl + body + "];\nENDMODULE\n"
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
@@ -1659,24 +1295,18 @@ if KEY_OK:
         with st.sidebar.expander("Rapid 설정", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
-
             rz_preset = st.selectbox("Rz (deg) 프리셋", options=[0.00, 90.0, -90.0],
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
         with st.sidebar.expander("외부축 (A1/A2 등속 왕복 · 경계정지)", expanded=True):
             st.caption("X/Y 입력 범위를 실제 외부축 A1/A2 위치로 매핑합니다.")
-
-            # 일반 화면에서는 고급 옵션을 고정값으로 사용해 혼동을 줄인다.
             st.session_state.ext_const_apply_print_only = False
             st.session_state.ext_const_travel_interp = True
             st.session_state.extconsta2usestep = False
 
             st.markdown("**A1 설정 (X → A1)**")
-            st.session_state.ext_const_enable_a1 = st.checkbox(
-                "A1 사용",
-                value=bool(st.session_state.ext_const_enable_a1)
-            )
+            st.session_state.ext_const_enable_a1 = st.checkbox("A1 사용", value=bool(st.session_state.ext_const_enable_a1))
             cols = st.columns(2)
             st.session_state.ext_const_xmin = cols[0].number_input("X 입력 최소값 (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
             st.session_state.ext_const_xmax = cols[1].number_input("X 입력 최대값 (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
@@ -1685,10 +1315,7 @@ if KEY_OK:
             st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 최대 위치", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
 
             st.markdown("**A2 설정 (Y → A2)**")
-            st.session_state.ext_const_enable_a2 = st.checkbox(
-                "A2 사용",
-                value=bool(st.session_state.ext_const_enable_a2)
-            )
+            st.session_state.ext_const_enable_a2 = st.checkbox("A2 사용", value=bool(st.session_state.ext_const_enable_a2))
             cols3 = st.columns(2)
             st.session_state.ext_const_ymin = cols3[0].number_input("Y 입력 최소값 (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
             st.session_state.ext_const_ymax = cols3[1].number_input("Y 입력 최대값 (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
@@ -1697,182 +1324,72 @@ if KEY_OK:
             st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 최대 위치", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
 
             with st.expander("고급 설정", expanded=False):
-                st.session_state.ext_const_speed_mm_s = st.number_input(
-                    "축 기준 속도 (mm/s)",
-                    min_value=1.0, max_value=2000.0,
-                    value=float(st.session_state.ext_const_speed_mm_s),
-                    step=10.0, format="%.1f"
-                )
-                st.session_state.ext_const_eps_mm = st.number_input(
-                    "경계 허용값 eps (mm)",
-                    min_value=0.0, max_value=50.0,
-                    value=float(st.session_state.ext_const_eps_mm),
-                    step=0.1, format="%.2f"
-                )
+                st.session_state.ext_const_speed_mm_s = st.number_input("축 기준 속도 (mm/s)", min_value=1.0, max_value=2000.0, value=float(st.session_state.ext_const_speed_mm_s), step=10.0, format="%.1f")
+                st.session_state.ext_const_eps_mm = st.number_input("경계 허용값 eps (mm)", min_value=0.0, max_value=50.0, value=float(st.session_state.ext_const_eps_mm), step=0.1, format="%.2f")
 
-
-            
-        
             def edit_axis(title_key: str, axis_key: str):
                 use_a3 = bool(st.session_state.get("ext_use_a3", False))
                 use_a4 = bool(st.session_state.get("ext_use_a4", False))
-        
                 visible = False
-                if axis_key == "Z" and use_a4:
-                    visible = True
-                elif title_key == "0" and axis_key == "X" and use_a3:
-                    visible = True
-                elif title_key in ("90", "-90") and axis_key == "Y" and use_a3:
-                    visible = True
-        
-                if not visible:
-                    return
-        
+                if axis_key == "Z" and use_a4: visible = True
+                elif title_key == "0" and axis_key == "X" and use_a3: visible = True
+                elif title_key in ("90", "-90") and axis_key == "Y" and use_a3: visible = True
+                if not visible: return
+
                 st.write(f"Rz {title_key} · {axis_key}")
-        
-                if title_key not in st.session_state.mapping_preset:
-                    st.session_state.mapping_preset[title_key] = {}
-                if axis_key not in st.session_state.mapping_preset[title_key]:
-                    st.session_state.mapping_preset[title_key][axis_key] = {}
-        
+                if title_key not in st.session_state.mapping_preset: st.session_state.mapping_preset[title_key] = {}
+                if axis_key not in st.session_state.mapping_preset[title_key]: st.session_state.mapping_preset[title_key][axis_key] = {}
+
                 PAX = st.session_state.mapping_preset[title_key][axis_key]
-        
                 base = DEFAULT_PRESET.get(title_key, {}).get(axis_key, {})
-        
-                if "in" not in PAX:
-                    PAX["in"] = list(base.get("in", [0.0, 0.0]))
-        
+                if "in" not in PAX: PAX["in"] = list(base.get("in", [0.0, 0.0]))
+
                 cols_in = st.columns(2)
-                in0 = cols_in[0].number_input(
-                    "in0",
-                    value=float(PAX["in"][0]),
-                    step=50.0,
-                    format="%.1f",
-                    key=f"{title_key}_{axis_key}_in0",
-                )
-                in1 = cols_in[1].number_input(
-                    "in1",
-                    value=float(PAX["in"][1]),
-                    step=50.0,
-                    format="%.1f",
-                    key=f"{title_key}_{axis_key}_in1",
-                )
+                in0 = cols_in[0].number_input("in0", value=float(PAX["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
+                in1 = cols_in[1].number_input("in1", value=float(PAX["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
                 PAX["in"] = [float(in0), float(in1)]
-        
+
                 cols_out = st.columns(2)
-        
                 if axis_key in ("X", "Y"):
-                    if "A3_out" not in PAX:
-                        PAX["A3_out"] = list(base.get("A3_out", [0.0, 0.0]))
-        
-                    a30 = cols_out[0].number_input(
-                        "A3out0",
-                        value=float(PAX["A3_out"][0]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a30",
-                    )
-                    a31 = cols_out[1].number_input(
-                        "A3out1",
-                        value=float(PAX["A3_out"][1]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a31",
-                    )
+                    if "A3_out" not in PAX: PAX["A3_out"] = list(base.get("A3_out", [0.0, 0.0]))
+                    a30 = cols_out[0].number_input("A3out0", value=float(PAX["A3_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a30")
+                    a31 = cols_out[1].number_input("A3out1", value=float(PAX["A3_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a31")
                     PAX["A3_out"] = [float(a30), float(a31)]
-        
                 elif axis_key == "Z":
-                    if "A4_out" not in PAX:
-                        PAX["A4_out"] = list(base.get("A4_out", [0.0, 0.0]))
-        
-                    a40 = cols_out[0].number_input(
-                        "A4out0",
-                        value=float(PAX["A4_out"][0]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a40",
-                    )
-                    a41 = cols_out[1].number_input(
-                        "A4out1",
-                        value=float(PAX["A4_out"][1]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a41",
-                    )
+                    if "A4_out" not in PAX: PAX["A4_out"] = list(base.get("A4_out", [0.0, 0.0]))
+                    a40 = cols_out[0].number_input("A4out0", value=float(PAX["A4_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a40")
+                    a41 = cols_out[1].number_input("A4out1", value=float(PAX["A4_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a41")
                     PAX["A4_out"] = [float(a40), float(a41)]
-        
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
-        
-            st.session_state.ext_use_a3 = st.checkbox(
-                "A3 사용",
-                value=bool(st.session_state.get("ext_use_a3", False)),
-                key="ext_use_a3_checkbox"
-            )
-            st.session_state.ext_use_a4 = st.checkbox(
-                "A4 사용",
-                value=bool(st.session_state.get("ext_use_a4", False)),
-                key="ext_use_a4_checkbox"
-            )
-        
+
+            st.session_state.ext_use_a3 = st.checkbox("A3 사용", value=bool(st.session_state.get("ext_use_a3", False)), key="ext_use_a3_checkbox")
+            st.session_state.ext_use_a4 = st.checkbox("A4 사용", value=bool(st.session_state.get("ext_use_a4", False)), key="ext_use_a4_checkbox")
+
             current_rz = float(st.session_state.get("rapid_rz", 0.0))
-            if abs(current_rz - 0.0) < 1e-6:
-                key_title = "0"
-            elif abs(current_rz - 90.0) < 1e-6:
-                key_title = "90"
-            elif abs(current_rz + 90.0) < 1e-6:
-                key_title = "-90"
-            else:
-                key_title = "0"
-        
+            if abs(current_rz - 0.0) < 1e-6: key_title = "0"
+            elif abs(current_rz - 90.0) < 1e-6: key_title = "90"
+            elif abs(current_rz + 90.0) < 1e-6: key_title = "-90"
+            else: key_title = "0"
+
             st.markdown(f"---\n### Rz {key_title} 프리셋")
-            edit_axis(key_title, "X")
-            edit_axis(key_title, "Y")
-            edit_axis(key_title, "Z")
-        
+            edit_axis(key_title, "X"); edit_axis(key_title, "Y"); edit_axis(key_title, "Z")
+
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-            st.download_button(
-                "매핑 프리셋 JSON 저장",
-                preset_json,
-                file_name="mapping_preset.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            st.download_button("매핑 프리셋 JSON 저장", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
         with st.sidebar.expander("싱귤러리티 회피", expanded=False):
             a4_enabled_now = bool(st.session_state.get("ext_use_a4", False))
-        
-            st.session_state.singularity_avoid_enable = st.checkbox(
-                "싱귤러리티 회피 사용",
-                value=bool(st.session_state.get("singularity_avoid_enable", False)),
-                disabled=not a4_enabled_now,
-                help="A4 사용 시에만 적용됩니다."
-            )
-        
-            st.session_state.singularity_z_trigger = st.number_input(
-                "싱귤러리티 발생 Z 높이 (mm)",
-                value=float(st.session_state.get("singularity_z_trigger", 0.0)),
-                step=10.0,
-                format="%.3f",
-                disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
-            )
-        
-            st.session_state.singularity_lift_z = st.number_input(
-                "강제 상승/하강 거리 (mm)",
-                value=float(st.session_state.get("singularity_lift_z", 300.0)),
-                step=10.0,
-                format="%.3f",
-                disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable)
-            )
-        
-            if not a4_enabled_now:
-                st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
-    
+            st.session_state.singularity_avoid_enable = st.checkbox("싱귤러리티 회피 사용", value=bool(st.session_state.get("singularity_avoid_enable", False)), disabled=not a4_enabled_now, help="A4 사용 시에만 적용됩니다.")
+            st.session_state.singularity_z_trigger = st.number_input("싱귤러리티 발생 Z 높이 (mm)", value=float(st.session_state.get("singularity_z_trigger", 0.0)), step=10.0, format="%.3f", disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable))
+            st.session_state.singularity_lift_z = st.number_input("강제 상승/하강 거리 (mm)", value=float(st.session_state.get("singularity_lift_z", 300.0)), step=10.0, format="%.3f", disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable))
+            if not a4_enabled_now: st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
+
             gtxt = st.session_state.get("gcode_text")
-            over = None
+            over = False
             if gtxt is not None:
                 xyz_count = _extract_xyz_lines_count(gtxt)
                 over = (xyz_count > MAX_LINES)
-    
+
             save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
             if gtxt is None:
                 st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
@@ -1881,28 +1398,16 @@ if KEY_OK:
             elif save_rapid_clicked:
                 try:
                     st.session_state.rapid_text = convert_gcode_to_rapid(
-                        gtxt,
-                        rx=st.session_state.rapid_rx,
-                        ry=st.session_state.rapid_ry,
-                        rz=st.session_state.rapid_rz,
-                        preset=st.session_state.mapping_preset,
-                        swap_a3_a4=False,
-                        enable_a1_const=bool(st.session_state.ext_const_enable_a1),
-                        enable_a2_const=bool(st.session_state.ext_const_enable_a2),
-                        enable_a3=bool(st.session_state.get("ext_use_a3", False)),
-                        enable_a4=bool(st.session_state.get("ext_use_a4", False)),
-                        x_min=float(st.session_state.ext_const_xmin),
-                        x_max=float(st.session_state.ext_const_xmax),
-                        a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
-                        a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
-                        y_min=float(st.session_state.ext_const_ymin),
-                        y_max=float(st.session_state.ext_const_ymax),
-                        a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
-                        a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
-                        boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
-                        apply_print_only=bool(st.session_state.ext_const_apply_print_only),
-                        travel_interp=bool(st.session_state.ext_const_travel_interp),
+                        gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
+                        preset=st.session_state.mapping_preset, swap_a3_a4=False,
+                        enable_a1_const=bool(st.session_state.ext_const_enable_a1), enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                        enable_a3=bool(st.session_state.get("ext_use_a3", False)), enable_a4=bool(st.session_state.get("ext_use_a4", False)),
+                        x_min=float(st.session_state.ext_const_xmin), x_max=float(st.session_state.ext_const_xmax),
+                        a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
+                        y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
+                        a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
+                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                        apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
                         singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
                         singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
                         singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
@@ -1911,16 +1416,10 @@ if KEY_OK:
                 except ValueError as e:
                     st.session_state.rapid_text = None
                     st.sidebar.warning(str(e), icon="⚠️")
-    
+
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
-                st.sidebar.download_button(
-                    "Rapid 저장 (.modx)",
-                    st.session_state.rapid_text,
-                    file_name=f"{base}.modx",
-                    mime="text/plain",
-                    use_container_width=True
-                )
+                st.sidebar.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text, file_name=f"{base}.modx", mime="text/plain", use_container_width=True)
 
 # =========================
 # Layout (Center + Right)
@@ -1935,39 +1434,20 @@ if st.session_state.get("paths_items") is not None:
 
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
-
-    if st.session_state.get("ui_banner"):
-        st.success(st.session_state.ui_banner)
+    if st.session_state.get("ui_banner"): st.success(st.session_state.ui_banner)
 
     st.subheader("보기 옵션")
-    apply_offsets = st.checkbox(
-        "레이어 폭 적용",
-        value=bool(st.session_state.get("apply_offsets_flag", False)),
-        help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
-        disabled=(segments is None)
-    )
+    apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
     st.session_state.apply_offsets_flag = bool(apply_offsets)
 
-    include_z_climb = st.checkbox(
-        "Z 상승 오프셋 포함",
-        value=True,
-        help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
-
-    emphasize_caps = st.checkbox(
-        "캡 강조",
-        value=False,
-        help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
+    include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
+    emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
 
     if e_on:
         show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=True, disabled=(segments is None))
         travel_mode = "dotted" if show_dotted else "hidden"
     else:
-        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True,
-                    help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
+        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
         travel_mode = "solid"
     prev_mode = st.session_state.get("paths_travel_mode", "solid")
     st.session_state.paths_travel_mode = travel_mode
@@ -1979,28 +1459,18 @@ with right_col:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-
-        scrub = st.slider("진행(세그먼트)", 0, int(total_segments), int(default_val), 1,
-                          help="해당 세그먼트까지 누적 표시")
-        scrub_num = st.number_input("행 번호", 0, int(total_segments),
-                                    int(default_val), 1,
-                                    help="표시할 최종 세그먼트(행) 번호")
+        scrub = st.slider("진행(세그먼트)", 0, int(total_segments), int(default_val), 1, help="해당 세그먼트까지 누적 표시")
+        scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
 
         target = default_val
-        if scrub != default_val:
-            target = int(scrub)
-        if scrub_num != default_val:
-            target = int(scrub_num)
-
+        if scrub != default_val: target = int(scrub)
+        if scrub_num != default_val: target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
 
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
         if layer_z is not None and layer_len is not None:
-            st.caption(
-                f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · "
-                f"{layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)"
-            )
+            st.caption(f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · {layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)")
         else:
             st.caption("현재 레이어 길이: -")
 
@@ -2009,7 +1479,6 @@ with right_col:
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-
     DRAW_LIMIT = 150000
     draw_stride = 1
 
@@ -2017,10 +1486,8 @@ if segments is not None and total_segments > 0:
     prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
     mode_changed = (prev_mode != st.session_state.paths_travel_mode)
 
-    if mode_changed or (draw_stride != prev_stride) or (target < built):
-        rebuild_buffers_to(segments, target, stride=draw_stride)
-    elif target > built:
-        append_segments_to_buffers(segments, built, target, stride=draw_stride)
+    if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
+    elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
 
     st.session_state.paths_scrub = target
 
@@ -2035,11 +1502,7 @@ if segments is not None and total_segments > 0:
         dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
 
     if segments is not None and target > 0:
-        total_len = 0.0
-        for i in range(target):
-            p1, p2, is_travel, is_extruding = segments[i]
-            if is_extruding:
-                total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
+        total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
         st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
 else:
     if "paths_anim_buf" in st.session_state:
@@ -2056,37 +1519,25 @@ with center_col:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(
-                fig,
-                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
-                show_caps=bool(emphasize_caps)
-            )
+            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             tm = st.session_state.paths_travel_mode
-            if not e_on:
-                travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
-            else:
-                travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
+            if not e_on: travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
+            else: travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
             st.caption(
                 f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
                 + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
                 + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
-                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}"
-                   if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
+                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
             st.info("슬라이싱을 실행하세요.")
 
     with tab_stl:
         if st.session_state.get("mesh") is not None:
-            st.plotly_chart(
-                plot_trimesh(st.session_state.mesh, height=820),
-                use_container_width=True,
-                key="stl_chart",
-                config={"displayModeBar": False}
-            )
+            st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820), use_container_width=True, key="stl_chart", config={"displayModeBar": False})
         else:
             st.info("STL을 업로드하세요.")
 
