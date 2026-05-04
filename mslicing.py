@@ -416,7 +416,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     g.append(f"G01 F{feed}")
     if m30_on:
         g.append("M30")
-    return "\\n".join(g)
+    return "\n".join(g) 
 
 # =========================
 # Slice path computation 
