@@ -1973,7 +1973,7 @@ if KEY_OK:
                 xyz_count = _extract_xyz_lines_count(gtxt)
                 over = (xyz_count > MAX_LINES)
     
-            save_rapid_clicked = st.sidebar.button("Rapid 저장 (.modx)", use_container_width=True, disabled=(gtxt is None))
+            save_rapid_clicked = st.sidebar.button("Rapid 저 (.modx)", use_container_width=True, disabled=(gtxt is None))
             if gtxt is None:
                 st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
             elif over:
