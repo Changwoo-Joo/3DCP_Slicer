@@ -926,20 +926,20 @@ stl_unit_mode = st.sidebar.selectbox(
 # 파라미터
 # =========================
 st.sidebar.header("기본 파라미터")
-z_int = st.sidebar.number_input("Z 간격 (mm)", 1.0, 1000.0, 15.0)
+z_int = st.sidebar.number_input("레이어높이(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
 feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
-ref_x = st.sidebar.number_input("기준 X", value=0.0)
-ref_y = st.sidebar.number_input("기준 Y", value=0.0)
+ref_x = st.sidebar.number_input("시장기준좌표(X)", value=0.0)
+ref_y = st.sidebar.number_input("시장기준좌표(Y)", value=0.0)
 
 st.sidebar.subheader("압출 옵션")
-e_on = st.sidebar.checkbox("E 값 삽입")
+e_on = st.sidebar.checkbox("Extruding 삽입")
 start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
 start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
 e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
 
 st.sidebar.subheader("경로처리")
 seq_print = st.sidebar.checkbox("순차 출력 (1개씩)", value=False)
-seq_group_inner = st.sidebar.checkbox("내부 폐구간 그룹화 (O, B 안쪽 같이 출력)", value=True, disabled=not seq_print)
+seq_group_inner = st.sidebar.checkbox("내부 폐구간 그룹화", value=True, disabled=not seq_print)
 
 with st.sidebar.expander("코너 주변점 옵션", expanded=False):
     enable_corner = st.checkbox("코너 주변점 활성화", value=False, key="enable_corner_points")
