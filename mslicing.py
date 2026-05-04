@@ -1026,6 +1026,26 @@ if uploaded is not None:
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
+# === items -> segments ===
+def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
+) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
+    segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
+    if not items:
+        return segs
+    for poly, e_vals, is_travel in items:
+        if poly is None or len(poly) < 2:
+            continue
+        if e_on and e_vals is not None:
+            for p1, p2, e1, e2 in zip(poly[:-1], poly[1:], e_vals[:-1], e_vals[1:]):
+                is_extruding = (e2 - e1) > 1e-12 and (not is_travel)
+                segs.append((p1, p2, is_travel, is_extruding))
+        else:
+            for p1, p2 in zip(poly[:-1], poly[1:]):
+                is_extruding = (not is_travel)
+                segs.append((p1, p2, is_travel, is_extruding))
+    return segs
+
+
 # =========================
 # Slicing Actions
 # =========================
