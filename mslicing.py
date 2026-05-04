@@ -523,7 +523,7 @@ def compute_slice_paths_with_travel(
     return all_items
     
     def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
-) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
+    ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
     if not items:
         return segs
