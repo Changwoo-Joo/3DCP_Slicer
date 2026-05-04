@@ -850,9 +850,9 @@ if "ext_const_ymin" not in st.session_state:
 if "ext_const_ymax" not in st.session_state:
     st.session_state.ext_const_ymax = 1000.0
 if "ext_const_a2_at_ymin" not in st.session_state:
-    st.session_state.ext_const_a2_at_ymin = 0.0
+    st.session_state.ext_const_a2_at_ymin = 500.0
 if "ext_const_a2_at_ymax" not in st.session_state:
-    st.session_state.ext_const_a2_at_ymax = 4000.0
+    st.session_state.ext_const_a2_at_ymax = 0.0
 
 if "ext_const_speed_mm_s" not in st.session_state:
     st.session_state.ext_const_speed_mm_s = 200.0
@@ -926,7 +926,7 @@ stl_unit_mode = st.sidebar.selectbox(
 # 파라미터
 # =========================
 st.sidebar.header("기본 파라미터")
-z_int = st.sidebar.number_input("레이어높이(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
+z_int = st.sidebar.number_input("레이어(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
 feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
 ref_x = st.sidebar.number_input("시장기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시장기준좌표(Y)", value=0.0)
