@@ -932,7 +932,7 @@ ref_x = st.sidebar.number_input("시장기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시장기준좌표(Y)", value=0.0)
 
 st.sidebar.subheader("압출 옵션")
-e_on = st.sidebar.checkbox("Extruding 삽입")
+e_on = st.sidebar.checkbox("재료토출(E) 삽입")
 start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
 start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
 e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
