@@ -921,8 +921,8 @@ stl_unit_mode = st.sidebar.selectbox(
 st.sidebar.header("기본 파라미터")
 z_int = st.sidebar.number_input("레이어(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
 feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
-ref_x = st.sidebar.number_input("시장기준좌표(X)", value=0.0)
-ref_y = st.sidebar.number_input("시장기준좌표(Y)", value=0.0)
+ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
+ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 
 st.sidebar.subheader("압출 옵션")
 e_on = st.sidebar.checkbox("재료토출(E) 삽입")
