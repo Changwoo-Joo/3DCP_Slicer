@@ -113,38 +113,31 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+    """
+    기존 RDP 알고리즘 대신, 지정된 min_dist(최소 점간격)에 따라
+    전체 경로를 등간격으로 쪼개서 리샘플링(Resampling)하는 함수로 변경.
+    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
-    eps = float(min_dist) / 2.0
-
-    def _perp_dist_xy(p, a, b) -> float:
-        ab = b[:2] - a[:2]
-        ap = p[:2] - a[:2]
-        denom = np.dot(ab, ab)
-        if denom <= 1e-18:
-            return np.linalg.norm(ap)
-        t = np.clip(np.dot(ap, ab) / denom, 0.0, 1.0)
-        proj = a[:2] + t * ab
-        return np.linalg.norm(p[:2] - proj)
-
-    def _rdp_xy(points: np.ndarray, eps_val: float) -> np.ndarray:
-        if len(points) <= 2:
-            return points
-        a, b = points[0], points[-1]
-        dmax, idx = -1.0, -1
-        for i in range(1, len(points) - 1):
-            d = _perp_dist_xy(points[i], a, b)
-            if d > dmax:
-                dmax, idx = d, i
-        if dmax <= eps_val:
-            return np.vstack([a, b])
-        left = _rdp_xy(points[: idx + 1], eps_val)
-        right = _rdp_xy(points[idx:], eps_val)
-        return np.vstack([left[:-1], right])
-
-    return _rdp_xy(pts, eps)
-
+    
+    # 1. 전체 경로의 누적 길이 배열 생성
+    s = _poly_arclen_s_xy(pts)
+    total_length = float(s[-1])
+    
+    # 길이가 간격보다 짧으면 시작점과 끝점만 반환
+    if total_length <= min_dist:
+        return np.vstack([pts[0], pts[-1]])
+    
+    # 2. 0부터 total_length까지 min_dist 간격의 목표 거리(s_targets) 배열 생성
+    # 마지막 점을 보장하기 위해 분할 개수를 계산하여 등간격 배열 생성
+    num_segments = max(1, int(np.round(total_length / min_dist)))
+    s_targets = np.linspace(0.0, total_length, num_segments + 1)
+    
+    # 3. 기존에 구현된 _resample_polyline_by_s 함수를 호출하여 새로운 포인트 추출
+    resampled_pts = _resample_polyline_by_s(pts, s_targets)
+    
+    return resampled_pts
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
