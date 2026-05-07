@@ -6,3 +6,4 @@ numpy-stl
 chardet
 scipy
 networkx
+shapely==2.0.6
