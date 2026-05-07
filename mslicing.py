@@ -1038,9 +1038,6 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
 
-trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
-min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
