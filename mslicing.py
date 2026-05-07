@@ -312,104 +312,77 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     def _cross2(a: np.ndarray, b: np.ndarray) -> float:
         return float(a[0] * b[1] - a[1] * b[0])
 
-    def _left_normal(v: np.ndarray) -> np.ndarray:
-        return np.array([-v[1], v[0]], dtype=float)
-
-    def _right_normal(v: np.ndarray) -> np.ndarray:
-        return np.array([v[1], -v[0]], dtype=float)
-
-    def _line_intersection(p: np.ndarray, d: np.ndarray, q: np.ndarray, e: np.ndarray):
-        den = _cross2(d, e)
-        if abs(den) < 1e-12:
-            return None
-        t = _cross2(q - p, e) / den
-        return p + t * d
-
     def _append_unique(out_list, pt: np.ndarray, eps: float = 1e-6):
         arr = np.asarray(pt, dtype=float)
         if len(out_list) == 0 or np.linalg.norm((arr - out_list[-1])[:2]) > eps:
             out_list.append(arr.copy())
 
-    closed = False
-    if len(pts) >= 2 and np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9:
-        closed = True
-        base_pts = pts[:-1].copy()
-    else:
-        base_pts = pts.copy()
-
-    if len(base_pts) < 3:
+    closed = len(pts) >= 2 and np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
+    base = pts[:-1].copy() if closed else pts.copy()
+    n = len(base)
+    if n < 3:
         return pts.copy()
 
-    out = [] if closed else [base_pts[0].copy()]
-    n = len(base_pts)
+    out = [] if closed else [base[0].copy()]
+    indices = range(n) if closed else range(1, n - 1)
 
-    if closed:
-        index_iter = range(n)
-    else:
-        index_iter = range(1, n - 1)
-
-    for i in index_iter:
+    for i in indices:
         i0 = (i - 1) % n
         i1 = i
         i2 = (i + 1) % n
-        p0 = base_pts[i0]
-        p1 = base_pts[i1]
-        p2 = base_pts[i2]
+        p0 = base[i0]
+        p1 = base[i1]
+        p2 = base[i2]
 
-        vin = p1[:2] - p0[:2]
-        vout = p2[:2] - p1[:2]
-        L1 = float(np.linalg.norm(vin))
-        L2 = float(np.linalg.norm(vout))
+        prev_vec = p0[:2] - p1[:2]
+        next_vec = p2[:2] - p1[:2]
+        L1 = float(np.linalg.norm(prev_vec))
+        L2 = float(np.linalg.norm(next_vec))
         if L1 < 1e-6 or L2 < 1e-6:
             _append_unique(out, p1)
             continue
 
-        t_in = vin / L1
-        t_out = vout / L2
-        dot = float(np.clip(np.dot(t_in, t_out), -1.0, 1.0))
-        phi = float(np.arccos(dot))
-        cross = _cross2(t_in, t_out)
+        u1 = prev_vec / L1
+        u2 = next_vec / L2
+        dot = float(np.clip(np.dot(u1, u2), -1.0, 1.0))
+        theta = float(np.arccos(dot))
+        cross = _cross2(u1, u2)
 
-        if abs(cross) < 1e-9 or phi < 1e-6 or abs(np.pi - phi) < 1e-6:
+        if abs(cross) < 1e-9 or theta < 1e-5 or abs(np.pi - theta) < 1e-5:
             _append_unique(out, p1)
             continue
 
-        tan_half = math.tan(phi / 2.0)
-        if abs(tan_half) < 1e-9:
+        tan_half = math.tan(theta / 2.0)
+        sin_half = math.sin(theta / 2.0)
+        if abs(tan_half) < 1e-9 or abs(sin_half) < 1e-9:
             _append_unique(out, p1)
             continue
 
         d = float(r_mm) / tan_half
-        d_max = min(L1, L2) * 0.5
-        d = min(d, d_max)
+        max_d = min(L1, L2) - 1e-6
+        if max_d <= 1e-6:
+            _append_unique(out, p1)
+            continue
+        d = min(d, max_d)
         if d <= 1e-6:
             _append_unique(out, p1)
             continue
 
-        r_eff = d * tan_half
-        if r_eff <= 1e-6:
+        actual_r = d * tan_half
+        bis = u1 + u2
+        bis_len = float(np.linalg.norm(bis))
+        if bis_len < 1e-8:
             _append_unique(out, p1)
             continue
+        bis = bis / bis_len
 
-        t1_xy = p1[:2] - t_in * d
-        t2_xy = p1[:2] + t_out * d
+        h = actual_r / sin_half
+        center_xy = p1[:2] + bis * h
 
-        z1 = float(p1[2] - (d / L1) * (p1[2] - p0[2]))
+        t1_xy = p1[:2] + u1 * d
+        t2_xy = p1[:2] + u2 * d
+        z1 = float(p1[2] + (d / L1) * (p0[2] - p1[2]))
         z2 = float(p1[2] + (d / L2) * (p2[2] - p1[2]))
-        t1 = np.array([t1_xy[0], t1_xy[1], z1], dtype=float)
-        t2 = np.array([t2_xy[0], t2_xy[1], z2], dtype=float)
-
-        if cross > 0:
-            n1 = _left_normal(t_in)
-            n2 = _left_normal(t_out)
-        else:
-            n1 = _right_normal(t_in)
-            n2 = _right_normal(t_out)
-
-        center_xy = _line_intersection(t1_xy, n1, t2_xy, n2)
-        if center_xy is None:
-            _append_unique(out, p1)
-            continue
 
         r1 = t1_xy - center_xy
         r2 = t2_xy - center_xy
@@ -423,16 +396,15 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         ang1 = float(math.atan2(r1[1], r1[0]))
         ang2 = float(math.atan2(r2[1], r2[0]))
 
-        if cross > 0:
-            diff = ang2 - ang1
-            if diff <= 0:
-                diff += 2.0 * math.pi
-        else:
-            diff = ang2 - ang1
-            if diff >= 0:
-                diff -= 2.0 * math.pi
+        diff_ccw = (ang2 - ang1) % (2.0 * math.pi)
+        diff_cw = diff_ccw - 2.0 * math.pi
+        turn_sign = 1.0 if cross > 0 else -1.0
+        diff = diff_ccw if turn_sign > 0 else diff_cw
 
-        _append_unique(out, t1)
+        if abs(diff) > math.pi:
+            diff = diff_cw if turn_sign > 0 else diff_ccw
+
+        _append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
         steps = max(2, int(num_pts))
         for j in range(1, steps):
             f = j / steps
@@ -441,19 +413,18 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             y = center_xy[1] + radius * math.sin(ang)
             z = z1 + f * (z2 - z1)
             _append_unique(out, np.array([x, y, z], dtype=float))
-        _append_unique(out, t2)
+        _append_unique(out, np.array([t2_xy[0], t2_xy[1], z2], dtype=float))
 
     if closed:
-        if len(out) >= 2 and np.linalg.norm((out[0] - out[-1])[:2]) <= 1e-6:
+        if len(out) == 0:
+            return pts.copy()
+        if np.linalg.norm((out[0] - out[-1])[:2]) <= 1e-6:
             out = out[:-1]
         out.append(out[0].copy())
         return np.asarray(out, dtype=float)
 
-    _append_unique(out, base_pts[-1])
+    _append_unique(out, base[-1])
     return np.asarray(out, dtype=float)
-    out.append(pts[-1].copy())
-    return np.asarray(out, dtype=float)
-
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
