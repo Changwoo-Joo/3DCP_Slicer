@@ -4,7 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, LineString
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -538,9 +538,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
-                    res_val = int(st.session_state.get('fillet_res', 8))
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
@@ -651,9 +650,8 @@ def compute_slice_paths_with_travel(
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
-                    res_val = int(st.session_state.get('fillet_res', 8))
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
