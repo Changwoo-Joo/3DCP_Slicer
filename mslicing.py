@@ -411,11 +411,31 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     return np.asarray(out, dtype=float)
 
 
-def _layer_window_ok(layer_idx: int, total_layers: int, edge_keep_layers: int) -> bool:
-    if total_layers <= 0:
-        return True
-    keep = max(0, int(edge_keep_layers))
-    return keep <= layer_idx < max(0, total_layers - keep)
+def _section_edge_lengths_xy(poly: np.ndarray) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2:
+        return np.array([], dtype=float)
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9:
+        pts = pts[:-1]
+    if len(pts) < 2:
+        return np.array([], dtype=float)
+    out = []
+    n = len(pts)
+    for i in range(n):
+        p = pts[i]
+        q = pts[(i + 1) % n]
+        out.append(float(np.linalg.norm((q - p)[:2])))
+    return np.asarray(out, dtype=float)
+
+
+def _auto_layer_can_fillet(seg3d_no_dup: np.ndarray, r_mm: float) -> bool:
+    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+    lens = _section_edge_lengths_xy(closed_mid)
+    if len(lens) < 3:
+        return False
+    if float(np.min(lens)) <= max(2.0 * float(r_mm), 1e-6):
+        return False
+    return True
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -563,7 +583,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         z_values = make_slice_z_values(submesh, z_int)
 
-        total_layers = len(z_values)
         for zidx, z in enumerate(z_values):
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
@@ -590,12 +609,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
                 simplified = simplify_segment(closed_mid, min_spacing)
                 
-                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
+                # 3. 안정적인 단면에서만 자동으로 라운딩 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
-                    edge_keep_layers = int(st.session_state.get('fillet_edge_keep_layers', 16))
-                    if _layer_window_ok(zidx, total_layers, edge_keep_layers):
+                    if _auto_layer_can_fillet(seg3d_no_dup, r_val):
                         simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
 
                 # 4. 코너 주변점 처리
@@ -685,8 +703,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        total_layers = len(z_values)
-        for zidx, z in enumerate(z_values):
+        for z in z_values:
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -715,8 +732,7 @@ def compute_slice_paths_with_travel(
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
-                    edge_keep_layers = int(st.session_state.get('fillet_edge_keep_layers', 16))
-                    if _layer_window_ok(zidx, total_layers, edge_keep_layers):
+                    if _auto_layer_can_fillet(seg3d_no_dup, r_val):
                         simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
 
                 if st.session_state.get('enable_corner_points', False):
@@ -1226,7 +1242,6 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
     enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
     fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
     fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
-    fillet_edge_keep_layers = st.number_input("상하부 비적용 레이어 수", min_value=0, max_value=500, value=16, step=1, key="fillet_edge_keep_layers", disabled=not enable_fillet)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
