@@ -328,6 +328,45 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     out.append(pts[-1].copy())
     return np.asarray(out, dtype=float)
 
+def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
+    """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or shift_dist <= 0:
+        return pts
+    
+    # 닫힌 루프 확인 및 중복 끝점 제거
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+        
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    total = float(np.sum(lens))
+    
+    shift_dist = shift_dist % total
+    if shift_dist < 1e-5:
+        return np.vstack([pts, pts[0]]) # 닫아서 반환
+        
+    acc = 0.0
+    i = 0
+    while i < n and acc + lens[i] < shift_dist:
+        acc += lens[i]
+        i += 1
+        
+    p = pts[i]
+    q = pts[(i + 1) % n]
+    d = lens[i]
+    
+    cut = p + ((shift_dist - acc) / d) * (q - p) if d > 0 else p.copy()
+    
+    out = [cut]
+    for j in range(1, n + 1):
+        idx = (i + j) % n
+        out.append(pts[idx].copy())
+        
+    out.append(cut.copy())
+    return np.asarray(out, dtype=float)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
