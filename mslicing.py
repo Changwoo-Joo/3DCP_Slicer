@@ -1157,7 +1157,6 @@ with st.sidebar.expander("코너 주변점 옵션", expanded=False):
 with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
     enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
     fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
-    fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
