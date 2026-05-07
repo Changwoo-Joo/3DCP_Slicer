@@ -305,26 +305,28 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
     return np.asarray(out, dtype=float)
 
 def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
+                          closed: bool = True,
                           collinear_eps: float = 1e-9,
                           min_seg_eps: float = 1e-9) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
-    def _norm2(v):
+    # 닫힌 루프면 중복 끝점 제거
+    if closed and np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+
+    n = len(pts)
+    if n < 3:
+        return pts.copy()
+
+    def norm2(v):
         return float(np.linalg.norm(v[:2]))
 
-    def _unit2(v):
-        n = _norm2(v)
-        if n < min_seg_eps:
-            return None
-        return v / n
-
-    def _left_normal(u):
+    def left_normal(u):
         return np.array([-u[1], u[0], 0.0], dtype=float)
 
-    def _line_intersection_2d(p, r, q, s):
-        # p + t r  and  q + u s
+    def line_intersection_2d(p, r, q, s):
         cross_rs = r[0]*s[1] - r[1]*s[0]
         if abs(cross_rs) < 1e-12:
             return None
@@ -334,129 +336,113 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
         inter[:2] = p[:2] + t * r[:2]
         return inter
 
-    out = [pts[0].copy()]
+    out = []
 
-    for i in range(1, len(pts) - 1):
-        p0 = pts[i - 1].copy()
+    indices = range(n) if closed else range(1, n - 1)
+
+    for i in indices:
+        i_prev = (i - 1) % n
+        i_next = (i + 1) % n
+
+        p0 = pts[i_prev].copy()
         p1 = pts[i].copy()
-        p2 = pts[i + 1].copy()
+        p2 = pts[i_next].copy()
 
         vin = p1 - p0
         vout = p2 - p1
 
-        Lin = _norm2(vin)
-        Lout = _norm2(vout)
+        Lin = norm2(vin)
+        Lout = norm2(vout)
 
         if Lin < min_seg_eps or Lout < min_seg_eps:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        u_in = vin / Lin          # p0 -> p1
-        u_out = vout / Lout       # p1 -> p2
+        u_in = vin / Lin
+        u_out = vout / Lout
 
-        # corner 내부각 계산용: corner에서 "들어오는 방향"과 "나가는 방향"
-        a = -u_in                 # p1 -> p0
-        b =  u_out                # p1 -> p2
+        a = -u_in
+        b = u_out
 
         dot_ab = float(np.clip(np.dot(a[:2], b[:2]), -1.0, 1.0))
-        theta = float(np.arccos(dot_ab))   # 내부각 (0 ~ pi)
-
-        # 직선/거의 U턴은 필렛 스킵
-        if theta < 1e-4 or abs(np.pi - theta) < 1e-4:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
-            continue
+        theta = float(np.arccos(dot_ab))
 
         cross_z = u_in[0]*u_out[1] - u_in[1]*u_out[0]
-        if abs(cross_z) < collinear_eps:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+
+        if theta < 1e-4 or abs(np.pi - theta) < 1e-4 or abs(cross_z) < collinear_eps:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
         tan_half = np.tan(theta / 2.0)
         if abs(tan_half) < 1e-12:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        d = float(r_mm / tan_half)
-
-        # 실제 선분 길이를 넘으면 해당 코너는 필렛 불가 → 스킵
-        # (원하면 여기서 반경 축소 방식으로 바꿀 수 있음)
-        max_d = min(Lin, Lout) - 1e-6
+        d_req = float(r_mm / tan_half)
+        max_d = min(Lin, Lout) * 0.499999
         if max_d <= 1e-6:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
-        
-        if d > max_d:
-            d = max_d
 
-        # 접점
+        d = min(d_req, max_d)
+
         t1 = p1 - u_in * d
         t2 = p1 + u_out * d
 
-        # 회전방향에 따라 "안쪽" 법선 선택
-        # cross_z > 0 : 좌회전, 중심은 각 선분의 좌측
-        # cross_z < 0 : 우회전, 중심은 각 선분의 우측 = -좌측
-        n1 = _left_normal(u_in)
-        n2 = _left_normal(u_out)
+        n1 = left_normal(u_in)
+        n2 = left_normal(u_out)
         if cross_z < 0:
             n1 = -n1
             n2 = -n2
 
-        # 중심 = 각 접점에서 법선방향 직선의 교점
-        center = _line_intersection_2d(t1, n1, t2, n2)
+        center = line_intersection_2d(t1, n1, t2, n2)
         if center is None:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        # 반경 확인
-        r1 = _norm2(t1 - center)
-        r2 = _norm2(t2 - center)
-        rr = 0.5 * (r1 + r2)
+        rr = norm2(t1 - center)
         if rr < 1e-9:
-            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        # 시작점 추가
-        if np.linalg.norm((t1 - out[-1])[:2]) > 1e-9:
+        if len(out) == 0 or np.linalg.norm((t1 - out[-1])[:2]) > 1e-9:
             out.append(t1.copy())
 
-        # 원호 각도 계산
         ang1 = float(np.arctan2(t1[1] - center[1], t1[0] - center[0]))
         ang2 = float(np.arctan2(t2[1] - center[1], t2[0] - center[0]))
 
-        # 회전방향에 맞게 각도 전개
         if cross_z > 0:
-            # CCW
             if ang2 <= ang1:
                 ang2 += 2.0 * np.pi
             angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
         else:
-            # CW
             if ang2 >= ang1:
                 ang2 -= 2.0 * np.pi
             angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
 
-        # Z는 t1 -> t2 선형 보간
         z1 = float(t1[2])
         z2 = float(t2[2])
 
-        for j, ang in enumerate(angs[1:], start=1):  # t1은 이미 넣었으니 제외
+        for j, ang in enumerate(angs[1:], start=1):
             f = j / float(len(angs) - 1)
             x = center[0] + rr * np.cos(ang)
             y = center[1] + rr * np.sin(ang)
             z = z1 + f * (z2 - z1)
             out.append(np.array([x, y, z], dtype=float))
 
-    if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-9:
-        out.append(pts[-1].copy())
+    out = np.asarray(out, dtype=float)
 
-    return np.asarray(out, dtype=float)
+    if closed:
+        if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+            out = np.vstack([out, out[0]])
+    return out
+
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -634,7 +620,12 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(
+                        simplified,
+                        r_mm=float(r_val),
+                        num_pts=int(res_val),
+                        closed=True
+                    )
 
                 # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
@@ -752,7 +743,12 @@ def compute_slice_paths_with_travel(
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(
+                        simplified,
+                        r_mm=float(r_val),
+                        num_pts=int(res_val),
+                        closed=True
+                    )
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
