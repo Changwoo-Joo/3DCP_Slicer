@@ -304,83 +304,155 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
-def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
+def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
+                          collinear_eps: float = 1e-9,
+                          min_seg_eps: float = 1e-9) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
+    def _norm2(v):
+        return float(np.linalg.norm(v[:2]))
+
+    def _unit2(v):
+        n = _norm2(v)
+        if n < min_seg_eps:
+            return None
+        return v / n
+
+    def _left_normal(u):
+        return np.array([-u[1], u[0], 0.0], dtype=float)
+
+    def _line_intersection_2d(p, r, q, s):
+        # p + t r  and  q + u s
+        cross_rs = r[0]*s[1] - r[1]*s[0]
+        if abs(cross_rs) < 1e-12:
+            return None
+        qp = q[:2] - p[:2]
+        t = (qp[0]*s[1] - qp[1]*s[0]) / cross_rs
+        inter = p.copy()
+        inter[:2] = p[:2] + t * r[:2]
+        return inter
+
     out = [pts[0].copy()]
+
     for i in range(1, len(pts) - 1):
-        p0 = pts[i - 1]
-        p1 = pts[i]
-        p2 = pts[i + 1]
+        p0 = pts[i - 1].copy()
+        p1 = pts[i].copy()
+        p2 = pts[i + 1].copy()
 
-        v1 = p0 - p1
-        v2 = p2 - p1
-        L1 = float(np.linalg.norm(v1[:2]))
-        L2 = float(np.linalg.norm(v2[:2]))
+        vin = p1 - p0
+        vout = p2 - p1
 
-        # 선분이 너무 짧으면 스킵
-        if L1 < 1e-5 or L2 < 1e-5:
-            out.append(p1.copy())
+        Lin = _norm2(vin)
+        Lout = _norm2(vout)
+
+        if Lin < min_seg_eps or Lout < min_seg_eps:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
             continue
 
-        u1 = v1 / L1
-        u2 = v2 / L2
+        u_in = vin / Lin          # p0 -> p1
+        u_out = vout / Lout       # p1 -> p2
 
-        dot = float(np.clip(np.dot(u1[:2], u2[:2]), -1.0, 1.0))
-        angle = float(np.arccos(dot))
+        # corner 내부각 계산용: corner에서 "들어오는 방향"과 "나가는 방향"
+        a = -u_in                 # p1 -> p0
+        b =  u_out                # p1 -> p2
 
-        # 일직선이거나 너무 예각이면 스킵
-        if angle < 1e-3 or angle > np.pi - 1e-3:
-            out.append(p1.copy())
+        dot_ab = float(np.clip(np.dot(a[:2], b[:2]), -1.0, 1.0))
+        theta = float(np.arccos(dot_ab))   # 내부각 (0 ~ pi)
+
+        # 직선/거의 U턴은 필렛 스킵
+        if theta < 1e-4 or abs(np.pi - theta) < 1e-4:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
             continue
 
-        # 접점까지의 거리
-        d = r_mm / max(np.tan(angle / 2.0), 1e-9)
-
-        # 양쪽 선분의 절반을 넘지 않도록 R값(사실상 d값) 제한
-        max_d = min(L1 / 2.0, L2 / 2.0)
-        if d > max_d: d = max_d
-        
-        # 중심점 계산
-        b = u1 + u2
-        Lb = float(np.linalg.norm(b[:2]))
-        if Lb < 1e-5:
-            out.append(p1.copy())
+        cross_z = u_in[0]*u_out[1] - u_in[1]*u_out[0]
+        if abs(cross_z) < collinear_eps:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
             continue
-        b = b / Lb
 
-        h = d / max(np.cos(angle / 2.0), 1e-9)
-        center = p1 + h * b
+        tan_half = np.tan(theta / 2.0)
+        if abs(tan_half) < 1e-12:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
+            continue
 
-        t1 = p1 + d * u1
-        t2 = p1 + d * u2
-        c2t1 = t1 - center
-        c2t2 = t2 - center
+        d = float(r_mm / tan_half)
 
-        # Z축 높이 보간
-        z1 = p1[2] + (d / L1) * (p0[2] - p1[2]) if L1 > 0 else p1[2]
-        z2 = p1[2] + (d / L2) * (p2[2] - p1[2]) if L2 > 0 else p1[2]
+        # 실제 선분 길이를 넘으면 해당 코너는 필렛 불가 → 스킵
+        # (원하면 여기서 반경 축소 방식으로 바꿀 수 있음)
+        if d >= Lin - 1e-9 or d >= Lout - 1e-9:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
+            continue
 
-        ang1 = float(np.arctan2(c2t1[1], c2t1[0]))
-        ang2 = float(np.arctan2(c2t2[1], c2t2[0]))
+        # 접점
+        t1 = p1 - u_in * d
+        t2 = p1 + u_out * d
 
-        # 최단 경로 호 각도 계산
-        diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
-        
-        # 호를 num_pts 개수만큼 쪼개어 좌표 추가
-        for j in range(num_pts + 1):
-            f = j / num_pts
-            cur_ang = ang1 + f * diff
-            x = center[0] + np.linalg.norm(c2t1[:2]) * np.cos(cur_ang)
-            y = center[1] + np.linalg.norm(c2t1[:2]) * np.sin(cur_ang)
+        # 회전방향에 따라 "안쪽" 법선 선택
+        # cross_z > 0 : 좌회전, 중심은 각 선분의 좌측
+        # cross_z < 0 : 우회전, 중심은 각 선분의 우측 = -좌측
+        n1 = _left_normal(u_in)
+        n2 = _left_normal(u_out)
+        if cross_z < 0:
+            n1 = -n1
+            n2 = -n2
+
+        # 중심 = 각 접점에서 법선방향 직선의 교점
+        center = _line_intersection_2d(t1, n1, t2, n2)
+        if center is None:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
+            continue
+
+        # 반경 확인
+        r1 = _norm2(t1 - center)
+        r2 = _norm2(t2 - center)
+        rr = 0.5 * (r1 + r2)
+        if rr < 1e-9:
+            if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
+            continue
+
+        # 시작점 추가
+        if np.linalg.norm((t1 - out[-1])[:2]) > 1e-9:
+            out.append(t1.copy())
+
+        # 원호 각도 계산
+        ang1 = float(np.arctan2(t1[1] - center[1], t1[0] - center[0]))
+        ang2 = float(np.arctan2(t2[1] - center[1], t2[0] - center[0]))
+
+        # 회전방향에 맞게 각도 전개
+        if cross_z > 0:
+            # CCW
+            if ang2 <= ang1:
+                ang2 += 2.0 * np.pi
+            angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
+        else:
+            # CW
+            if ang2 >= ang1:
+                ang2 -= 2.0 * np.pi
+            angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
+
+        # Z는 t1 -> t2 선형 보간
+        z1 = float(t1[2])
+        z2 = float(t2[2])
+
+        for j, ang in enumerate(angs[1:], start=1):  # t1은 이미 넣었으니 제외
+            f = j / float(len(angs) - 1)
+            x = center[0] + rr * np.cos(ang)
+            y = center[1] + rr * np.sin(ang)
             z = z1 + f * (z2 - z1)
-            out.append(np.array([x, y, z]))
-    
-    out.append(pts[-1].copy())
-    return np.asarray(out, dtype=float)
+            out.append(np.array([x, y, z], dtype=float))
 
+    if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-9:
+        out.append(pts[-1].copy())
+
+    return np.asarray(out, dtype=float)
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
