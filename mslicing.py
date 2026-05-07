@@ -669,21 +669,21 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                simplified = simplify_segment(closed_mid, min_spacing)
-
+                clean = _clean_collinear(seg3d_no_dup)
+                closed_mid = _make_seam_at_midpoint(clean)
+                
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
-
+                    closed_mid = _apply_fillet_to_path(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
+                
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    closed_mid = _insert_corner_neighbors(closed_mid, d_mm=float(corner_distance))
+                
+                shifted, _ = shift_to_nearest_start(closed_mid, ref_point=ref_pt_layer)
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                simplified = simplify_segment(trimmed, min_spacing)
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
