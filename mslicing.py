@@ -924,8 +924,10 @@ feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 
-# [추가] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
+# [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
 fix_start = st.sidebar.checkbox("시작점 고정", value=False)
+# [수정] 자동 연결 UI는 제거하고, 시작점 고정 여부에 따라 내부적으로 자동 전환되도록 설정
+actual_auto_start = not fix_start
 
 st.sidebar.subheader("압출 옵션")
 e_on = st.sidebar.checkbox("재료토출(E) 삽입")
@@ -944,8 +946,7 @@ with st.sidebar.expander("코너 주변점 옵션", expanded=False):
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
 
-# [수정] 자동 시작점 연결을 기본값(True)으로 변경, 시작점 고정 시 비활성화
-auto_start = st.sidebar.checkbox("자동 시작점 연결", value=True, disabled=fix_start)
+# [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 b1 = st.sidebar.container()
@@ -975,9 +976,6 @@ if uploaded is not None:
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
-
-# [추가] 시작점 고정이 켜져있으면 자동연결은 무조건 False로 동작하도록 논리 적용
-actual_auto_start = auto_start and not fix_start
 
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
@@ -1011,7 +1009,6 @@ if st.session_state.get("gcode_text"):
     st.sidebar.download_button("G-code 저장", st.session_state.gcode_text,
                                file_name=f"{base}.gcode", mime="text/plain",
                                use_container_width=True)
-
 # =========================
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
