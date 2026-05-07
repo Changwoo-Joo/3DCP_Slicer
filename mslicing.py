@@ -309,78 +309,123 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
+    def _cross2(a: np.ndarray, b: np.ndarray) -> float:
+        return float(a[0] * b[1] - a[1] * b[0])
+
+    def _left_normal(v: np.ndarray) -> np.ndarray:
+        return np.array([-v[1], v[0]], dtype=float)
+
+    def _right_normal(v: np.ndarray) -> np.ndarray:
+        return np.array([v[1], -v[0]], dtype=float)
+
+    def _line_intersection(p: np.ndarray, d: np.ndarray, q: np.ndarray, e: np.ndarray):
+        den = _cross2(d, e)
+        if abs(den) < 1e-12:
+            return None
+        t = _cross2(q - p, e) / den
+        return p + t * d
+
+    def _append_unique(out_list, pt: np.ndarray, eps: float = 1e-6):
+        arr = np.asarray(pt, dtype=float)
+        if len(out_list) == 0 or np.linalg.norm((arr - out_list[-1])[:2]) > eps:
+            out_list.append(arr.copy())
+
     out = [pts[0].copy()]
+
     for i in range(1, len(pts) - 1):
         p0 = pts[i - 1]
         p1 = pts[i]
         p2 = pts[i + 1]
 
-        v1 = p0 - p1
-        v2 = p2 - p1
-        L1 = float(np.linalg.norm(v1[:2]))
-        L2 = float(np.linalg.norm(v2[:2]))
-
-        # 선분이 너무 짧으면 스킵
-        if L1 < 1e-5 or L2 < 1e-5:
-            out.append(p1.copy())
+        vin = p1[:2] - p0[:2]
+        vout = p2[:2] - p1[:2]
+        L1 = float(np.linalg.norm(vin))
+        L2 = float(np.linalg.norm(vout))
+        if L1 < 1e-6 or L2 < 1e-6:
+            _append_unique(out, p1)
             continue
 
-        u1 = v1 / L1
-        u2 = v2 / L2
+        t_in = vin / L1
+        t_out = vout / L2
+        dot = float(np.clip(np.dot(t_in, t_out), -1.0, 1.0))
+        phi = float(np.arccos(dot))
+        cross = _cross2(t_in, t_out)
 
-        dot = float(np.clip(np.dot(u1[:2], u2[:2]), -1.0, 1.0))
-        angle = float(np.arccos(dot))
-
-        # 일직선이거나 너무 예각이면 스킵
-        if angle < 1e-3 or angle > np.pi - 1e-3:
-            out.append(p1.copy())
+        if abs(cross) < 1e-9 or phi < 1e-6 or abs(np.pi - phi) < 1e-6:
+            _append_unique(out, p1)
             continue
 
-        # 접점까지의 거리
-        d = r_mm / max(np.tan(angle / 2.0), 1e-9)
-
-        # 양쪽 선분의 절반을 넘지 않도록 R값(사실상 d값) 제한
-        max_d = min(L1 / 2.0, L2 / 2.0)
-        if d > max_d: d = max_d
-        
-        # 중심점 계산
-        b = u1 + u2
-        Lb = float(np.linalg.norm(b[:2]))
-        if Lb < 1e-5:
-            out.append(p1.copy())
+        tan_half = math.tan(phi / 2.0)
+        if abs(tan_half) < 1e-9:
+            _append_unique(out, p1)
             continue
-        b = b / Lb
 
-        h = d / max(np.cos(angle / 2.0), 1e-9)
-        center = p1 + h * b
+        d = float(r_mm) / tan_half
+        d_max = min(L1, L2) * 0.5
+        d = min(d, d_max)
+        if d <= 1e-6:
+            _append_unique(out, p1)
+            continue
 
-        t1 = p1 + d * u1
-        t2 = p1 + d * u2
-        c2t1 = t1 - center
-        c2t2 = t2 - center
+        r_eff = d * tan_half
+        if r_eff <= 1e-6:
+            _append_unique(out, p1)
+            continue
 
-        # Z축 높이 보간
-        z1 = p1[2] + (d / L1) * (p0[2] - p1[2]) if L1 > 0 else p1[2]
-        z2 = p1[2] + (d / L2) * (p2[2] - p1[2]) if L2 > 0 else p1[2]
+        t1_xy = p1[:2] - t_in * d
+        t2_xy = p1[:2] + t_out * d
 
-        ang1 = float(np.arctan2(c2t1[1], c2t1[0]))
-        ang2 = float(np.arctan2(c2t2[1], c2t2[0]))
+        z1 = float(p1[2] - (d / L1) * (p1[2] - p0[2]))
+        z2 = float(p1[2] + (d / L2) * (p2[2] - p1[2]))
+        t1 = np.array([t1_xy[0], t1_xy[1], z1], dtype=float)
+        t2 = np.array([t2_xy[0], t2_xy[1], z2], dtype=float)
 
-        # 최단 경로 호 각도 계산
-        diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
-        
-        # 호를 num_pts 개수만큼 쪼개어 좌표 추가
-        for j in range(num_pts + 1):
-            f = j / num_pts
-            cur_ang = ang1 + f * diff
-            x = center[0] + np.linalg.norm(c2t1[:2]) * np.cos(cur_ang)
-            y = center[1] + np.linalg.norm(c2t1[:2]) * np.sin(cur_ang)
+        if cross > 0:
+            n1 = _left_normal(t_in)
+            n2 = _left_normal(t_out)
+        else:
+            n1 = _right_normal(t_in)
+            n2 = _right_normal(t_out)
+
+        center_xy = _line_intersection(t1_xy, n1, t2_xy, n2)
+        if center_xy is None:
+            _append_unique(out, p1)
+            continue
+
+        r1 = t1_xy - center_xy
+        r2 = t2_xy - center_xy
+        rad1 = float(np.linalg.norm(r1))
+        rad2 = float(np.linalg.norm(r2))
+        if rad1 < 1e-6 or rad2 < 1e-6:
+            _append_unique(out, p1)
+            continue
+
+        radius = 0.5 * (rad1 + rad2)
+        ang1 = float(math.atan2(r1[1], r1[0]))
+        ang2 = float(math.atan2(r2[1], r2[0]))
+
+        if cross > 0:
+            diff = ang2 - ang1
+            if diff <= 0:
+                diff += 2.0 * math.pi
+        else:
+            diff = ang2 - ang1
+            if diff >= 0:
+                diff -= 2.0 * math.pi
+
+        _append_unique(out, t1)
+        steps = max(2, int(num_pts))
+        for j in range(1, steps):
+            f = j / steps
+            ang = ang1 + diff * f
+            x = center_xy[0] + radius * math.cos(ang)
+            y = center_xy[1] + radius * math.sin(ang)
             z = z1 + f * (z2 - z1)
-            out.append(np.array([x, y, z]))
-    
-    out.append(pts[-1].copy())
-    return np.asarray(out, dtype=float)
+            _append_unique(out, np.array([x, y, z], dtype=float))
+        _append_unique(out, t2)
 
+    _append_unique(out, pts[-1])
+    return np.asarray(out, dtype=float)
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
