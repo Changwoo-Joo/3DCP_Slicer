@@ -9,7 +9,6 @@ import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
-from shapely.geometry import Polygon, MultiPolygon, LineString
 
 # =========================
 # App basics
@@ -305,7 +304,7 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
-def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
+def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, min_spacing_mm: float = 5.0) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
@@ -371,6 +370,9 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
         
         # 호를 num_pts 개수만큼 쪼개어 좌표 추가
+        arc_len = abs(diff) * float(np.linalg.norm(c2t1[:2]))
+        min_spacing_mm = max(float(min_spacing_mm), 1e-6)
+        num_pts = max(2, int(np.floor(arc_len / min_spacing_mm)))
         for j in range(num_pts + 1):
             f = j / num_pts
             cur_ang = ang1 + f * diff
@@ -558,8 +560,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), min_spacing_mm=min_spacing)
 
                 # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
@@ -676,8 +677,7 @@ def compute_slice_paths_with_travel(
 
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), min_spacing_mm=min_spacing)
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
@@ -1185,7 +1185,6 @@ with st.sidebar.expander("코너 주변점 옵션", expanded=False):
 with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
     enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
     fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
-    fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
