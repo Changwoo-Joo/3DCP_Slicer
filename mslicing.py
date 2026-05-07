@@ -324,9 +324,9 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         return pts.copy()
 
     out = [] if closed else [base[0].copy()]
-    indices = range(n) if closed else range(1, n - 1)
+    idx_range = range(n) if closed else range(1, n - 1)
 
-    for i in indices:
+    for i in idx_range:
         i0 = (i - 1) % n
         i1 = i
         i2 = (i + 1) % n
@@ -334,21 +334,19 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         p1 = base[i1]
         p2 = base[i2]
 
-        prev_vec = p0[:2] - p1[:2]
-        next_vec = p2[:2] - p1[:2]
-        L1 = float(np.linalg.norm(prev_vec))
-        L2 = float(np.linalg.norm(next_vec))
-        if L1 < 1e-6 or L2 < 1e-6:
+        a = p0[:2] - p1[:2]
+        b = p2[:2] - p1[:2]
+        La = float(np.linalg.norm(a))
+        Lb = float(np.linalg.norm(b))
+        if La < 1e-6 or Lb < 1e-6:
             _append_unique(out, p1)
             continue
 
-        u1 = prev_vec / L1
-        u2 = next_vec / L2
-        dot = float(np.clip(np.dot(u1, u2), -1.0, 1.0))
+        ua = a / La
+        ub = b / Lb
+        dot = float(np.clip(np.dot(ua, ub), -1.0, 1.0))
         theta = float(np.arccos(dot))
-        cross = _cross2(u1, u2)
-
-        if abs(cross) < 1e-9 or theta < 1e-5 or abs(np.pi - theta) < 1e-5:
+        if theta < 1e-5 or abs(np.pi - theta) < 1e-5:
             _append_unique(out, p1)
             continue
 
@@ -359,49 +357,46 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             continue
 
         d = float(r_mm) / tan_half
-        max_d = min(L1, L2) * 0.5
-        d = min(d, max_d)
+        d = min(d, La * 0.45, Lb * 0.45)
         if d <= 1e-6:
             _append_unique(out, p1)
             continue
 
-        actual_r = d * tan_half
-        bis = u1 + u2
-        bis_len = float(np.linalg.norm(bis))
-        if bis_len < 1e-8:
+        r_eff = d * tan_half
+        bis = ua + ub
+        bis_norm = float(np.linalg.norm(bis))
+        if bis_norm < 1e-8:
             _append_unique(out, p1)
             continue
-        bis = bis / bis_len
+        bis = bis / bis_norm
+        h = r_eff / sin_half
 
-        h = actual_r / sin_half
         center_xy = p1[:2] + bis * h
+        t1_xy = p1[:2] + ua * d
+        t2_xy = p1[:2] + ub * d
 
-        t1_xy = p1[:2] + u1 * d
-        t2_xy = p1[:2] + u2 * d
-        z1 = float(p1[2] + (d / L1) * (p0[2] - p1[2]))
-        z2 = float(p1[2] + (d / L2) * (p2[2] - p1[2]))
+        z1 = float(p1[2] + (d / La) * (p0[2] - p1[2]))
+        z2 = float(p1[2] + (d / Lb) * (p2[2] - p1[2]))
 
-        r1 = t1_xy - center_xy
-        r2 = t2_xy - center_xy
-        rad1 = float(np.linalg.norm(r1))
-        rad2 = float(np.linalg.norm(r2))
+        v1 = t1_xy - center_xy
+        v2 = t2_xy - center_xy
+        rad1 = float(np.linalg.norm(v1))
+        rad2 = float(np.linalg.norm(v2))
         if rad1 < 1e-6 or rad2 < 1e-6:
             _append_unique(out, p1)
             continue
-
         radius = 0.5 * (rad1 + rad2)
-        ang1 = float(math.atan2(r1[1], r1[0]))
-        ang2 = float(math.atan2(r2[1], r2[0]))
 
-        diff_ccw = (ang2 - ang1) % (2.0 * math.pi)
-        diff_cw = diff_ccw - 2.0 * math.pi
-        turn_sign = 1.0 if cross > 0 else -1.0
-        diff = diff_ccw if turn_sign > 0 else diff_cw
-        if abs(diff) > math.pi:
-            diff = diff_cw if turn_sign > 0 else diff_ccw
+        ang1 = float(math.atan2(v1[1], v1[0]))
+        ang2 = float(math.atan2(v2[1], v2[0]))
+        cross = _cross2(v1, v2)
+        if cross >= 0:
+            diff = (ang2 - ang1) % (2.0 * math.pi)
+        else:
+            diff = -((ang1 - ang2) % (2.0 * math.pi))
 
         _append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
-        steps = max(2, int(num_pts))
+        steps = max(3, int(num_pts))
         for j in range(1, steps):
             f = j / steps
             ang = ang1 + diff * f
@@ -423,19 +418,21 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     return np.asarray(out, dtype=float)
 
 
-def _layer_fillet_scale(z: float, z_min: float, z_max: float, mode: str = "parabola") -> float:
+def _layered_radius(z: float, z_min: float, z_max: float, r_max: float, profile: str) -> float:
     span = float(z_max - z_min)
     if span <= 1e-9:
-        return 1.0
+        return float(r_max)
     t = (float(z) - float(z_min)) / span
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-    if mode == "concave":
-        return 4.0 * t * (1.0 - t)
-    if mode == "ease-in":
-        return t * t
-    if mode == "ease-out":
-        return 1.0 - (1.0 - t) * (1.0 - t)
-    return 4.0 * t * (1.0 - t)
+    if profile == 'ease-in':
+        s = t * t
+    elif profile == 'ease-out':
+        s = 1.0 - (1.0 - t) * (1.0 - t)
+    elif profile == 'parabola':
+        s = 4.0 * t * (1.0 - t)
+    else:
+        s = 4.0 * t * (1.0 - t)
+    return float(r_max) * float(max(0.0, s))
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -611,14 +608,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 
                 # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
+                    r_base = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
                     if st.session_state.get('enable_layered_fillet_profile', False):
-                        z_min = float(mesh.bounds[0][2])
-                        z_max = float(mesh.bounds[1][2])
-                        r_scale = _layer_fillet_scale(z, z_min, z_max, mode=st.session_state.get('layered_fillet_profile_mode', 'parabola'))
-                        r_val = float(r_val) * float(r_scale)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                        r_use = _layered_radius(z, float(mesh.bounds[0][2]), float(mesh.bounds[1][2]), r_base, st.session_state.get('layered_fillet_profile_mode', 'parabola'))
+                    else:
+                        r_use = r_base
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_use), num_pts=res_val)
 
                 # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
@@ -734,14 +730,13 @@ def compute_slice_paths_with_travel(
                 simplified = simplify_segment(closed_mid, min_spacing)
 
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
+                    r_base = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
                     if st.session_state.get('enable_layered_fillet_profile', False):
-                        z_min = float(mesh.bounds[0][2])
-                        z_max = float(mesh.bounds[1][2])
-                        r_scale = _layer_fillet_scale(z, z_min, z_max, mode=st.session_state.get('layered_fillet_profile_mode', 'parabola'))
-                        r_val = float(r_val) * float(r_scale)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                        r_use = _layered_radius(z, float(mesh.bounds[0][2]), float(mesh.bounds[1][2]), r_base, st.session_state.get('layered_fillet_profile_mode', 'parabola'))
+                    else:
+                        r_use = r_base
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_use), num_pts=res_val)
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
@@ -1251,7 +1246,9 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
     fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
     fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
     enable_layered_fillet_profile = st.checkbox("레이어별 점진 라운딩", value=False, key="enable_layered_fillet_profile", disabled=not enable_fillet)
-    st.selectbox("라운딩 변화 프로파일", options=["parabola", "concave", "ease-in", "ease-out"], index=0, key="layered_fillet_profile_mode", disabled=not (enable_fillet and enable_layered_fillet_profile))
+    layered_fillet_profile_mode = st.selectbox("라운딩 변화 프로파일", options=['parabola', 'ease-in', 'ease-out'], index=0, key="layered_fillet_profile_mode", disabled=not (enable_fillet and enable_layered_fillet_profile))
+    if enable_fillet and enable_layered_fillet_profile:
+        st.caption(f"현재 프로파일: {layered_fillet_profile_mode}, 입력 R은 최대값으로 사용")
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
