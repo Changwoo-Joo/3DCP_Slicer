@@ -376,8 +376,14 @@ def fillet_closed_polygon_vertices(poly: np.ndarray, r_mm: float, num_pts: int =
             if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
-
-        d = min(d_req, d_max)
+        
+        # 요청한 R이 이 코너에 물리적으로 안 들어가면, 이 코너는 필렛하지 않음
+        if d_req > d_max:
+            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
+                out.append(p1.copy())
+            continue
+        
+        d = d_req
 
         t1 = p1 - u1 * d
         t2 = p1 + u2 * d
