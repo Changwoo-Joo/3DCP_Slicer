@@ -113,29 +113,54 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+    """
+    전체를 등간격(min_dist)으로 쪼갠 뒤, 
+    일직선상에 있는 중간 점들은 제거하여 
+    직선은 양 끝점만 남기고, 곡선은 지정된 간격을 유지하도록 변경.
+    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
-        return pts.copy()
-    out = [pts[0].copy()]
-    for i in range(1, len(pts) - 1):
-        p_prev = pts[i - 1]
-        p_curr = pts[i]
-        p_next = pts[i + 1]
-        v1 = p_curr[:2] - p_prev[:2]
-        v2 = p_next[:2] - p_curr[:2]
-        L1 = float(np.linalg.norm(v1))
-        L2 = float(np.linalg.norm(v2))
-        is_corner = False
-        if L1 > 1e-9 and L2 > 1e-9:
-            sin_angle = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (L1 * L2)
-            is_corner = sin_angle > 1e-3
-        if is_corner or np.linalg.norm((p_curr - out[-1])[:2]) >= float(min_dist):
-            if np.linalg.norm((p_curr - out[-1])[:2]) > 1e-6:
-                out.append(p_curr.copy())
-    if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-6:
-        out.append(pts[-1].copy())
+        return pts
+    
+    # 1. 전체 경로의 누적 길이 배열 생성
+    s = _poly_arclen_s_xy(pts)
+    total_length = float(s[-1])
+    
+    if total_length <= min_dist:
+        return np.vstack([pts[0], pts[-1]])
+    
+    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
+    num_segments = max(1, int(np.round(total_length / min_dist)))
+    s_targets = np.linspace(0.0, total_length, num_segments + 1)
+    resampled_pts = _resample_polyline_by_s(pts, s_targets)
+    
+    # 3. 일직선(Collinear) 검사하여 직선 구간의 중간 점 제거
+    if len(resampled_pts) <= 2:
+        return resampled_pts
+        
+    out = [resampled_pts[0]]
+    
+    for i in range(1, len(resampled_pts) - 1):
+        p_prev = out[-1]
+        p_curr = resampled_pts[i]
+        p_next = resampled_pts[i+1]
+        
+        v1 = p_curr - p_prev
+        v2 = p_next - p_curr
+        
+        L1_L2 = float(np.linalg.norm(v1[:2]) * np.linalg.norm(v2[:2]))
+        if L1_L2 < 1e-9:
+            continue
+            
+        # 외적을 이용해 꺾인 각도의 사인(sin)값을 구함
+        sin_angle = abs(v1[0]*v2[1] - v1[1]*v2[0]) / L1_L2
+        
+        # 꺾임이 거의 없는 직선(약 0.05도 이하)이면 점을 버리고, 곡선이면 살림
+        if sin_angle > 1e-3:
+            out.append(p_curr)
+            
+    out.append(resampled_pts[-1])
     return np.asarray(out, dtype=float)
-
 def shift_to_nearest_start(segment, ref_point):
     """
     단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
@@ -329,7 +354,6 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             continue
 
         d = float(r_mm) / tan_half
-        # 요청한 R이 실제 두 변 길이에 맞지 않으면 축소하지 않고 해당 코너는 그대로 둠
         if d >= L1 or d >= L2:
             _append_unique(out, p1)
             continue
@@ -386,6 +410,12 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     _append_unique(out, base[-1])
     return np.asarray(out, dtype=float)
 
+
+def _layer_window_ok(layer_idx: int, total_layers: int, edge_keep_layers: int) -> bool:
+    if total_layers <= 0:
+        return True
+    keep = max(0, int(edge_keep_layers))
+    return keep <= layer_idx < max(0, total_layers - keep)
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -533,6 +563,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         z_values = make_slice_z_values(submesh, z_int)
 
+        total_layers = len(z_values)
         for zidx, z in enumerate(z_values):
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
@@ -561,9 +592,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 
                 # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    edge_keep_layers = int(st.session_state.get('fillet_edge_keep_layers', 16))
+                    if _layer_window_ok(zidx, total_layers, edge_keep_layers):
+                        simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
 
                 # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
@@ -652,7 +685,8 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        for z in z_values:
+        total_layers = len(z_values)
+        for zidx, z in enumerate(z_values):
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -679,9 +713,11 @@ def compute_slice_paths_with_travel(
                 simplified = simplify_segment(closed_mid, min_spacing)
 
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    edge_keep_layers = int(st.session_state.get('fillet_edge_keep_layers', 16))
+                    if _layer_window_ok(zidx, total_layers, edge_keep_layers):
+                        simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
@@ -1190,6 +1226,7 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
     enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
     fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
     fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
+    fillet_edge_keep_layers = st.number_input("상하부 비적용 레이어 수", min_value=0, max_value=500, value=16, step=1, key="fillet_edge_keep_layers", disabled=not enable_fillet)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
