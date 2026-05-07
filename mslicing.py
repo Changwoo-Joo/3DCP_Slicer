@@ -162,8 +162,61 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     out.append(resampled_pts[-1])
     return np.asarray(out, dtype=float)
 def shift_to_nearest_start(segment, ref_point):
-    idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
-    return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
+    """
+    단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
+    새로운 시작점을 삽입하고 배열을 재배치합니다.
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts, pts[0]
+        
+    ref = np.array(ref_point[:2], dtype=float)
+    min_dist = float('inf')
+    best_pt = None
+    best_idx = 0
+    
+    # 모든 선분에 대해 가장 가까운 투영점 찾기
+    for i in range(len(pts) - 1):
+        p1 = pts[i]
+        p2 = pts[i+1]
+        
+        v = p2[:2] - p1[:2]
+        w = ref - p1[:2]
+        
+        c1 = float(np.dot(w, v))
+        c2 = float(np.dot(v, v))
+        
+        if c1 <= 0:
+            closest = p1.copy()
+        elif c2 <= c1:
+            closest = p2.copy()
+        else:
+            b = c1 / c2
+            closest = p1 + b * (p2 - p1)
+            
+        d = float(np.linalg.norm(ref - closest[:2]))
+        if d < min_dist:
+            min_dist = d
+            best_pt = closest
+            best_idx = i
+            
+    # 찾은 정확한 좌표를 삽입하고 배열을 재배치
+    if np.linalg.norm(best_pt - pts[best_idx]) < 1e-6:
+        shift_idx = best_idx
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    elif np.linalg.norm(best_pt - pts[best_idx+1]) < 1e-6:
+        shift_idx = best_idx + 1
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    else:
+        out_pts = [best_pt.copy()]
+        for j in range(best_idx + 1, len(pts) - 1):
+            out_pts.append(pts[j].copy())
+        for j in range(0, best_idx + 1):
+            out_pts.append(pts[j].copy())
+        out_pts.append(best_pt.copy())
+        out = np.asarray(out_pts, dtype=float)
+        
+    return out, best_pt
 
 def _poly_arclen_s_xy(poly: np.ndarray) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
@@ -473,33 +526,28 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 
-                # 1. 기준 좌표와 가장 가까운 점 찾기
-                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 
-                # 2. 시작점이 코너에 걸리지 않도록 (트림거리 + R값 + 10mm) 만큼 직선구간으로 밀어버림
-                safe_shift = float(trim_dist)
-                if st.session_state.get('enable_fillet', False):
-                    safe_shift += float(st.session_state.get('fillet_r', 20.0)) + 10.0
-                else:
-                    safe_shift += 10.0
-                shifted = _shift_ring_start_along_path(shifted, safe_shift)
+                # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
+                simplified = simplify_segment(closed_mid, min_spacing)
                 
-                # 3. 점 간격 간소화 (직선은 양끝만 남김)
-                simplified = simplify_segment(shifted, min_spacing)
-                
-                # 4. 닫힌 상태에서 R(라운딩) 완벽하게 적용
+                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
-                # 5. 코너 주변점 추가
+                # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
                 
-                # 6. 마지막으로 트림 거리를 잘라내어 끊어줌
-                simplified = trim_closed_ring_tail(simplified, trim_dist)
+                # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                
+                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 start = simplified[0]
 
