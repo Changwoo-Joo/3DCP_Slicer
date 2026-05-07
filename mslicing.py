@@ -588,20 +588,26 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 clean = _clean_collinear(seg3d_no_dup)
-                closed_mid = _make_seam_at_midpoint(clean)
+                
+                # 1. R이 없는 직각 상태에서 사용자가 지정한 시작점으로 먼저 정렬
+                shifted, _ = shift_to_nearest_start(clean, ref_point=ref_pt_layer)
+                
+                # 2. 시작점 기준 트림 수행 (경로 열기) - 노즐 뭉침 방지를 위해 트림 유지
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                
+                # 3. 직선 구간 점 제거 및 최소 간격 쪼개기
+                simplified = simplify_segment(trimmed, min_spacing)
 
+                # 4. 트림까지 완료된 열린 경로 상태에서 라운딩(R200 등) 완벽 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    closed_mid = _apply_fillet_to_path(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
+                # 5. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    closed_mid = _insert_corner_neighbors(closed_mid, d_mm=float(corner_distance))
-
-                shifted, _ = shift_to_nearest_start(closed_mid, ref_point=ref_pt_layer)
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
-                simplified = simplify_segment(trimmed, min_spacing)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
                 start = simplified[0]
 
@@ -702,25 +708,30 @@ def compute_slice_paths_with_travel(
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 clean = _clean_collinear(seg3d_no_dup)
-                closed_mid = _make_seam_at_midpoint(clean)
                 
+                # 1. 직각 상태에서 사용자가 지정한 시작점으로 정렬
+                shifted, _ = shift_to_nearest_start(clean, ref_point=ref_pt_layer)
+                
+                # 2. 기준점 기준 트림 수행 (경로 열기)
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                
+                # 3. 최적화 및 점 간격 분할
+                simplified = simplify_segment(trimmed, min_spacing)
+
+                # 4. 필렛 적용 (열린 상태에서 코너 찾기)
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    closed_mid = _apply_fillet_to_path(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
                 
+                # 5. 코너 주변점 추가
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    closed_mid = _insert_corner_neighbors(closed_mid, d_mm=float(corner_distance))
-                
-                shifted, _ = shift_to_nearest_start(closed_mid, ref_point=ref_pt_layer)
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
-                simplified = simplify_segment(trimmed, min_spacing)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
-
             if not layer_polys:
                 continue
 
