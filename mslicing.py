@@ -433,18 +433,34 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
-                simplified = simplify_segment(trimmed, min_spacing)
-
-                if st.session_state.get('enable_corner_points', False):
-                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
                 
+                # 1. 기준 좌표와 가장 가까운 점 찾기
+                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+                
+                # 2. 시작점이 코너에 걸리지 않도록 (트림거리 + R값 + 10mm) 만큼 직선구간으로 밀어버림
+                safe_shift = float(trim_dist)
+                if st.session_state.get('enable_fillet', False):
+                    safe_shift += float(st.session_state.get('fillet_r', 20.0)) + 10.0
+                else:
+                    safe_shift += 10.0
+                shifted = _shift_ring_start_along_path(shifted, safe_shift)
+                
+                # 3. 점 간격 간소화 (직선은 양끝만 남김)
+                simplified = simplify_segment(shifted, min_spacing)
+                
+                # 4. 닫힌 상태에서 R(라운딩) 완벽하게 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+
+                # 5. 코너 주변점 추가
+                if st.session_state.get('enable_corner_points', False):
+                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                
+                # 6. 마지막으로 트림 거리를 잘라내어 끊어줌
+                simplified = trim_closed_ring_tail(simplified, trim_dist)
 
                 start = simplified[0]
 
