@@ -540,7 +540,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    shifted = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
@@ -652,7 +653,8 @@ def compute_slice_paths_with_travel(
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    shifted = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
