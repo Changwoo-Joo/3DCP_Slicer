@@ -924,6 +924,9 @@ feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 
+# [추가] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
+fix_start = st.sidebar.checkbox("시작점 고정", value=False)
+
 st.sidebar.subheader("압출 옵션")
 e_on = st.sidebar.checkbox("재료토출(E) 삽입")
 start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
@@ -940,7 +943,9 @@ with st.sidebar.expander("코너 주변점 옵션", expanded=False):
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-auto_start = st.sidebar.checkbox("자동 시작점 연결")
+
+# [수정] 자동 시작점 연결을 기본값(True)으로 변경, 시작점 고정 시 비활성화
+auto_start = st.sidebar.checkbox("자동 시작점 연결", value=True, disabled=fix_start)
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 b1 = st.sidebar.container()
@@ -971,10 +976,13 @@ if uploaded is not None:
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
 
+# [추가] 시작점 고정이 켜져있으면 자동연결은 무조건 False로 동작하도록 논리 적용
+actual_auto_start = auto_start and not fix_start
+
 if KEY_OK and slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
-        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start,
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner
     )
     st.session_state.paths_items = items
@@ -992,7 +1000,7 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
-        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=auto_start, m30_on=m30_on,
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start, m30_on=m30_on,
         seq_print=seq_print  
     )
     st.session_state.gcode_text = gcode_text
