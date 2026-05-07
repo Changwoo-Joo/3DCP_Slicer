@@ -74,32 +74,45 @@ def clamp(v, lo, hi):
 # Helpers (연산 로직)
 # =========================
 
-def _clean_collinear(pts: np.ndarray, eps: float = 1e-3) -> np.ndarray:
-    """일직선상에 있는 불필요한 자잘한 점들을 선제적으로 제거하여 순수한 코너만 남깁니다."""
+def _clean_collinear(pts: np.ndarray, eps: float = 1.5) -> np.ndarray:
+    """RDP 알고리즘을 이용해 슬라이싱 과정의 미세한 찌그러짐을 펴고 진짜 뼈대(코너)만 완벽히 남깁니다."""
     pts = np.asarray(pts, dtype=float)
     if len(pts) <= 2:
         return pts.copy()
     
-    out = [pts[0].copy()]
-    for i in range(1, len(pts) - 1):
-        p_prev = out[-1]
-        p_curr = pts[i]
-        p_next = pts[i+1]
-        
-        v1 = p_curr - p_prev
-        v2 = p_next - p_curr
-        
-        L1_L2 = float(np.linalg.norm(v1[:2]) * np.linalg.norm(v2[:2]))
-        if L1_L2 < 1e-9:
+    stack = [(0, len(pts)-1)]
+    keep = np.zeros(len(pts), dtype=bool)
+    keep[0] = True
+    keep[-1] = True
+    
+    while stack:
+        start, end = stack.pop()
+        if end - start <= 1:
             continue
+        
+        p_start = pts[start][:2]
+        p_end = pts[end][:2]
+        line_vec = p_end - p_start
+        line_len = float(np.linalg.norm(line_vec))
+        
+        if line_len < 1e-9:
+            dists = np.linalg.norm(pts[start+1:end, :2] - p_start, axis=1)
+        else:
+            line_unit = line_vec / line_len
+            n_unit = np.array([-line_unit[1], line_unit[0]])
+            vecs = pts[start+1:end, :2] - p_start
+            dists = np.abs(np.dot(vecs, n_unit))
             
-        sin_angle = abs(v1[0]*v2[1] - v1[1]*v2[0]) / L1_L2
-        if sin_angle > eps:
-            out.append(p_curr.copy())
+        max_idx = int(np.argmax(dists))
+        max_dist = dists[max_idx]
+        
+        if max_dist > eps:
+            actual_idx = start + 1 + max_idx
+            keep[actual_idx] = True
+            stack.append((start, actual_idx))
+            stack.append((actual_idx, end))
             
-    out.append(pts[-1].copy())
-    return np.asarray(out, dtype=float)
-
+    return pts[keep]
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
