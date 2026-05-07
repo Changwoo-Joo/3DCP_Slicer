@@ -331,16 +331,16 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         p1 = base[i]
         p2 = base[(i + 1) % n]
 
-        v_in = p0[:2] - p1[:2]
-        v_out = p2[:2] - p1[:2]
-        L1 = float(np.linalg.norm(v_in))
-        L2 = float(np.linalg.norm(v_out))
+        v1 = p0[:2] - p1[:2]
+        v2 = p2[:2] - p1[:2]
+        L1 = float(np.linalg.norm(v1))
+        L2 = float(np.linalg.norm(v2))
         if L1 < 1e-6 or L2 < 1e-6:
             _append_unique(out, p1)
             continue
 
-        u1 = v_in / L1
-        u2 = v_out / L2
+        u1 = v1 / L1
+        u2 = v2 / L2
         dot = float(np.clip(np.dot(u1, u2), -1.0, 1.0))
         theta = float(np.arccos(dot))
         if theta < 1e-5 or abs(np.pi - theta) < 1e-5:
@@ -354,7 +354,7 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             continue
 
         d = float(r_mm) / tan_half
-        if d >= L1 or d >= L2:
+        if d >= 0.49 * L1 or d >= 0.49 * L2:
             _append_unique(out, p1)
             continue
 
@@ -373,12 +373,6 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
 
         rv1 = t1_xy - center_xy
         rv2 = t2_xy - center_xy
-        rad1 = float(np.linalg.norm(rv1))
-        rad2 = float(np.linalg.norm(rv2))
-        if rad1 < 1e-6 or rad2 < 1e-6:
-            _append_unique(out, p1)
-            continue
-
         a1 = float(math.atan2(rv1[1], rv1[0]))
         a2 = float(math.atan2(rv2[1], rv2[0]))
         cross = _cross2(rv1, rv2)
@@ -388,13 +382,12 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             diff = -((a1 - a2) % (2.0 * math.pi))
 
         _append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
-        steps = max(3, int(num_pts))
-        radius = float(r_mm)
+        steps = max(4, int(num_pts))
         for j in range(1, steps):
             f = j / steps
             ang = a1 + diff * f
-            x = center_xy[0] + radius * math.cos(ang)
-            y = center_xy[1] + radius * math.sin(ang)
+            x = center_xy[0] + float(r_mm) * math.cos(ang)
+            y = center_xy[1] + float(r_mm) * math.sin(ang)
             z = z1 + f * (z2 - z1)
             _append_unique(out, np.array([x, y, z], dtype=float))
         _append_unique(out, np.array([t2_xy[0], t2_xy[1], z2], dtype=float))
@@ -410,32 +403,6 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     _append_unique(out, base[-1])
     return np.asarray(out, dtype=float)
 
-
-def _section_edge_lengths_xy(poly: np.ndarray) -> np.ndarray:
-    pts = np.asarray(poly, dtype=float)
-    if len(pts) < 2:
-        return np.array([], dtype=float)
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9:
-        pts = pts[:-1]
-    if len(pts) < 2:
-        return np.array([], dtype=float)
-    out = []
-    n = len(pts)
-    for i in range(n):
-        p = pts[i]
-        q = pts[(i + 1) % n]
-        out.append(float(np.linalg.norm((q - p)[:2])))
-    return np.asarray(out, dtype=float)
-
-
-def _auto_layer_can_fillet(seg3d_no_dup: np.ndarray, r_mm: float) -> bool:
-    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-    lens = _section_edge_lengths_xy(closed_mid)
-    if len(lens) < 3:
-        return False
-    if float(np.min(lens)) <= max(2.0 * float(r_mm), 1e-6):
-        return False
-    return True
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -609,12 +576,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
                 simplified = simplify_segment(closed_mid, min_spacing)
                 
-                # 3. 안정적인 단면에서만 자동으로 라운딩 적용
+                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
-                    r_val = float(st.session_state.get('fillet_r', 20.0))
-                    res_val = int(st.session_state.get('fillet_res', 8))
-                    if _auto_layer_can_fillet(seg3d_no_dup, r_val):
-                        simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
@@ -623,8 +589,14 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 
                 # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+
+                # 6. 시작점 이동 이후의 실제 출력 경로에 직접 라운딩 적용
+                if st.session_state.get('enable_fillet', False):
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
                 
-                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
+                # 7. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 start = simplified[0]
@@ -730,16 +702,19 @@ def compute_slice_paths_with_travel(
                 simplified = simplify_segment(closed_mid, min_spacing)
 
                 if st.session_state.get('enable_fillet', False):
-                    r_val = float(st.session_state.get('fillet_r', 20.0))
-                    res_val = int(st.session_state.get('fillet_res', 8))
-                    if _auto_layer_can_fillet(seg3d_no_dup, r_val):
-                        simplified = _apply_fillet_to_path(simplified, r_mm=r_val, num_pts=res_val)
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                if st.session_state.get('enable_fillet', False):
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 layer_polys.append(simplified.copy())
