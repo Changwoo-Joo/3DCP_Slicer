@@ -330,12 +330,31 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         if len(out_list) == 0 or np.linalg.norm((arr - out_list[-1])[:2]) > eps:
             out_list.append(arr.copy())
 
-    out = [pts[0].copy()]
+    closed = False
+    if len(pts) >= 2 and np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9:
+        closed = True
+        base_pts = pts[:-1].copy()
+    else:
+        base_pts = pts.copy()
 
-    for i in range(1, len(pts) - 1):
-        p0 = pts[i - 1]
-        p1 = pts[i]
-        p2 = pts[i + 1]
+    if len(base_pts) < 3:
+        return pts.copy()
+
+    out = [] if closed else [base_pts[0].copy()]
+    n = len(base_pts)
+
+    if closed:
+        index_iter = range(n)
+    else:
+        index_iter = range(1, n - 1)
+
+    for i in index_iter:
+        i0 = (i - 1) % n
+        i1 = i
+        i2 = (i + 1) % n
+        p0 = base_pts[i0]
+        p1 = base_pts[i1]
+        p2 = base_pts[i2]
 
         vin = p1[:2] - p0[:2]
         vout = p2[:2] - p1[:2]
@@ -424,8 +443,17 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             _append_unique(out, np.array([x, y, z], dtype=float))
         _append_unique(out, t2)
 
-    _append_unique(out, pts[-1])
+    if closed:
+        if len(out) >= 2 and np.linalg.norm((out[0] - out[-1])[:2]) <= 1e-6:
+            out = out[:-1]
+        out.append(out[0].copy())
+        return np.asarray(out, dtype=float)
+
+    _append_unique(out, base_pts[-1])
     return np.asarray(out, dtype=float)
+    out.append(pts[-1].copy())
+    return np.asarray(out, dtype=float)
+
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
