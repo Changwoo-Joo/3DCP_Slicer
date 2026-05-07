@@ -4,6 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
+from shapely.geometry import Polygon, MultiPolygon
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -304,132 +305,66 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
+def _resample_closed_polyline_xy(poly: np.ndarray, spacing: float) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2:
+        return pts.copy()
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) > 1e-9:
+        pts = np.vstack([pts, pts[0]])
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts.copy()
+    step = max(float(spacing), 1.0)
+    count = max(8, int(np.ceil(total / step)))
+    targets = np.linspace(0.0, total, count + 1)
+    out = _resample_polyline_by_s(pts, targets)
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+    return out
+
+
 def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
-    if len(pts) < 3 or r_mm <= 0:
+    if len(pts) < 4 or r_mm <= 0:
         return pts.copy()
 
     closed = np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
-    ring = pts[:-1].copy() if closed else pts.copy()
-    n = len(ring)
-    if n < 3:
+    ring = pts.copy() if closed else np.vstack([pts, pts[0]])
+    if len(ring) < 4:
         return pts.copy()
 
-    def cross2(a, b):
-        return float(a[0] * b[1] - a[1] * b[0])
+    xy = ring[:, :2]
+    try:
+        poly2d = Polygon(xy)
+    except Exception:
+        return pts.copy()
+    if poly2d.is_empty or (not poly2d.is_valid) or poly2d.area <= 1e-9:
+        return pts.copy()
 
-    def line_intersection(p, d, q, e):
-        den = cross2(d, e)
-        if abs(den) < 1e-12:
-            return None
-        t = cross2(q - p, e) / den
-        return p + t * d
+    try:
+        rounded = poly2d.buffer(-float(r_mm), join_style=1).buffer(float(r_mm), join_style=1)
+    except Exception:
+        return pts.copy()
 
-    def left_normal(v):
-        return np.array([-v[1], v[0]], dtype=float)
+    if rounded.is_empty:
+        return pts.copy()
 
-    def right_normal(v):
-        return np.array([v[1], -v[0]], dtype=float)
+    if isinstance(rounded, MultiPolygon):
+        rounded = max(list(rounded.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
+    if rounded.is_empty or rounded.area <= 1e-9:
+        return pts.copy()
 
-    def append_unique(out_list, pt, eps=1e-6):
-        pt = np.asarray(pt, dtype=float)
-        if len(out_list) == 0 or np.linalg.norm((pt - out_list[-1])[:2]) > eps:
-            out_list.append(pt.copy())
+    coords = np.asarray(rounded.exterior.coords, dtype=float)
+    if len(coords) < 4:
+        return pts.copy()
 
-    out = [] if closed else [ring[0].copy()]
-    idxs = range(n) if closed else range(1, n - 1)
+    z_mean = float(np.mean(ring[:, 2]))
+    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_mean, dtype=float)])
 
-    for i in idxs:
-        p0 = ring[(i - 1) % n]
-        p1 = ring[i]
-        p2 = ring[(i + 1) % n]
-
-        t_in_vec = p1[:2] - p0[:2]
-        t_out_vec = p2[:2] - p1[:2]
-        L1 = float(np.linalg.norm(t_in_vec))
-        L2 = float(np.linalg.norm(t_out_vec))
-        if L1 < 1e-6 or L2 < 1e-6:
-            append_unique(out, p1)
-            continue
-
-        t_in = t_in_vec / L1
-        t_out = t_out_vec / L2
-        dot = float(np.clip(np.dot(t_in, t_out), -1.0, 1.0))
-        phi = float(np.arccos(dot))
-        if phi < 1e-5 or abs(np.pi - phi) < 1e-5:
-            append_unique(out, p1)
-            continue
-
-        tan_half = math.tan(phi / 2.0)
-        if abs(tan_half) < 1e-9:
-            append_unique(out, p1)
-            continue
-
-        d = float(r_mm) / tan_half
-        if d >= 0.5 * L1 or d >= 0.5 * L2:
-            append_unique(out, p1)
-            continue
-
-        t1_xy = p1[:2] - t_in * d
-        t2_xy = p1[:2] + t_out * d
-        z1 = float(p1[2] - (d / L1) * (p1[2] - p0[2]))
-        z2 = float(p1[2] + (d / L2) * (p2[2] - p1[2]))
-
-        turn = cross2(t_in, t_out)
-        if turn > 0:
-            n1 = left_normal(t_in)
-            n2 = left_normal(t_out)
-        else:
-            n1 = right_normal(t_in)
-            n2 = right_normal(t_out)
-
-        center_xy = line_intersection(t1_xy, n1, t2_xy, n2)
-        if center_xy is None:
-            append_unique(out, p1)
-            continue
-
-        r1 = t1_xy - center_xy
-        r2 = t2_xy - center_xy
-        rad1 = float(np.linalg.norm(r1))
-        rad2 = float(np.linalg.norm(r2))
-        if rad1 < 1e-6 or rad2 < 1e-6:
-            append_unique(out, p1)
-            continue
-
-        ang1 = float(math.atan2(r1[1], r1[0]))
-        ang2 = float(math.atan2(r2[1], r2[0]))
-
-        if turn > 0:
-            diff = ang2 - ang1
-            if diff <= 0:
-                diff += 2.0 * math.pi
-        else:
-            diff = ang2 - ang1
-            if diff >= 0:
-                diff -= 2.0 * math.pi
-
-        append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
-        steps = max(4, int(num_pts))
-        radius = 0.5 * (rad1 + rad2)
-        for j in range(1, steps):
-            f = j / steps
-            ang = ang1 + diff * f
-            x = center_xy[0] + radius * math.cos(ang)
-            y = center_xy[1] + radius * math.sin(ang)
-            z = z1 + f * (z2 - z1)
-            append_unique(out, np.array([x, y, z], dtype=float))
-        append_unique(out, np.array([t2_xy[0], t2_xy[1], z2], dtype=float))
-
-    if closed:
-        if len(out) == 0:
-            return pts.copy()
-        if np.linalg.norm((out[0] - out[-1])[:2]) <= 1e-6:
-            out = out[:-1]
-        out.append(out[0].copy())
-        return np.asarray(out, dtype=float)
-
-    append_unique(out, ring[-1])
-    return np.asarray(out, dtype=float)
+    arc_spacing = max(float(r_mm) / max(int(num_pts), 2), 1.0)
+    out = _resample_closed_polyline_xy(out, spacing=arc_spacing)
+    return out
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
@@ -604,7 +539,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
-                    shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    shifted = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
@@ -715,7 +651,8 @@ def compute_slice_paths_with_travel(
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
-                    shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    shifted = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
