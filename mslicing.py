@@ -162,61 +162,8 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     out.append(resampled_pts[-1])
     return np.asarray(out, dtype=float)
 def shift_to_nearest_start(segment, ref_point):
-    """
-    단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
-    새로운 시작점을 삽입하고 배열을 재배치합니다.
-    """
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2:
-        return pts, pts[0]
-        
-    ref = np.array(ref_point[:2], dtype=float)
-    min_dist = float('inf')
-    best_pt = None
-    best_idx = 0
-    
-    # 모든 선분에 대해 가장 가까운 투영점 찾기
-    for i in range(len(pts) - 1):
-        p1 = pts[i]
-        p2 = pts[i+1]
-        
-        v = p2[:2] - p1[:2]
-        w = ref - p1[:2]
-        
-        c1 = float(np.dot(w, v))
-        c2 = float(np.dot(v, v))
-        
-        if c1 <= 0:
-            closest = p1.copy()
-        elif c2 <= c1:
-            closest = p2.copy()
-        else:
-            b = c1 / c2
-            closest = p1 + b * (p2 - p1)
-            
-        d = float(np.linalg.norm(ref - closest[:2]))
-        if d < min_dist:
-            min_dist = d
-            best_pt = closest
-            best_idx = i
-            
-    # 찾은 정확한 좌표를 삽입하고 배열을 재배치
-    if np.linalg.norm(best_pt - pts[best_idx]) < 1e-6:
-        shift_idx = best_idx
-        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
-    elif np.linalg.norm(best_pt - pts[best_idx+1]) < 1e-6:
-        shift_idx = best_idx + 1
-        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
-    else:
-        out_pts = [best_pt.copy()]
-        for j in range(best_idx + 1, len(pts) - 1):
-            out_pts.append(pts[j].copy())
-        for j in range(0, best_idx + 1):
-            out_pts.append(pts[j].copy())
-        out_pts.append(best_pt.copy())
-        out = np.asarray(out_pts, dtype=float)
-        
-    return out, best_pt
+    idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
+    return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
 
 def _poly_arclen_s_xy(poly: np.ndarray) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
@@ -304,196 +251,81 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
-def fillet_closed_polygon_vertices(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
+def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
-        pts = pts[:-1]
+    out = [pts[0].copy()]
+    for i in range(1, len(pts) - 1):
+        p0 = pts[i - 1]
+        p1 = pts[i]
+        p2 = pts[i + 1]
 
-    n = len(pts)
-    if n < 3:
-        return pts.copy()
-
-    def norm2(v):
-        return float(np.linalg.norm(v[:2]))
-
-    def left_normal(u):
-        return np.array([-u[1], u[0], 0.0], dtype=float)
-
-    def line_intersection_2d(p, r, q, s):
-        cross_rs = r[0]*s[1] - r[1]*s[0]
-        if abs(cross_rs) < 1e-12:
-            return None
-        qp = q[:2] - p[:2]
-        t = (qp[0]*s[1] - qp[1]*s[0]) / cross_rs
-        out = p.copy()
-        out[:2] = p[:2] + t * r[:2]
-        return out
-
-    out = []
-
-    for i in range(n):
-        p0 = pts[(i - 1) % n].copy()
-        p1 = pts[i].copy()
-        p2 = pts[(i + 1) % n].copy()
-
-        v1 = p1 - p0
+        v1 = p0 - p1
         v2 = p2 - p1
-        L1 = norm2(v1)
-        L2 = norm2(v2)
+        L1 = float(np.linalg.norm(v1[:2]))
+        L2 = float(np.linalg.norm(v2[:2]))
 
-        if L1 < 1e-9 or L2 < 1e-9:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
+        # 선분이 너무 짧으면 스킵
+        if L1 < 1e-5 or L2 < 1e-5:
+            out.append(p1.copy())
             continue
 
         u1 = v1 / L1
         u2 = v2 / L2
 
-        a = -u1
-        b = u2
-        dotv = float(np.clip(np.dot(a[:2], b[:2]), -1.0, 1.0))
-        theta = float(np.arccos(dotv))
+        dot = float(np.clip(np.dot(u1[:2], u2[:2]), -1.0, 1.0))
+        angle = float(np.arccos(dot))
 
-        cross = u1[0]*u2[1] - u1[1]*u2[0]
-
-        if abs(cross) < 1e-9 or theta < 1e-6 or abs(np.pi - theta) < 1e-6:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
+        # 일직선이거나 너무 예각이면 스킵
+        if angle < 1e-3 or angle > np.pi - 1e-3:
+            out.append(p1.copy())
             continue
 
-        tan_half = np.tan(theta / 2.0)
-        if abs(tan_half) < 1e-12:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
-            continue
+        # 접점까지의 거리
+        d = r_mm / max(np.tan(angle / 2.0), 1e-9)
 
-        d_req = float(r_mm / tan_half)
-        d_max = 0.5 * min(L1, L2) - 1e-6
-        if d_max <= 1e-6:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
-            continue
+        # 양쪽 선분의 절반을 넘지 않도록 R값(사실상 d값) 제한
+        max_d = min(L1 / 2.0, L2 / 2.0)
+        if d > max_d: d = max_d
         
-        # 요청한 R이 이 코너에 물리적으로 안 들어가면, 이 코너는 필렛하지 않음
-        if d_req > d_max:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
+        # 중심점 계산
+        b = u1 + u2
+        Lb = float(np.linalg.norm(b[:2]))
+        if Lb < 1e-5:
+            out.append(p1.copy())
             continue
+        b = b / Lb
+
+        h = d / max(np.cos(angle / 2.0), 1e-9)
+        center = p1 + h * b
+
+        t1 = p1 + d * u1
+        t2 = p1 + d * u2
+        c2t1 = t1 - center
+        c2t2 = t2 - center
+
+        # Z축 높이 보간
+        z1 = p1[2] + (d / L1) * (p0[2] - p1[2]) if L1 > 0 else p1[2]
+        z2 = p1[2] + (d / L2) * (p2[2] - p1[2]) if L2 > 0 else p1[2]
+
+        ang1 = float(np.arctan2(c2t1[1], c2t1[0]))
+        ang2 = float(np.arctan2(c2t2[1], c2t2[0]))
+
+        # 최단 경로 호 각도 계산
+        diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
         
-        d = d_req
-
-        t1 = p1 - u1 * d
-        t2 = p1 + u2 * d
-
-        n1 = left_normal(u1)
-        n2 = left_normal(u2)
-        if cross < 0:
-            n1 = -n1
-            n2 = -n2
-
-        center = line_intersection_2d(t1, n1, t2, n2)
-        if center is None:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
-            continue
-
-        rr1 = norm2(t1 - center)
-        rr2 = norm2(t2 - center)
-        rr = 0.5 * (rr1 + rr2)
-        if rr < 1e-9:
-            if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
-                out.append(p1.copy())
-            continue
-
-        if len(out) == 0 or np.linalg.norm((t1 - out[-1])[:2]) > 1e-9:
-            out.append(t1.copy())
-
-        ang1 = float(np.arctan2(t1[1] - center[1], t1[0] - center[0]))
-        ang2 = float(np.arctan2(t2[1] - center[1], t2[0] - center[0]))
-
-        if cross > 0:
-            if ang2 <= ang1:
-                ang2 += 2.0 * np.pi
-            angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
-        else:
-            if ang2 >= ang1:
-                ang2 -= 2.0 * np.pi
-            angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
-
-        for j, ang in enumerate(angs[1:], start=1):
-            f = j / float(len(angs) - 1)
-            x = center[0] + rr * np.cos(ang)
-            y = center[1] + rr * np.sin(ang)
-            z = t1[2] + f * (t2[2] - t1[2])
-            out.append(np.array([x, y, z], dtype=float))
-
-    out = np.asarray(out, dtype=float)
-    if len(out) > 1 and np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
-        out = np.vstack([out, out[0]])
-    return out
-
-def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2:
-        return pts
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
-        pts = pts[:-1]
-
-    n = len(pts)
-    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
-    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
-    max_idx = int(np.argmax(lens))
-
-    p1 = pts[max_idx]
-    p2 = pts[(max_idx + 1) % n]
-    mid = (p1 + p2) / 2.0
-
-    out = [mid]
-    for i in range(1, n + 1):
-        out.append(pts[(max_idx + i) % n].copy())
-    out.append(mid.copy())
-    return np.asarray(out, dtype=float)
-
-def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
-    """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2 or shift_dist <= 0:
-        return pts
+        # 호를 num_pts 개수만큼 쪼개어 좌표 추가
+        for j in range(num_pts + 1):
+            f = j / num_pts
+            cur_ang = ang1 + f * diff
+            x = center[0] + np.linalg.norm(c2t1[:2]) * np.cos(cur_ang)
+            y = center[1] + np.linalg.norm(c2t1[:2]) * np.sin(cur_ang)
+            z = z1 + f * (z2 - z1)
+            out.append(np.array([x, y, z]))
     
-    # 닫힌 루프 확인 및 중복 끝점 제거
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
-        pts = pts[:-1]
-        
-    n = len(pts)
-    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
-    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
-    total = float(np.sum(lens))
-    
-    shift_dist = shift_dist % total
-    if shift_dist < 1e-5:
-        return np.vstack([pts, pts[0]]) # 닫아서 반환
-        
-    acc = 0.0
-    i = 0
-    while i < n and acc + lens[i] < shift_dist:
-        acc += lens[i]
-        i += 1
-        
-    p = pts[i]
-    q = pts[(i + 1) % n]
-    d = lens[i]
-    
-    cut = p + ((shift_dist - acc) / d) * (q - p) if d > 0 else p.copy()
-    
-    out = [cut]
-    for j in range(1, n + 1):
-        idx = (i + j) % n
-        out.append(pts[idx].copy())
-        
-    out.append(cut.copy())
+    out.append(pts[-1].copy())
     return np.asarray(out, dtype=float)
 
 # =========================
@@ -601,33 +433,18 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                
-                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                
-                # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
-                simplified = simplify_segment(closed_mid, min_spacing)
-                
-                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
-                if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    simplified = fillet_closed_polygon_vertices(
-                        simplified,
-                        r_mm=float(r_val),
-                        num_pts=int(res_val)
-                    )
+                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                simplified = simplify_segment(trimmed, min_spacing)
 
-                # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
                 
-                # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                
-                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                if st.session_state.get('enable_fillet', False):
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 start = simplified[0]
 
@@ -727,22 +544,18 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                
-                if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    res_val = st.session_state.get('fillet_res', 8)
-                    closed_mid = fillet_closed_polygon_vertices(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
-                
-                simplified = simplify_segment(closed_mid, min_spacing)
+                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                simplified = simplify_segment(trimmed, min_spacing)
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                
+                if st.session_state.get('enable_fillet', False):
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
