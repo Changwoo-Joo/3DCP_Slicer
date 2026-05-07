@@ -767,6 +767,56 @@ def compute_slice_paths_with_travel(
 
     return all_items
 
+def _collect_layer_z_values(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]], tol: float = 1e-6) -> List[float]:
+    zs: List[float] = []
+    for p1, p2, is_travel, is_extruding in segments:
+        if not is_extruding:
+            continue
+        zmid = float((p1[2] + p2[2]) * 0.5)
+        if not zs or abs(zmid - zs[-1]) > tol:
+            zs.append(zmid)
+    return zs
+
+
+def _filter_segments_by_layer_range(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]], layer_start: int, layer_end: int, tol: float = 1e-6):
+    if not segments:
+        return []
+    zs = _collect_layer_z_values(segments, tol=tol)
+    if not zs:
+        return []
+    n_layers = len(zs)
+    layer_start = max(1, min(int(layer_start), n_layers))
+    layer_end = max(layer_start, min(int(layer_end), n_layers))
+    z_lo = zs[layer_start - 1]
+    z_hi = zs[layer_end - 1]
+    out = []
+    for p1, p2, is_travel, is_extruding in segments:
+        zmid = float((p1[2] + p2[2]) * 0.5)
+        if is_extruding:
+            if z_lo - tol <= zmid <= z_hi + tol:
+                out.append((p1, p2, is_travel, is_extruding))
+        else:
+            z1 = float(p1[2]); z2 = float(p2[2])
+            if (z_lo - tol <= z1 <= z_hi + tol) or (z_lo - tol <= z2 <= z_hi + tol):
+                out.append((p1, p2, is_travel, is_extruding))
+    return out
+
+
+def _build_buffers_from_segments_subset(segments, travel_mode: str = 'solid'):
+    reset_anim_buffers()
+    buf = st.session_state.paths_anim_buf
+    for p1, p2, is_travel, _ in segments:
+        if is_travel:
+            if travel_mode == 'hidden':
+                continue
+            key = 'dot' if travel_mode == 'dotted' else 'solid'
+        else:
+            key = 'solid'
+        buf[key]['x'].extend([float(p1[0]), float(p2[0]), None])
+        buf[key]['y'].extend([float(p1[1]), float(p2[1]), None])
+        buf[key]['z'].extend([float(p1[2]), float(p2[2]), None])
+    buf['built_upto'] = len(segments)
+    buf['stride'] = 1
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
@@ -1749,6 +1799,28 @@ with right_col:
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
 
+        layer_z_values = _collect_layer_z_values(segments)
+        max_layer_no = len(layer_z_values)
+        view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
+        st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
+        if max_layer_no > 0:
+            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
+            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
+            c_layer1, c_layer2 = st.columns(2)
+            with c_layer1:
+                layer_view_start = st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, value=default_layer_start, step=1)
+            with c_layer2:
+                layer_view_end = st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, value=max(default_layer_end, int(layer_view_start)), step=1)
+            layer_view_start = int(layer_view_start)
+            layer_view_end = int(max(layer_view_start, layer_view_end))
+            st.session_state["layer_view_start"] = layer_view_start
+            st.session_state["layer_view_end"] = layer_view_end
+            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
+        else:
+            st.session_state["layer_view_start"] = 1
+            st.session_state["layer_view_end"] = 1
+            st.caption("레이어 범위: -")
+
         layer_z, layer_len = compute_layer_length_for_index(segments, target)
         if layer_z is not None and layer_len is not None:
             st.caption(f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · {layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)")
@@ -1762,29 +1834,49 @@ if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     DRAW_LIMIT = 150000
     draw_stride = 1
+    selected_only = bool(st.session_state.get("view_selected_layers_only", False))
+    layer_view_start = int(st.session_state.get("layer_view_start", 1))
+    layer_view_end = int(st.session_state.get("layer_view_end", layer_view_start))
 
-    built = st.session_state.paths_anim_buf["built_upto"]
-    prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-    mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+    if selected_only:
+        visible_segments = _filter_segments_by_layer_range(segments, layer_view_start, layer_view_end)
+        _build_buffers_from_segments_subset(visible_segments, travel_mode=st.session_state.paths_travel_mode)
+        st.session_state.paths_scrub = target
+        if bool(st.session_state.get("apply_offsets_flag", False)):
+            half_w = float(trim_dist) * 0.5
+            compute_offsets_into_buffers(visible_segments, len(visible_segments), half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
+            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+            add_global_endcaps_into_buffers(visible_segments, len(visible_segments), half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
+            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
+            dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
+        if visible_segments:
+            total_len = sum(float(np.linalg.norm(p2[:2] - p1[:2])) for (p1, p2, is_travel, is_extruding) in visible_segments if is_extruding)
+            st.markdown(f"**선택 레이어 총 길이:** {total_len/1000:.3f} m")
+    else:
+        built = st.session_state.paths_anim_buf["built_upto"]
+        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
 
-    if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
-    elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
+        if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
+        elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
 
-    st.session_state.paths_scrub = target
+        st.session_state.paths_scrub = target
 
-    if bool(st.session_state.get("apply_offsets_flag", False)):
-        half_w = float(trim_dist) * 0.5
-        compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-        st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-        add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-        bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
-        dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
+        if bool(st.session_state.get("apply_offsets_flag", False)):
+            half_w = float(trim_dist) * 0.5
+            compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
+            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
+            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
+            dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
+            dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
 
-    if segments is not None and target > 0:
-        total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
-        st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
+        if segments is not None and target > 0:
+            total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
+            st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
 else:
     if "paths_anim_buf" in st.session_state:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
