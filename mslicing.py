@@ -587,7 +587,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                clean = _clean_collinear(seg3d_no_dup)
+                # clean = _clean_collinear(seg3d_no_dup)  # ← 이 줄 맨 앞에 # 붙이기
+                clean = seg3d_no_dup  # ← 이 줄 새로 추가
                 
                 # 1. R이 없는 직각 상태에서 사용자가 지정한 시작점으로 먼저 정렬
                 shifted, _ = shift_to_nearest_start(clean, ref_point=ref_pt_layer)
