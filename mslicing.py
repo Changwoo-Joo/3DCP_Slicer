@@ -324,46 +324,66 @@ def _resample_closed_polyline_xy(poly: np.ndarray, spacing: float) -> np.ndarray
     return out
 
 
-def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
-    pts = np.asarray(poly, dtype=float)
-    if len(pts) < 4 or r_mm <= 0:
-        return pts.copy()
-
-    closed = np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
-    ring = pts.copy() if closed else np.vstack([pts, pts[0]])
-    if len(ring) < 4:
-        return pts.copy()
-
-    xy = ring[:, :2]
+def _resample_linestring_min_spacing(coords_xy: np.ndarray, spacing: float) -> np.ndarray:
+    coords_xy = np.asarray(coords_xy, dtype=float)
+    if coords_xy.ndim != 2 or coords_xy.shape[0] < 2:
+        return coords_xy
+    spacing = max(float(spacing), 1e-6)
     try:
-        poly2d = Polygon(xy)
+        line = LineString(coords_xy)
     except Exception:
-        return pts.copy()
-    if poly2d.is_empty or (not poly2d.is_valid) or poly2d.area <= 1e-9:
-        return pts.copy()
+        return coords_xy
+    total = float(line.length)
+    if not np.isfinite(total) or total <= 1e-9:
+        return coords_xy
+    dists = [0.0]
+    cur = spacing
+    while cur < total - 1e-9:
+        dists.append(cur)
+        cur += spacing
+    if total > dists[-1] + 1e-9:
+        dists.append(total)
+    pts = []
+    for d in dists:
+        pt = line.interpolate(d)
+        pts.append([pt.x, pt.y])
+    out = np.asarray(pts, dtype=float)
+    if out.shape[0] >= 2 and np.linalg.norm(out[-1] - out[0]) < 1e-9:
+        out = out[:-1]
+    return out
 
+def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_mm: float = 5.0) -> np.ndarray:
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4:
+        return seg3d_closed
+    if seg3d_closed.shape[1] < 3:
+        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    poly = Polygon(xy)
+    if poly.is_empty or not poly.is_valid or poly.area <= 1e-9:
+        return seg3d_closed
     try:
-        rounded = poly2d.buffer(-float(r_mm), join_style=1).buffer(float(r_mm), join_style=1)
+        rounded = poly.buffer(-r_mm, join_style=1).buffer(r_mm, join_style=1)
     except Exception:
-        return pts.copy()
-
+        return seg3d_closed
     if rounded.is_empty:
-        return pts.copy()
-
+        return seg3d_closed
     if isinstance(rounded, MultiPolygon):
-        rounded = max(list(rounded.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
+        rounded = max(rounded.geoms, key=lambda g: g.area if not g.is_empty else -1.0)
     if rounded.is_empty or rounded.area <= 1e-9:
-        return pts.copy()
-
+        return seg3d_closed
     coords = np.asarray(rounded.exterior.coords, dtype=float)
     if len(coords) < 4:
-        return pts.copy()
-
-    z_mean = float(np.mean(ring[:, 2]))
-    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_mean, dtype=float)])
-
-    arc_spacing = max(float(r_mm) / max(int(num_pts), 2), 1.0)
-    out = _resample_closed_polyline_xy(out, spacing=arc_spacing)
+        return seg3d_closed
+    dense = _resample_linestring_min_spacing(coords, spacing=float(spacing_mm))
+    if len(dense) < 3:
+        dense = coords[:-1]
+    out = np.column_stack([dense[:, 0], dense[:, 1], np.full(len(dense), z_val, dtype=float)])
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
     return out
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
