@@ -384,10 +384,14 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
 
         # 실제 선분 길이를 넘으면 해당 코너는 필렛 불가 → 스킵
         # (원하면 여기서 반경 축소 방식으로 바꿀 수 있음)
-        if d >= Lin - 1e-9 or d >= Lout - 1e-9:
+        max_d = min(Lin, Lout) - 1e-6
+        if max_d <= 1e-6:
             if np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
+        
+        if d > max_d:
+            d = max_d
 
         # 접점
         t1 = p1 - u_in * d
