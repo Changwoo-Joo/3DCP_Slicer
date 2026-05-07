@@ -114,8 +114,9 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
-    기존 RDP 알고리즘 대신, 지정된 min_dist(최소 점간격)에 따라
-    전체 경로를 등간격으로 쪼개서 리샘플링(Resampling)하는 함수로 변경.
+    전체를 등간격(min_dist)으로 쪼갠 뒤, 
+    일직선상에 있는 중간 점들은 제거하여 
+    직선은 양 끝점만 남기고, 곡선은 지정된 간격을 유지하도록 변경.
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
@@ -125,19 +126,41 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     s = _poly_arclen_s_xy(pts)
     total_length = float(s[-1])
     
-    # 길이가 간격보다 짧으면 시작점과 끝점만 반환
     if total_length <= min_dist:
         return np.vstack([pts[0], pts[-1]])
     
-    # 2. 0부터 total_length까지 min_dist 간격의 목표 거리(s_targets) 배열 생성
-    # 마지막 점을 보장하기 위해 분할 개수를 계산하여 등간격 배열 생성
+    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
     num_segments = max(1, int(np.round(total_length / min_dist)))
     s_targets = np.linspace(0.0, total_length, num_segments + 1)
-    
-    # 3. 기존에 구현된 _resample_polyline_by_s 함수를 호출하여 새로운 포인트 추출
     resampled_pts = _resample_polyline_by_s(pts, s_targets)
     
-    return resampled_pts
+    # 3. 일직선(Collinear) 검사하여 직선 구간의 중간 점 제거
+    if len(resampled_pts) <= 2:
+        return resampled_pts
+        
+    out = [resampled_pts[0]]
+    
+    for i in range(1, len(resampled_pts) - 1):
+        p_prev = out[-1]
+        p_curr = resampled_pts[i]
+        p_next = resampled_pts[i+1]
+        
+        v1 = p_curr - p_prev
+        v2 = p_next - p_curr
+        
+        L1_L2 = float(np.linalg.norm(v1[:2]) * np.linalg.norm(v2[:2]))
+        if L1_L2 < 1e-9:
+            continue
+            
+        # 외적을 이용해 꺾인 각도의 사인(sin)값을 구함
+        sin_angle = abs(v1[0]*v2[1] - v1[1]*v2[0]) / L1_L2
+        
+        # 꺾임이 거의 없는 직선(약 0.05도 이하)이면 점을 버리고, 곡선이면 살림
+        if sin_angle > 1e-3:
+            out.append(p_curr)
+            
+    out.append(resampled_pts[-1])
+    return np.asarray(out, dtype=float)
 def shift_to_nearest_start(segment, ref_point):
     idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
     return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
