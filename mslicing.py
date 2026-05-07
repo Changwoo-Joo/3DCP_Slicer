@@ -304,16 +304,12 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
-def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
-                          closed: bool = True,
-                          collinear_eps: float = 1e-9,
-                          min_seg_eps: float = 1e-9) -> np.ndarray:
+def fillet_closed_polygon_vertices(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
-    # 닫힌 루프면 중복 끝점 제거
-    if closed and np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
         pts = pts[:-1]
 
     n = len(pts)
@@ -332,45 +328,38 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
             return None
         qp = q[:2] - p[:2]
         t = (qp[0]*s[1] - qp[1]*s[0]) / cross_rs
-        inter = p.copy()
-        inter[:2] = p[:2] + t * r[:2]
-        return inter
+        out = p.copy()
+        out[:2] = p[:2] + t * r[:2]
+        return out
 
     out = []
 
-    indices = range(n) if closed else range(1, n - 1)
-
-    for i in indices:
-        i_prev = (i - 1) % n
-        i_next = (i + 1) % n
-
-        p0 = pts[i_prev].copy()
+    for i in range(n):
+        p0 = pts[(i - 1) % n].copy()
         p1 = pts[i].copy()
-        p2 = pts[i_next].copy()
+        p2 = pts[(i + 1) % n].copy()
 
-        vin = p1 - p0
-        vout = p2 - p1
+        v1 = p1 - p0
+        v2 = p2 - p1
+        L1 = norm2(v1)
+        L2 = norm2(v2)
 
-        Lin = norm2(vin)
-        Lout = norm2(vout)
-
-        if Lin < min_seg_eps or Lout < min_seg_eps:
+        if L1 < 1e-9 or L2 < 1e-9:
             if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        u_in = vin / Lin
-        u_out = vout / Lout
+        u1 = v1 / L1
+        u2 = v2 / L2
 
-        a = -u_in
-        b = u_out
+        a = -u1
+        b = u2
+        dotv = float(np.clip(np.dot(a[:2], b[:2]), -1.0, 1.0))
+        theta = float(np.arccos(dotv))
 
-        dot_ab = float(np.clip(np.dot(a[:2], b[:2]), -1.0, 1.0))
-        theta = float(np.arccos(dot_ab))
+        cross = u1[0]*u2[1] - u1[1]*u2[0]
 
-        cross_z = u_in[0]*u_out[1] - u_in[1]*u_out[0]
-
-        if theta < 1e-4 or abs(np.pi - theta) < 1e-4 or abs(cross_z) < collinear_eps:
+        if abs(cross) < 1e-9 or theta < 1e-6 or abs(np.pi - theta) < 1e-6:
             if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
@@ -382,20 +371,20 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
             continue
 
         d_req = float(r_mm / tan_half)
-        max_d = min(Lin, Lout) * 0.499999
-        if max_d <= 1e-6:
+        d_max = 0.5 * min(L1, L2) - 1e-6
+        if d_max <= 1e-6:
             if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
             continue
 
-        d = min(d_req, max_d)
+        d = min(d_req, d_max)
 
-        t1 = p1 - u_in * d
-        t2 = p1 + u_out * d
+        t1 = p1 - u1 * d
+        t2 = p1 + u2 * d
 
-        n1 = left_normal(u_in)
-        n2 = left_normal(u_out)
-        if cross_z < 0:
+        n1 = left_normal(u1)
+        n2 = left_normal(u2)
+        if cross < 0:
             n1 = -n1
             n2 = -n2
 
@@ -405,7 +394,9 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
                 out.append(p1.copy())
             continue
 
-        rr = norm2(t1 - center)
+        rr1 = norm2(t1 - center)
+        rr2 = norm2(t2 - center)
+        rr = 0.5 * (rr1 + rr2)
         if rr < 1e-9:
             if len(out) == 0 or np.linalg.norm((p1 - out[-1])[:2]) > 1e-9:
                 out.append(p1.copy())
@@ -417,7 +408,7 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
         ang1 = float(np.arctan2(t1[1] - center[1], t1[0] - center[0]))
         ang2 = float(np.arctan2(t2[1] - center[1], t2[0] - center[0]))
 
-        if cross_z > 0:
+        if cross > 0:
             if ang2 <= ang1:
                 ang2 += 2.0 * np.pi
             angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
@@ -426,21 +417,16 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8,
                 ang2 -= 2.0 * np.pi
             angs = np.linspace(ang1, ang2, int(max(2, num_pts)) + 1)
 
-        z1 = float(t1[2])
-        z2 = float(t2[2])
-
         for j, ang in enumerate(angs[1:], start=1):
             f = j / float(len(angs) - 1)
             x = center[0] + rr * np.cos(ang)
             y = center[1] + rr * np.sin(ang)
-            z = z1 + f * (z2 - z1)
+            z = t1[2] + f * (t2[2] - t1[2])
             out.append(np.array([x, y, z], dtype=float))
 
     out = np.asarray(out, dtype=float)
-
-    if closed:
-        if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
-            out = np.vstack([out, out[0]])
+    if len(out) > 1 and np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
     return out
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
@@ -620,11 +606,10 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(
+                    simplified = fillet_closed_polygon_vertices(
                         simplified,
                         r_mm=float(r_val),
-                        num_pts=int(res_val),
-                        closed=True
+                        num_pts=int(res_val)
                     )
 
                 # 4. 코너 주변점 처리
@@ -738,17 +723,13 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                simplified = simplify_segment(closed_mid, min_spacing)
-
+                
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(
-                        simplified,
-                        r_mm=float(r_val),
-                        num_pts=int(res_val),
-                        closed=True
-                    )
+                    closed_mid = fillet_closed_polygon_vertices(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
+                
+                simplified = simplify_segment(closed_mid, min_spacing)
 
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
