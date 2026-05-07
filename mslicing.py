@@ -582,7 +582,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 simplified = simplify_segment(closed_mid, min_spacing)
                 
                 # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
-                if st.session_state.get('enable_fillet', False) and _is_middle_layer(zidx, total_layers):
+                if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
@@ -701,7 +701,7 @@ def compute_slice_paths_with_travel(
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 simplified = simplify_segment(closed_mid, min_spacing)
 
-                if st.session_state.get('enable_fillet', False) and _is_middle_layer(zidx, total_layers):
+                if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
