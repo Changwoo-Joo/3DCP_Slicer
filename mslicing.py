@@ -74,7 +74,7 @@ def clamp(v, lo, hi):
 # Helpers (연산 로직)
 # =========================
 
-def _clean_collinear(pts: np.ndarray, eps: float = 1.5) -> np.ndarray:
+def _clean_collinear(pts: np.ndarray, eps: float = 0.01) -> np.ndarray:
     """RDP 알고리즘을 이용해 슬라이싱 과정의 미세한 찌그러짐을 펴고 진짜 뼈대(코너)만 완벽히 남깁니다."""
     pts = np.asarray(pts, dtype=float)
     if len(pts) <= 2:
