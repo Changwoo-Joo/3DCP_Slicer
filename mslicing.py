@@ -228,6 +228,83 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
+def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 3 or r_mm <= 0:
+        return pts.copy()
+
+    out = [pts[0].copy()]
+    for i in range(1, len(pts) - 1):
+        p0 = pts[i - 1]
+        p1 = pts[i]
+        p2 = pts[i + 1]
+
+        v1 = p0 - p1
+        v2 = p2 - p1
+        L1 = float(np.linalg.norm(v1[:2]))
+        L2 = float(np.linalg.norm(v2[:2]))
+
+        # 선분이 너무 짧으면 스킵
+        if L1 < 1e-5 or L2 < 1e-5:
+            out.append(p1.copy())
+            continue
+
+        u1 = v1 / L1
+        u2 = v2 / L2
+
+        dot = float(np.clip(np.dot(u1[:2], u2[:2]), -1.0, 1.0))
+        angle = float(np.arccos(dot))
+
+        # 일직선이거나 너무 예각이면 스킵
+        if angle < 1e-3 or angle > np.pi - 1e-3:
+            out.append(p1.copy())
+            continue
+
+        # 접점까지의 거리
+        d = r_mm / max(np.tan(angle / 2.0), 1e-9)
+
+        # 양쪽 선분의 절반을 넘지 않도록 R값(사실상 d값) 제한
+        max_d = min(L1 / 2.0, L2 / 2.0)
+        if d > max_d: d = max_d
+        
+        # 중심점 계산
+        b = u1 + u2
+        Lb = float(np.linalg.norm(b[:2]))
+        if Lb < 1e-5:
+            out.append(p1.copy())
+            continue
+        b = b / Lb
+
+        h = d / max(np.cos(angle / 2.0), 1e-9)
+        center = p1 + h * b
+
+        t1 = p1 + d * u1
+        t2 = p1 + d * u2
+        c2t1 = t1 - center
+        c2t2 = t2 - center
+
+        # Z축 높이 보간
+        z1 = p1[2] + (d / L1) * (p0[2] - p1[2]) if L1 > 0 else p1[2]
+        z2 = p1[2] + (d / L2) * (p2[2] - p1[2]) if L2 > 0 else p1[2]
+
+        ang1 = float(np.arctan2(c2t1[1], c2t1[0]))
+        ang2 = float(np.arctan2(c2t2[1], c2t2[0]))
+
+        # 최단 경로 호 각도 계산
+        diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
+        
+        # 호를 num_pts 개수만큼 쪼개어 좌표 추가
+        for j in range(num_pts + 1):
+            f = j / num_pts
+            cur_ang = ang1 + f * diff
+            x = center[0] + np.linalg.norm(c2t1[:2]) * np.cos(cur_ang)
+            y = center[1] + np.linalg.norm(c2t1[:2]) * np.sin(cur_ang)
+            z = z1 + f * (z2 - z1)
+            out.append(np.array([x, y, z]))
+    
+    out.append(pts[-1].copy())
+    return np.asarray(out, dtype=float)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
@@ -340,6 +417,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                
+                if st.session_state.get('enable_fillet', False):
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 start = simplified[0]
 
@@ -446,6 +528,11 @@ def compute_slice_paths_with_travel(
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                
+                if st.session_state.get('enable_fillet', False):
+                    r_val = st.session_state.get('fillet_r', 20.0)
+                    res_val = st.session_state.get('fillet_res', 8)
+                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
@@ -942,6 +1029,14 @@ seq_group_inner = st.sidebar.checkbox("내부 폐구간 그룹화", value=True, 
 with st.sidebar.expander("코너 주변점 옵션", expanded=False):
     enable_corner = st.checkbox("코너 주변점 활성화", value=False, key="enable_corner_points")
     corner_d = st.number_input("거리(mm)", min_value=0.0, max_value=1000.0, value=5.0, step=1.0, key="corner_neighbor_distance_mm", disabled=not enable_corner)
+
+with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
+    enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
+    fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
+    fillet_res = st.number_input("곡선 분할 갯수", min_value=2, max_value=50, value=8, step=1, key="fillet_res", disabled=not enable_fillet)
+
+trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
