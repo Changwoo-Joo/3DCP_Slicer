@@ -129,8 +129,8 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     if total_length <= min_dist:
         return np.vstack([pts[0], pts[-1]])
     
-    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
-    num_segments = max(1, int(np.round(total_length / min_dist)))
+    # 2. 등간격 배열 생성 및 리샘플링 (지정 간격보다 좁아지지 않도록 내림 연산 적용)
+    num_segments = max(1, int(total_length / min_dist))              # <--- np.round 제거
     s_targets = np.linspace(0.0, total_length, num_segments + 1)
     resampled_pts = _resample_polyline_by_s(pts, s_targets)
     
