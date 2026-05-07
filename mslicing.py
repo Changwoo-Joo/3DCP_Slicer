@@ -352,6 +352,54 @@ def _resample_linestring_min_spacing(coords_xy: np.ndarray, spacing: float) -> n
         out = out[:-1]
     return out
 
+def _compress_collinear_open_path(poly: np.ndarray, collinear_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if pts.ndim != 2 or len(pts) <= 2:
+        return pts
+    out = [pts[0].copy()]
+    for i in range(1, len(pts) - 1):
+        p_prev = out[-1]
+        p_curr = pts[i]
+        p_next = pts[i + 1]
+        v1 = p_curr[:2] - p_prev[:2]
+        v2 = p_next[:2] - p_curr[:2]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-9 or n2 <= 1e-9:
+            continue
+        cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        if cross > collinear_eps:
+            out.append(p_curr.copy())
+    out.append(pts[-1].copy())
+    return np.asarray(out, dtype=float)
+
+def _compress_closed_ring_straights(poly: np.ndarray, collinear_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if pts.ndim != 2 or len(pts) < 4:
+        return pts
+    ring = ensure_open_ring(pts)
+    if len(ring) < 3:
+        return pts
+    keep = []
+    n = len(ring)
+    for i in range(n):
+        p_prev = ring[(i - 1) % n]
+        p_curr = ring[i]
+        p_next = ring[(i + 1) % n]
+        v1 = p_curr[:2] - p_prev[:2]
+        v2 = p_next[:2] - p_curr[:2]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-9 or n2 <= 1e-9:
+            continue
+        cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        if cross > collinear_eps:
+            keep.append(p_curr.copy())
+    if len(keep) < 3:
+        keep = [ring[0].copy(), ring[len(ring)//2].copy(), ring[-1].copy()]
+    out = np.asarray(keep, dtype=float)
+    out = np.vstack([out, out[0]])
+    return out
 def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_mm: float = 5.0) -> np.ndarray:
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
     if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4:
@@ -384,7 +432,7 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     out = np.column_stack([dense[:, 0], dense[:, 1], np.full(len(dense), z_val, dtype=float)])
     if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
         out = np.vstack([out, out[0]])
-    return out
+    return _compress_closed_ring_straights(out)
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
