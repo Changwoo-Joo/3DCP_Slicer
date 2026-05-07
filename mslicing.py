@@ -574,29 +574,21 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                
-                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                
-                # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
-                simplified = simplify_segment(closed_mid, min_spacing)
-                
-                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
+                clean = _clean_collinear(seg3d_no_dup)
+                closed_mid = _make_seam_at_midpoint(clean)
+
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+                    closed_mid = _apply_fillet_to_path(closed_mid, r_mm=float(r_val), num_pts=int(res_val))
 
-                # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-                
-                # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                
-                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    closed_mid = _insert_corner_neighbors(closed_mid, d_mm=float(corner_distance))
+
+                shifted, _ = shift_to_nearest_start(closed_mid, ref_point=ref_pt_layer)
+                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                simplified = simplify_segment(trimmed, min_spacing)
 
                 start = simplified[0]
 
