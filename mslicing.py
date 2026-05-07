@@ -1081,6 +1081,10 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     else:
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
+    if show_caps:
+        fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
+    else:
+        fig.data[4].x = []; fig.data[4].y = []; fig.data[4].z = []
 
 # ======= 치수 계산 유틸 =======
 def _bbox_from_buffer(buf_dict):
