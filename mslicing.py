@@ -73,46 +73,6 @@ def clamp(v, lo, hi):
 # =========================
 # Helpers (연산 로직)
 # =========================
-
-def _clean_collinear(pts: np.ndarray, eps: float = 0.01) -> np.ndarray:
-    """RDP 알고리즘을 이용해 슬라이싱 과정의 미세한 찌그러짐을 펴고 진짜 뼈대(코너)만 완벽히 남깁니다."""
-    pts = np.asarray(pts, dtype=float)
-    if len(pts) <= 2:
-        return pts.copy()
-    
-    stack = [(0, len(pts)-1)]
-    keep = np.zeros(len(pts), dtype=bool)
-    keep[0] = True
-    keep[-1] = True
-    
-    while stack:
-        start, end = stack.pop()
-        if end - start <= 1:
-            continue
-        
-        p_start = pts[start][:2]
-        p_end = pts[end][:2]
-        line_vec = p_end - p_start
-        line_len = float(np.linalg.norm(line_vec))
-        
-        if line_len < 1e-9:
-            dists = np.linalg.norm(pts[start+1:end, :2] - p_start, axis=1)
-        else:
-            line_unit = line_vec / line_len
-            n_unit = np.array([-line_unit[1], line_unit[0]])
-            vecs = pts[start+1:end, :2] - p_start
-            dists = np.abs(np.dot(vecs, n_unit))
-            
-        max_idx = int(np.argmax(dists))
-        max_dist = dists[max_idx]
-        
-        if max_dist > eps:
-            actual_idx = start + 1 + max_idx
-            keep[actual_idx] = True
-            stack.append((start, actual_idx))
-            stack.append((actual_idx, end))
-            
-    return pts[keep]
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -169,8 +129,8 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     if total_length <= min_dist:
         return np.vstack([pts[0], pts[-1]])
     
-    # 2. 등간격 배열 생성 및 리샘플링 (지정 간격보다 좁아지지 않도록 내림 연산 적용)
-    num_segments = max(1, int(total_length / min_dist))              # <--- np.round 제거
+    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
+    num_segments = max(1, int(np.round(total_length / min_dist)))
     s_targets = np.linspace(0.0, total_length, num_segments + 1)
     resampled_pts = _resample_polyline_by_s(pts, s_targets)
     
@@ -587,28 +547,29 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                # clean = _clean_collinear(seg3d_no_dup)  # ← 이 줄 맨 앞에 # 붙이기
-                clean = seg3d_no_dup  # ← 이 줄 새로 추가
                 
-                # 1. R이 없는 직각 상태에서 사용자가 지정한 시작점으로 먼저 정렬
-                shifted, _ = shift_to_nearest_start(clean, ref_point=ref_pt_layer)
+                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 
-                # 2. 시작점 기준 트림 수행 (경로 열기) - 노즐 뭉침 방지를 위해 트림 유지
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
+                # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
+                simplified = simplify_segment(closed_mid, min_spacing)
                 
-                # 3. 직선 구간 점 제거 및 최소 간격 쪼개기
-                simplified = simplify_segment(trimmed, min_spacing)
-
-                # 4. 트림까지 완료된 열린 경로 상태에서 라운딩(R200 등) 완벽 적용
+                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
 
-                # 5. 코너 주변점 처리
+                # 4. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+                
+                # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                
+                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 start = simplified[0]
 
@@ -708,31 +669,26 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                clean = _clean_collinear(seg3d_no_dup)
-                
-                # 1. 직각 상태에서 사용자가 지정한 시작점으로 정렬
-                shifted, _ = shift_to_nearest_start(clean, ref_point=ref_pt_layer)
-                
-                # 2. 기준점 기준 트림 수행 (경로 열기)
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
-                
-                # 3. 최적화 및 점 간격 분할
-                simplified = simplify_segment(trimmed, min_spacing)
 
-                # 4. 필렛 적용 (열린 상태에서 코너 찾기)
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                simplified = simplify_segment(closed_mid, min_spacing)
+
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
-                
-                # 5. 코너 주변점 추가
+
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
 
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
+
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
+
             if not layer_polys:
                 continue
 
