@@ -113,39 +113,25 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
-    """
-    원래 슬라이스 폴리라인의 꼭짓점은 유지하고,
-    서로 너무 가까운 중간점만 제거합니다.
-    기존처럼 전체를 재샘플링하지 않아서 사다리꼴/예각/둔각 코너가 무너지지 않습니다.
-    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts.copy()
-
     out = [pts[0].copy()]
     for i in range(1, len(pts) - 1):
         p_prev = pts[i - 1]
         p_curr = pts[i]
         p_next = pts[i + 1]
-
         v1 = p_curr[:2] - p_prev[:2]
         v2 = p_next[:2] - p_curr[:2]
         L1 = float(np.linalg.norm(v1))
         L2 = float(np.linalg.norm(v2))
-
         is_corner = False
         if L1 > 1e-9 and L2 > 1e-9:
             sin_angle = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (L1 * L2)
             is_corner = sin_angle > 1e-3
-
-        if is_corner:
+        if is_corner or np.linalg.norm((p_curr - out[-1])[:2]) >= float(min_dist):
             if np.linalg.norm((p_curr - out[-1])[:2]) > 1e-6:
                 out.append(p_curr.copy())
-            continue
-
-        if np.linalg.norm((p_curr - out[-1])[:2]) >= float(min_dist):
-            out.append(p_curr.copy())
-
     if np.linalg.norm((pts[-1] - out[-1])[:2]) > 1e-6:
         out.append(pts[-1].copy())
     return np.asarray(out, dtype=float)
@@ -343,19 +329,18 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
             continue
 
         d = float(r_mm) / tan_half
-        d = min(d, 0.5 * L1, 0.5 * L2)
-        if d <= 1e-6:
+        # 요청한 R이 실제 두 변 길이에 맞지 않으면 축소하지 않고 해당 코너는 그대로 둠
+        if d >= L1 or d >= L2:
             _append_unique(out, p1)
             continue
 
-        r_eff = d * tan_half
         bis = u1 + u2
         bis_n = float(np.linalg.norm(bis))
         if bis_n < 1e-8:
             _append_unique(out, p1)
             continue
         bis = bis / bis_n
-        center_xy = p1[:2] + bis * (r_eff / sin_half)
+        center_xy = p1[:2] + bis * (float(r_mm) / sin_half)
 
         t1_xy = p1[:2] + u1 * d
         t2_xy = p1[:2] + u2 * d
@@ -364,8 +349,9 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
 
         rv1 = t1_xy - center_xy
         rv2 = t2_xy - center_xy
-        radius = 0.5 * (float(np.linalg.norm(rv1)) + float(np.linalg.norm(rv2)))
-        if radius <= 1e-6:
+        rad1 = float(np.linalg.norm(rv1))
+        rad2 = float(np.linalg.norm(rv2))
+        if rad1 < 1e-6 or rad2 < 1e-6:
             _append_unique(out, p1)
             continue
 
@@ -379,6 +365,7 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
 
         _append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
         steps = max(3, int(num_pts))
+        radius = float(r_mm)
         for j in range(1, steps):
             f = j / steps
             ang = a1 + diff * f
