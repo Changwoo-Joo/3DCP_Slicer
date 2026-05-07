@@ -381,6 +381,28 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     out.append(pts[-1].copy())
     return np.asarray(out, dtype=float)
 
+def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    max_idx = int(np.argmax(lens))
+
+    p1 = pts[max_idx]
+    p2 = pts[(max_idx + 1) % n]
+    mid = (p1 + p2) / 2.0
+
+    out = [mid]
+    for i in range(1, n + 1):
+        out.append(pts[(max_idx + i) % n].copy())
+    out.append(mid.copy())
+    return np.asarray(out, dtype=float)
+
 def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
     """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
     pts = np.asarray(segment, dtype=float)
@@ -647,18 +669,21 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-                trimmed = trim_closed_ring_tail(shifted, trim_dist)
-                simplified = simplify_segment(trimmed, min_spacing)
 
-                if st.session_state.get('enable_corner_points', False):
-                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-                
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                simplified = simplify_segment(closed_mid, min_spacing)
+
                 if st.session_state.get('enable_fillet', False):
                     r_val = st.session_state.get('fillet_r', 20.0)
                     res_val = st.session_state.get('fillet_res', 8)
                     simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), num_pts=int(res_val))
+
+                if st.session_state.get('enable_corner_points', False):
+                    corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
+                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
+
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
