@@ -163,52 +163,60 @@ def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     return np.asarray(out, dtype=float)
 def shift_to_nearest_start(segment, ref_point):
     """
-    사용자가 지정한 ref_point(X,Y)를 루프의 시작점으로 '정확히 삽입'하고,
-    그 점부터 경로를 재배치합니다.
-    반환되는 시작점 좌표는 항상 삽입된 exact best_pt 입니다.
+    단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
+    새로운 시작점을 삽입하고 배열을 재배치합니다.
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
         return pts, pts[0]
-
-    closed = np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
-    ring = pts[:-1].copy() if closed else pts.copy()
-    if len(ring) < 2:
-        return pts.copy(), pts[0].copy()
-
+        
     ref = np.array(ref_point[:2], dtype=float)
     min_dist = float('inf')
     best_pt = None
     best_idx = 0
-
-    n = len(ring)
-    seg_count = n if closed else n - 1
-    for i in range(seg_count):
-        p1 = ring[i]
-        p2 = ring[(i + 1) % n]
+    
+    # 모든 선분에 대해 가장 가까운 투영점 찾기
+    for i in range(len(pts) - 1):
+        p1 = pts[i]
+        p2 = pts[i+1]
+        
         v = p2[:2] - p1[:2]
-        vv = float(np.dot(v, v))
-        if vv < 1e-12:
+        w = ref - p1[:2]
+        
+        c1 = float(np.dot(w, v))
+        c2 = float(np.dot(v, v))
+        
+        if c1 <= 0:
             closest = p1.copy()
+        elif c2 <= c1:
+            closest = p2.copy()
         else:
-            t = float(np.dot(ref - p1[:2], v) / vv)
-            t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-            closest = p1 + t * (p2 - p1)
+            b = c1 / c2
+            closest = p1 + b * (p2 - p1)
+            
         d = float(np.linalg.norm(ref - closest[:2]))
         if d < min_dist:
             min_dist = d
-            best_pt = closest.copy()
+            best_pt = closest
             best_idx = i
-
-    out = [best_pt.copy()]
-    j = (best_idx + 1) % n
-    while j != (best_idx + 1) % n or len(out) == 1:
-        out.append(ring[j].copy())
-        j = (j + 1) % n
-        if j == (best_idx + 1) % n:
-            break
-    out.append(best_pt.copy())
-    return np.asarray(out, dtype=float), best_pt.copy()
+            
+    # 찾은 정확한 좌표를 삽입하고 배열을 재배치
+    if np.linalg.norm(best_pt - pts[best_idx]) < 1e-6:
+        shift_idx = best_idx
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    elif np.linalg.norm(best_pt - pts[best_idx+1]) < 1e-6:
+        shift_idx = best_idx + 1
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    else:
+        out_pts = [best_pt.copy()]
+        for j in range(best_idx + 1, len(pts) - 1):
+            out_pts.append(pts[j].copy())
+        for j in range(0, best_idx + 1):
+            out_pts.append(pts[j].copy())
+        out_pts.append(best_pt.copy())
+        out = np.asarray(out_pts, dtype=float)
+        
+    return out, best_pt
 
 def _poly_arclen_s_xy(poly: np.ndarray) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
@@ -301,94 +309,116 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
     if len(pts) < 3 or r_mm <= 0:
         return pts.copy()
 
-    def _cross2(a: np.ndarray, b: np.ndarray) -> float:
-        return float(a[0] * b[1] - a[1] * b[0])
-
-    def _append_unique(out_list, pt: np.ndarray, eps: float = 1e-6):
-        arr = np.asarray(pt, dtype=float)
-        if len(out_list) == 0 or np.linalg.norm((arr - out_list[-1])[:2]) > eps:
-            out_list.append(arr.copy())
-
-    closed = len(pts) >= 2 and np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
-    base = pts[:-1].copy() if closed else pts.copy()
-    n = len(base)
+    closed = np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
+    ring = pts[:-1].copy() if closed else pts.copy()
+    n = len(ring)
     if n < 3:
         return pts.copy()
 
-    out = [] if closed else [base[0].copy()]
+    def cross2(a, b):
+        return float(a[0] * b[1] - a[1] * b[0])
+
+    def line_intersection(p, d, q, e):
+        den = cross2(d, e)
+        if abs(den) < 1e-12:
+            return None
+        t = cross2(q - p, e) / den
+        return p + t * d
+
+    def left_normal(v):
+        return np.array([-v[1], v[0]], dtype=float)
+
+    def right_normal(v):
+        return np.array([v[1], -v[0]], dtype=float)
+
+    def append_unique(out_list, pt, eps=1e-6):
+        pt = np.asarray(pt, dtype=float)
+        if len(out_list) == 0 or np.linalg.norm((pt - out_list[-1])[:2]) > eps:
+            out_list.append(pt.copy())
+
+    out = [] if closed else [ring[0].copy()]
     idxs = range(n) if closed else range(1, n - 1)
 
     for i in idxs:
-        p0 = base[(i - 1) % n]
-        p1 = base[i]
-        p2 = base[(i + 1) % n]
+        p0 = ring[(i - 1) % n]
+        p1 = ring[i]
+        p2 = ring[(i + 1) % n]
 
-        v_in = p0[:2] - p1[:2]
-        v_out = p2[:2] - p1[:2]
-        L1 = float(np.linalg.norm(v_in))
-        L2 = float(np.linalg.norm(v_out))
+        t_in_vec = p1[:2] - p0[:2]
+        t_out_vec = p2[:2] - p1[:2]
+        L1 = float(np.linalg.norm(t_in_vec))
+        L2 = float(np.linalg.norm(t_out_vec))
         if L1 < 1e-6 or L2 < 1e-6:
-            _append_unique(out, p1)
+            append_unique(out, p1)
             continue
 
-        u1 = v_in / L1
-        u2 = v_out / L2
-        dot = float(np.clip(np.dot(u1, u2), -1.0, 1.0))
-        theta = float(np.arccos(dot))
-        if theta < 1e-5 or abs(np.pi - theta) < 1e-5:
-            _append_unique(out, p1)
+        t_in = t_in_vec / L1
+        t_out = t_out_vec / L2
+        dot = float(np.clip(np.dot(t_in, t_out), -1.0, 1.0))
+        phi = float(np.arccos(dot))
+        if phi < 1e-5 or abs(np.pi - phi) < 1e-5:
+            append_unique(out, p1)
             continue
 
-        tan_half = math.tan(theta / 2.0)
-        sin_half = math.sin(theta / 2.0)
-        if abs(tan_half) < 1e-9 or abs(sin_half) < 1e-9:
-            _append_unique(out, p1)
+        tan_half = math.tan(phi / 2.0)
+        if abs(tan_half) < 1e-9:
+            append_unique(out, p1)
             continue
 
         d = float(r_mm) / tan_half
-        if d >= L1 or d >= L2:
-            _append_unique(out, p1)
+        if d >= 0.5 * L1 or d >= 0.5 * L2:
+            append_unique(out, p1)
             continue
 
-        bis = u1 + u2
-        bis_n = float(np.linalg.norm(bis))
-        if bis_n < 1e-8:
-            _append_unique(out, p1)
-            continue
-        bis = bis / bis_n
-        center_xy = p1[:2] + bis * (float(r_mm) / sin_half)
-
-        t1_xy = p1[:2] + u1 * d
-        t2_xy = p1[:2] + u2 * d
-        z1 = float(p1[2] + (d / L1) * (p0[2] - p1[2]))
+        t1_xy = p1[:2] - t_in * d
+        t2_xy = p1[:2] + t_out * d
+        z1 = float(p1[2] - (d / L1) * (p1[2] - p0[2]))
         z2 = float(p1[2] + (d / L2) * (p2[2] - p1[2]))
 
-        rv1 = t1_xy - center_xy
-        rv2 = t2_xy - center_xy
-        rad1 = float(np.linalg.norm(rv1))
-        rad2 = float(np.linalg.norm(rv2))
-        if rad1 < 1e-6 or rad2 < 1e-6:
-            _append_unique(out, p1)
+        turn = cross2(t_in, t_out)
+        if turn > 0:
+            n1 = left_normal(t_in)
+            n2 = left_normal(t_out)
+        else:
+            n1 = right_normal(t_in)
+            n2 = right_normal(t_out)
+
+        center_xy = line_intersection(t1_xy, n1, t2_xy, n2)
+        if center_xy is None:
+            append_unique(out, p1)
             continue
 
-        a1 = float(math.atan2(rv1[1], rv1[0]))
-        a2 = float(math.atan2(rv2[1], rv2[0]))
-        cross = _cross2(rv1, rv2)
-        if cross >= 0:
-            diff = (a2 - a1) % (2.0 * math.pi)
-        else:
-            diff = -((a1 - a2) % (2.0 * math.pi))
+        r1 = t1_xy - center_xy
+        r2 = t2_xy - center_xy
+        rad1 = float(np.linalg.norm(r1))
+        rad2 = float(np.linalg.norm(r2))
+        if rad1 < 1e-6 or rad2 < 1e-6:
+            append_unique(out, p1)
+            continue
 
-        _append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
+        ang1 = float(math.atan2(r1[1], r1[0]))
+        ang2 = float(math.atan2(r2[1], r2[0]))
+
+        if turn > 0:
+            diff = ang2 - ang1
+            if diff <= 0:
+                diff += 2.0 * math.pi
+        else:
+            diff = ang2 - ang1
+            if diff >= 0:
+                diff -= 2.0 * math.pi
+
+        append_unique(out, np.array([t1_xy[0], t1_xy[1], z1], dtype=float))
         steps = max(4, int(num_pts))
+        radius = 0.5 * (rad1 + rad2)
         for j in range(1, steps):
             f = j / steps
-            ang = a1 + diff * f
-            x = center_xy[0] + float(r_mm) * math.cos(ang)
-            y = center_xy[1] + float(r_mm) * math.sin(ang)
+            ang = ang1 + diff * f
+            x = center_xy[0] + radius * math.cos(ang)
+            y = center_xy[1] + radius * math.sin(ang)
             z = z1 + f * (z2 - z1)
-            _append_unique(out, np.array([x, y, z], dtype=float))
-        _append_unique(out, np.array([t2_xy[0], t2_xy[1], z2], dtype=float))
+            append_unique(out, np.array([x, y, z], dtype=float))
+        append_unique(out, np.array([t2_xy[0], t2_xy[1], z2], dtype=float))
 
     if closed:
         if len(out) == 0:
@@ -398,15 +428,9 @@ def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np
         out.append(out[0].copy())
         return np.asarray(out, dtype=float)
 
-    _append_unique(out, base[-1])
+    append_unique(out, ring[-1])
     return np.asarray(out, dtype=float)
 
-
-def _is_middle_layer(zidx: int, total_layers: int) -> bool:
-    if total_layers <= 6:
-        return True
-    frac = zidx / max(1, total_layers - 1)
-    return 0.15 <= frac <= 0.85
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2:
@@ -554,7 +578,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
         z_values = make_slice_z_values(submesh, z_int)
 
-        total_layers = len(z_values)
         for zidx, z in enumerate(z_values):
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
@@ -575,27 +598,16 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 
-                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-
-                # 2. 직선/곡선 점 정리
                 simplified = simplify_segment(closed_mid, min_spacing)
-
-                # 3. 사용자가 지정한 시작점을 정확히 삽입하고 그 점부터 경로를 재배치
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-
-                # 4. 최종 출력 경로에 라운딩 적용
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
                     shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
-
-                # 5. 코너 주변점 처리
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
-
-                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 start = simplified[0]
@@ -674,8 +686,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        total_layers = len(z_values)
-        for zidx, z in enumerate(z_values):
+        for z in z_values:
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -700,18 +711,14 @@ def compute_slice_paths_with_travel(
 
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 simplified = simplify_segment(closed_mid, min_spacing)
-
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
                     res_val = int(st.session_state.get('fillet_res', 8))
                     shifted = _apply_fillet_to_path(shifted, r_mm=r_val, num_pts=res_val)
-
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
                     shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
-
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 layer_polys.append(simplified.copy())
