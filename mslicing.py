@@ -4,6 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
+from shapely.geometry import Polygon, MultiPolygon
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -304,85 +305,66 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
-def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, min_spacing_mm: float = 5.0) -> np.ndarray:
+def _resample_closed_polyline_xy(poly: np.ndarray, spacing: float) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
-    if len(pts) < 3 or r_mm <= 0:
+    if len(pts) < 2:
+        return pts.copy()
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) > 1e-9:
+        pts = np.vstack([pts, pts[0]])
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts.copy()
+    step = max(float(spacing), 1.0)
+    count = max(8, int(np.ceil(total / step)))
+    targets = np.linspace(0.0, total, count + 1)
+    out = _resample_polyline_by_s(pts, targets)
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+    return out
+
+
+def _apply_fillet_to_path(poly: np.ndarray, r_mm: float, num_pts: int = 8) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 4 or r_mm <= 0:
         return pts.copy()
 
-    out = [pts[0].copy()]
-    for i in range(1, len(pts) - 1):
-        p0 = pts[i - 1]
-        p1 = pts[i]
-        p2 = pts[i + 1]
+    closed = np.linalg.norm(pts[0, :2] - pts[-1, :2]) <= 1e-9
+    ring = pts.copy() if closed else np.vstack([pts, pts[0]])
+    if len(ring) < 4:
+        return pts.copy()
 
-        v1 = p0 - p1
-        v2 = p2 - p1
-        L1 = float(np.linalg.norm(v1[:2]))
-        L2 = float(np.linalg.norm(v2[:2]))
+    xy = ring[:, :2]
+    try:
+        poly2d = Polygon(xy)
+    except Exception:
+        return pts.copy()
+    if poly2d.is_empty or (not poly2d.is_valid) or poly2d.area <= 1e-9:
+        return pts.copy()
 
-        # 선분이 너무 짧으면 스킵
-        if L1 < 1e-5 or L2 < 1e-5:
-            out.append(p1.copy())
-            continue
+    try:
+        rounded = poly2d.buffer(-float(r_mm), join_style=1).buffer(float(r_mm), join_style=1)
+    except Exception:
+        return pts.copy()
 
-        u1 = v1 / L1
-        u2 = v2 / L2
+    if rounded.is_empty:
+        return pts.copy()
 
-        dot = float(np.clip(np.dot(u1[:2], u2[:2]), -1.0, 1.0))
-        angle = float(np.arccos(dot))
+    if isinstance(rounded, MultiPolygon):
+        rounded = max(list(rounded.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
+    if rounded.is_empty or rounded.area <= 1e-9:
+        return pts.copy()
 
-        # 일직선이거나 너무 예각이면 스킵
-        if angle < 1e-3 or angle > np.pi - 1e-3:
-            out.append(p1.copy())
-            continue
+    coords = np.asarray(rounded.exterior.coords, dtype=float)
+    if len(coords) < 4:
+        return pts.copy()
 
-        # 접점까지의 거리
-        d = r_mm / max(np.tan(angle / 2.0), 1e-9)
+    z_mean = float(np.mean(ring[:, 2]))
+    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_mean, dtype=float)])
 
-        # 양쪽 선분의 절반을 넘지 않도록 R값(사실상 d값) 제한
-        max_d = min(L1 / 2.0, L2 / 2.0)
-        if d > max_d: d = max_d
-        
-        # 중심점 계산
-        b = u1 + u2
-        Lb = float(np.linalg.norm(b[:2]))
-        if Lb < 1e-5:
-            out.append(p1.copy())
-            continue
-        b = b / Lb
-
-        h = d / max(np.cos(angle / 2.0), 1e-9)
-        center = p1 + h * b
-
-        t1 = p1 + d * u1
-        t2 = p1 + d * u2
-        c2t1 = t1 - center
-        c2t2 = t2 - center
-
-        # Z축 높이 보간
-        z1 = p1[2] + (d / L1) * (p0[2] - p1[2]) if L1 > 0 else p1[2]
-        z2 = p1[2] + (d / L2) * (p2[2] - p1[2]) if L2 > 0 else p1[2]
-
-        ang1 = float(np.arctan2(c2t1[1], c2t1[0]))
-        ang2 = float(np.arctan2(c2t2[1], c2t2[0]))
-
-        # 최단 경로 호 각도 계산
-        diff = (ang2 - ang1 + np.pi) % (2 * np.pi) - np.pi
-        
-        # 최소 점간격 기준으로만 호 분할
-        arc_len = abs(diff) * float(np.linalg.norm(c2t1[:2]))
-        min_spacing_mm = max(float(min_spacing_mm), 1e-6)
-        num_pts = max(2, int(np.ceil(arc_len / min_spacing_mm)))
-        for j in range(num_pts + 1):
-            f = j / num_pts
-            cur_ang = ang1 + f * diff
-            x = center[0] + np.linalg.norm(c2t1[:2]) * np.cos(cur_ang)
-            y = center[1] + np.linalg.norm(c2t1[:2]) * np.sin(cur_ang)
-            z = z1 + f * (z2 - z1)
-            out.append(np.array([x, y, z]))
-    
-    out.append(pts[-1].copy())
-    return np.asarray(out, dtype=float)
+    arc_spacing = max(float(r_mm) / max(int(num_pts), 2), 1.0)
+    out = _resample_closed_polyline_xy(out, spacing=arc_spacing)
+    return out
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
@@ -551,26 +533,18 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
                 
-                # 1. 코너 연산을 방해하지 않도록 이음매를 가장 긴 벽의 중간으로 임시 숨김
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                
-                # 2. 직선은 양끝만 남기고 곡선은 분할 (최소 점간격 적용)
                 simplified = simplify_segment(closed_mid, min_spacing)
-                
-                # 3. 온전한 닫힌 루프 상태에서 4개의 코너 모두에 라운딩 완벽 적용
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), min_spacing_mm=min_spacing)
-
-                # 4. 코너 주변점 처리
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-                
-                # 5. [핵심] 수직 투영 방식을 사용하여, 사용자가 입력한 X,Y에 가장 가까운 '정확한 선분 위 위치'를 찾아 시작점으로 지정
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                
-                # 6. 마지막으로 시작점 기준 트림 거리(mm)를 뒤에서부터 잘라냄
+                    shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 start = simplified[0]
@@ -674,16 +648,16 @@ def compute_slice_paths_with_travel(
 
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 simplified = simplify_segment(closed_mid, min_spacing)
-
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
-                    r_val = st.session_state.get('fillet_r', 20.0)
-                    simplified = _apply_fillet_to_path(simplified, r_mm=float(r_val), min_spacing_mm=min_spacing)
-
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    res_val = int(st.session_state.get('fillet_res', 8))
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, num_pts=res_val)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_corner_points', False):
                     corner_distance = st.session_state.get('corner_neighbor_distance_mm', 5.0)
-                    simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_distance))
-
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                    shifted = _insert_corner_neighbors(shifted, d_mm=float(corner_distance))
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
 
                 layer_polys.append(simplified.copy())
