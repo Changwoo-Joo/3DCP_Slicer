@@ -44,7 +44,7 @@ st.markdown(
       min-height: 48px !important;
       white-space: normal !important;
       word-break: break-word !important;
-      overflow-wrap: anywhere !important;
+      overflow-wrap: normal !important;
       text-align: center !important;
       line-height: 1.2 !important;
       padding: 0.5rem 0.55rem !important;
@@ -59,7 +59,7 @@ st.markdown(
     .stTabs [data-baseweb="tab"] div {
       white-space: normal !important;
       word-break: break-word !important;
-      overflow-wrap: anywhere !important;
+      overflow-wrap: normal !important;
       margin: 0 !important;
       line-height: 1.2 !important;
       text-align: center !important;
@@ -1534,7 +1534,7 @@ if st.session_state.get("access_key", ""):
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.info("G-code 생성과 R-code 생성을 사용하시려면 라이센스키를 입력해 주세요.")
+    st.sidebar.info("CODE를 생성하시려면 유효한 라이센스키를 입력하세요.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -2181,7 +2181,7 @@ with center_col:
     }
     .view-switch-item div[data-testid="stButton"] > button {
         white-space: normal !important;
-        word-break: keep-all !important;
+        word-break: normal !important;
         overflow-wrap: anywhere !important;
         min-height: 2.75rem;
         height: 100% !important;
@@ -2198,7 +2198,7 @@ with center_col:
     }
     .view-switch-item button p {
         white-space: normal !important;
-        word-break: keep-all !important;
+        word-break: normal !important;
         overflow-wrap: anywhere !important;
         margin: 0 !important;
         line-height: 1.2 !important;
