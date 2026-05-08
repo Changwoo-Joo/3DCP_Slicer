@@ -1961,7 +1961,7 @@ with right_col:
                 if segments is not None:
                     reset_anim_buffers()
         with cplay2:
-            if st.button("경로확인 종료", use_container_width=True):
+            if st.button("종료", use_container_width=True):
                 st.session_state.paths_check_mode = False
                 st.session_state.paths_is_playing = False
 
