@@ -1081,10 +1081,6 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
     else:
         fig.data[2].x = []; fig.data[2].y = []; fig.data[2].z = []
         fig.data[3].x = []; fig.data[3].y = []; fig.data[3].z = []
-    if show_caps:
-        fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
-    else:
-        fig.data[4].x = []; fig.data[4].y = []; fig.data[4].z = []
 
 # ======= 치수 계산 유틸 =======
 def _bbox_from_buffer(buf_dict):
@@ -1239,12 +1235,11 @@ if access_key:
 else:
     st.sidebar.warning("접근 키를 입력하세요.")
 
-uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], disabled=not KEY_OK)
+uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"])
 stl_unit_mode = st.sidebar.selectbox(
     "STL 단위",
     ["자동 감지", "mm", "m → mm (×1000)"],
     index=0,
-    disabled=not KEY_OK,
     help="첨부한 column_1x1x3_m.stl처럼 좌표가 0~3이면 m 단위로 보고 mm로 변환해야 합니다."
 )
 
@@ -1289,7 +1284,9 @@ m30_on = st.sidebar.checkbox("M30 추가", value=False)
 b1 = st.sidebar.container()
 b2 = st.sidebar.container()
 slice_clicked = b1.button("모델 슬라이싱", use_container_width=True)
-gen_clicked = b2.button("G-code 생성", use_container_width=True)
+gen_clicked = b2.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
+if gen_clicked and not KEY_OK:
+    st.sidebar.warning("인증키를 입력해야 G-code 생성을 사용할 수 있습니다.")
 
 if uploaded is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
@@ -1313,14 +1310,16 @@ if uploaded is not None:
     mesh.apply_transform(scale_matrix)
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
+    st.session_state.active_tab = "stl"
 
-if KEY_OK and slice_clicked and st.session_state.mesh is not None:
+if slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
         st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner
     )
     st.session_state.paths_items = items
+    st.session_state.active_tab = "paths"
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
@@ -1622,11 +1621,13 @@ def convert_gcode_to_rapid(
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
-if KEY_OK:
-    if st.sidebar.button("Rapid 생성", use_container_width=True):
-        st.session_state.show_rapid_panel = True
+rapid_clicked = st.sidebar.button("Rapid 생성", use_container_width=True, disabled=not KEY_OK)
+if rapid_clicked and not KEY_OK:
+    st.sidebar.warning("인증키를 입력해야 Rapid 생성을 사용할 수 있습니다.")
+if KEY_OK and rapid_clicked:
+    st.session_state.show_rapid_panel = True
 
-    if st.session_state.show_rapid_panel:
+if KEY_OK and st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid 설정", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
@@ -1889,7 +1890,17 @@ else:
 
 # ---- 중앙: 탭 뷰어 ----
 with center_col:
-    tab_paths, tab_stl, tab_gcode = st.tabs(["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"])
+    active_tab = st.session_state.get("active_tab", "paths")
+    tab_labels = ["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"]
+    default_index = 1 if active_tab == "stl" else (2 if active_tab == "gcode" else 0)
+    tab_paths, tab_stl, tab_gcode = st.tabs(tab_labels)
+
+    if active_tab == "stl":
+        st.caption("현재 기본 선택 탭: STL 미리보기")
+    elif active_tab == "paths":
+        st.caption("현재 기본 선택 탭: 슬라이싱 경로 (3D)")
+    elif active_tab == "gcode":
+        st.caption("현재 기본 선택 탭: G-code 뷰어")
 
     with tab_paths:
         if segments is not None and total_segments > 0:
