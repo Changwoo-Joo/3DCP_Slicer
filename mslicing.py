@@ -795,8 +795,7 @@ def compute_slice_paths_with_travel(
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
                 prev_z = float(prev_layer_last_end[2])
-                z_top = float(sub_mesh.bounds[1][2])
-                prev_was_top_group = abs(prev_z - z_top) <= 1e-9
+                prev_was_top_group = (top_print_z is not None) and (abs(prev_z - float(top_print_z)) <= 1e-6)
                 if prev_was_top_group:
                     safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
                     safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
@@ -2124,5 +2123,4 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
-
 
