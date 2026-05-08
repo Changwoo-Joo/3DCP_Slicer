@@ -29,11 +29,14 @@ st.markdown(
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
     .left-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
       max-height: calc(100vh - 2rem);
       overflow-y: auto;
       overflow-x: hidden;
       padding-right: 8px;
       scrollbar-gutter: stable;
+      min-height: 0;
     }
     .left-panel-scroll::-webkit-scrollbar,
     .right-panel::-webkit-scrollbar {
@@ -49,6 +52,30 @@ st.markdown(
     }
     .left-panel-scroll::-webkit-scrollbar-track,
     .right-panel::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
+    .center-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      scrollbar-gutter: stable;
+      padding-right: 4px;
+    }
+    .center-panel-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .center-panel-scroll::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .center-panel-scroll::-webkit-scrollbar-track {
       background: #f3f3f3;
       border-radius: 999px;
     }
@@ -942,10 +969,11 @@ def compute_layer_length_for_index(
     upto = min(max(int(upto_idx), 0), N)
 
     layer_z = None
-    for i in range(upto):
+    for i in range(upto - 1, -1, -1):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_extruding:
             layer_z = float((p1[2] + p2[2]) * 0.5)
+            break
     if layer_z is None:
         return None, None
 
@@ -2085,7 +2113,7 @@ else:
 
 # ---- 중앙: 뷰 전환 ----
 with center_col:
-    st.markdown('<div class="left-panel-scroll">', unsafe_allow_html=True)
+    st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
     st.markdown("""
     <style>
     div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
