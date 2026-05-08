@@ -744,6 +744,7 @@ def compute_slice_paths_with_travel(
 
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
+        top_print_z = float(max(z_values)) if z_values else None
 
         for z in z_values:
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
