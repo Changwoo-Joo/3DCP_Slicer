@@ -812,8 +812,16 @@ def compute_slice_paths_with_travel(
 
                 if i_seg < len(layer_polys) - 1:
                     nxt = layer_polys[i_seg + 1]
-                    travel_intra = np.vstack([poly[-1], nxt[0]])
-                    all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
+                    curr_end = poly[-1].copy()
+                    next_start = nxt[0].copy()
+                    safe_curr = curr_end.copy(); safe_curr[2] = safe_z_clearance
+                    safe_next = next_start.copy(); safe_next[2] = safe_z_clearance
+                    travel_up = np.vstack([curr_end, safe_curr])
+                    travel_xy = np.vstack([safe_curr, safe_next])
+                    travel_down = np.vstack([safe_next, next_start])
+                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
 
             prev_layer_last_end = layer_polys[-1][-1]
 
@@ -1425,13 +1433,9 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
-c_btn1, c_key, c_btn2 = st.sidebar.columns([1.15, 1.1, 1.15])
-with c_btn1:
-    slice_clicked = st.button("모델 슬라이싱", use_container_width=True)
-with c_key:
-    access_key = st.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
-with c_btn2:
-    gen_clicked = st.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
+slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
+access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
