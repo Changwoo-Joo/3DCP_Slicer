@@ -28,7 +28,7 @@ st.markdown(
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
-    .left-panel-scroll {
+    .profile-area-scroll {
       position: sticky;
       top: 2.0rem;
       max-height: calc(100vh - 2rem);
@@ -38,22 +38,32 @@ st.markdown(
       scrollbar-gutter: stable;
       min-height: 0;
     }
-    .left-panel-scroll::-webkit-scrollbar,
-    .right-panel::-webkit-scrollbar {
+    .profile-area-scroll::-webkit-scrollbar {
       width: 10px;
       height: 10px;
     }
-    .left-panel-scroll::-webkit-scrollbar-thumb,
-    .right-panel::-webkit-scrollbar-thumb {
+    .profile-area-scroll::-webkit-scrollbar-thumb {
       background: #c8c8c8;
       border-radius: 999px;
       border: 2px solid transparent;
       background-clip: padding-box;
     }
-    .left-panel-scroll::-webkit-scrollbar-track,
-    .right-panel::-webkit-scrollbar-track {
+    .profile-area-scroll::-webkit-scrollbar-track {
       background: #f3f3f3;
       border-radius: 999px;
+    }
+    .options-bottom-bar {
+      margin-top: 14px;
+      padding: 14px;
+      border-top: 1px solid #e6e6e6;
+      background: #fbfbfb;
+      position: sticky;
+      bottom: 0;
+      z-index: 8;
+    }
+    .options-bottom-title {
+      font-weight: 700;
+      margin-bottom: 8px;
     }
     .center-panel-scroll {
       position: sticky;
@@ -2012,134 +2022,23 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, split_col, right_col = st.columns([14, 0.28, 3], gap="small")
+center_col = st.container()
 
 segments = None
 total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
+apply_offsets = bool(st.session_state.get("apply_offsets_flag", False))
+include_z_climb = bool(st.session_state.get("include_z_climb_flag", True))
+emphasize_caps = bool(st.session_state.get("emphasize_caps_flag", False))
+travel_mode = st.session_state.get("paths_travel_mode", "solid") if e_on else "solid"
+prev_mode = st.session_state.get("paths_travel_mode", "solid")
+dims_placeholder = st.empty()
 
-with split_col:
-    st.markdown('<div class="mid-scrollbar"></div>', unsafe_allow_html=True)
 
-with right_col:
-    st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
-    if st.session_state.get("ui_banner"): st.success(st.session_state.ui_banner)
-
-    st.subheader("보기 옵션")
-    apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
-    st.session_state.apply_offsets_flag = bool(apply_offsets)
-
-    include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
-    emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
-
-    if e_on:
-        show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=True, disabled=(segments is None))
-        travel_mode = "dotted" if show_dotted else "hidden"
-    else:
-        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
-        travel_mode = "solid"
-    prev_mode = st.session_state.get("paths_travel_mode", "solid")
-    st.session_state.paths_travel_mode = travel_mode
-
-    dims_placeholder = st.empty()
-    st.markdown("---")
-
-    if segments is None or total_segments == 0:
-        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
-    else:
-        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        if "paths_scrub_slider_initialized" not in st.session_state:
-            st.session_state.paths_scrub_slider = default_val
-            st.session_state.paths_scrub_slider_initialized = True
-        if "paths_scrub_input_initialized" not in st.session_state:
-            st.session_state.paths_scrub_input = default_val
-            st.session_state.paths_scrub_input_initialized = True
-
-        st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
-        st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
-
-        target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
-
-        layer_z_values = _collect_layer_z_values(segments)
-        max_layer_no = len(layer_z_values)
-        view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
-        st.caption(f"총 레이어 수: {max_layer_no}")
-        st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
-        if max_layer_no > 0:
-            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
-            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
-            if "layer_view_start_input" not in st.session_state:
-                st.session_state["layer_view_start_input"] = default_layer_start
-            if "layer_view_end_input" not in st.session_state:
-                st.session_state["layer_view_end_input"] = default_layer_end
-            c_layer1, c_layer2 = st.columns(2)
-            with c_layer1:
-                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            with c_layer2:
-                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
-            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
-            st.session_state["layer_view_start"] = layer_view_start
-            st.session_state["layer_view_end"] = layer_view_end
-            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
-        else:
-            st.session_state["layer_view_start"] = 1
-            st.session_state["layer_view_end"] = 1
-            st.caption("레이어 범위: -")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# ---- 계산/버퍼 구성 ----
-if segments is not None and total_segments > 0:
-    target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    DRAW_LIMIT = 150000
-    draw_stride = 1
-    selected_only = bool(st.session_state.get("view_selected_layers_only", False))
-    layer_view_start = int(st.session_state.get("layer_view_start", 1))
-    layer_view_end = int(st.session_state.get("layer_view_end", layer_view_start))
-
-    if selected_only:
-        visible_segments = _filter_segments_by_layer_range(segments, layer_view_start, layer_view_end)
-        _build_buffers_from_segments_subset(visible_segments, travel_mode=st.session_state.paths_travel_mode)
-        st.session_state.paths_scrub = target
-        if bool(st.session_state.get("apply_offsets_flag", False)):
-            half_w = float(trim_dist) * 0.5
-            compute_offsets_into_buffers(visible_segments, len(visible_segments), half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-            add_global_endcaps_into_buffers(visible_segments, len(visible_segments), half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-        if visible_segments:
-            total_len = sum(float(np.linalg.norm(p2[:2] - p1[:2])) for (p1, p2, is_travel, is_extruding) in visible_segments if is_extruding)
-            st.markdown(f"**선택 레이어 총 길이:** {total_len/1000:.3f} m")
-    else:
-        built = st.session_state.paths_anim_buf["built_upto"]
-        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
-
-        if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
-        elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
-
-        st.session_state.paths_scrub = target
-
-        if bool(st.session_state.get("apply_offsets_flag", False)):
-            half_w = float(trim_dist) * 0.5
-            compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-
-        if segments is not None and target > 0:
-            total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
-            st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
-else:
-    if "paths_anim_buf" in st.session_state:
-        st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
-
-# ---- 중앙: 뷰 전환 ----
 with center_col:
-    st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
+    st.markdown('<div class="profile-area-scroll">', unsafe_allow_html=True)
     st.markdown("""
     <style>
     div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
@@ -2162,41 +2061,4 @@ with center_col:
 
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
     st.caption(f"현재 보기: {current_view}")
-
-    if current_view == "슬라이싱 경로 (3D)":
-        if segments is not None and total_segments > 0:
-            if "paths_base_fig" not in st.session_state:
-                st.session_state.paths_base_fig = make_base_fig(height=820)
-            fig = st.session_state.paths_base_fig
-            segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
-            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-            tm = st.session_state.paths_travel_mode
-            if not e_on:
-                travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
-            else:
-                travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
-            st.caption(
-                f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-                + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
-                + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
-                + (f" | {travel_lbl}")
-                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
-            )
-        else:
-            st.info("슬라이싱 결과가 없으면 경로가 표시되지 않습니다.")
-
-    elif current_view == "STL 미리보기":
-        if st.session_state.mesh is not None:
-            st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820), use_container_width=True, key="stl_chart", config={"displayModeBar": False})
-        else:
-            st.info("STL 업로드 후 미리보기가 표시됩니다.")
-
-    elif current_view == "G-code 뷰어":
-        if st.session_state.gcode_text:
-            st.text_area("G-code", st.session_state.gcode_text, height=820)
-        else:
-            st.info("G-code 생성 후 표시됩니다.")
-
 
