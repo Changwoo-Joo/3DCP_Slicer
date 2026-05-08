@@ -50,56 +50,57 @@ st.markdown(
     footer {visibility: hidden;}
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
-    
+
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
-    .stTabs { overflow: hidden !important; }
+    .stTabs { overflow: visible !important; }
     .stTabs [data-baseweb="tab-list"] {
       margin-top: 0.6rem !important;
-      display: grid !important;
-      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      display: flex !important;
+      flex-wrap: wrap !important;
       gap: 0.35rem !important;
       width: 100% !important;
       align-items: stretch !important;
-      overflow: hidden !important;
+      overflow: visible !important;
     }
     .stTabs [data-baseweb="tab"] {
-      width: 100% !important;
+      flex: 1 1 180px !important;
+      width: auto !important;
       max-width: 100% !important;
       min-width: 0 !important;
       height: auto !important;
       min-height: 48px !important;
       white-space: normal !important;
-      word-break: break-word !important;
-      overflow-wrap: normal !important;
+      word-break: keep-all !important;
+      overflow-wrap: anywhere !important;
       text-align: center !important;
-      line-height: 1.2 !important;
+      line-height: 1.25 !important;
       padding: 0.5rem 0.55rem !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      overflow: hidden !important;
+      overflow: visible !important;
       box-sizing: border-box !important;
     }
     .stTabs [data-baseweb="tab"] p,
     .stTabs [data-baseweb="tab"] span,
     .stTabs [data-baseweb="tab"] div {
       white-space: normal !important;
-      word-break: break-word !important;
-      overflow-wrap: normal !important;
+      word-break: keep-all !important;
+      overflow-wrap: anywhere !important;
       margin: 0 !important;
-      line-height: 1.2 !important;
+      line-height: 1.25 !important;
       text-align: center !important;
       max-width: 100% !important;
     }
-    @media (max-width: 1200px) {
-      .stTabs [data-baseweb="tab-list"] {
-        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    @media (max-width: 900px) {
+      .stTabs [data-baseweb="tab"] {
+        flex-basis: calc(50% - 0.35rem) !important;
       }
     }
-    @media (max-width: 760px) {
-      .stTabs [data-baseweb="tab-list"] {
-        grid-template-columns: minmax(0, 1fr) !important;
+    @media (max-width: 640px) {
+      .stTabs [data-baseweb="tab"] {
+        flex-basis: 100% !important;
       }
     }
 
@@ -167,7 +168,7 @@ st.markdown(
 
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.5rem;
+      font-size: 1.5625rem;
       font-weight: 700;
       line-height: 1.2;
     }
@@ -1372,13 +1373,13 @@ if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
 if "paths_scrub" not in st.session_state:
-    st.session_state.paths_scrub = 0
+    st.session_state.paths_scrub = None
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 if "paths_scrub_input" not in st.session_state:
-    st.session_state.paths_scrub_input = 0
+    st.session_state.paths_scrub_input = None
 if "paths_scrub_slider" not in st.session_state:
-    st.session_state.paths_scrub_slider = 0
+    st.session_state.paths_scrub_slider = None
 if "layer_view_start_input" not in st.session_state:
     st.session_state.layer_view_start_input = 1
 if "layer_view_end_input" not in st.session_state:
@@ -1463,7 +1464,7 @@ ensure_anim_buffers()
 # =========================
 # 접근 권한
 # =========================
-ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
+ALLOWED_WITH_EXPIRY = {"wnckddn!@": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
@@ -1620,6 +1621,8 @@ if slice_clicked and st.session_state.mesh is not None:
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
+    st.session_state.paths_scrub_slider = max_seg
+    st.session_state.paths_scrub_input = max_seg
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
     if max_seg == 0:
@@ -2288,3 +2291,5 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
+
+    
