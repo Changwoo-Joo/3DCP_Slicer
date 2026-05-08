@@ -53,54 +53,53 @@ st.markdown(
 
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
-    .stTabs { overflow: visible !important; }
+    .stTabs { overflow: hidden !important; }
     .stTabs [data-baseweb="tab-list"] {
       margin-top: 0.6rem !important;
-      display: flex !important;
-      flex-wrap: wrap !important;
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
       gap: 0.35rem !important;
       width: 100% !important;
       align-items: stretch !important;
-      overflow: visible !important;
+      overflow: hidden !important;
     }
     .stTabs [data-baseweb="tab"] {
-      flex: 1 1 180px !important;
-      width: auto !important;
+      width: 100% !important;
       max-width: 100% !important;
       min-width: 0 !important;
       height: auto !important;
       min-height: 48px !important;
       white-space: normal !important;
-      word-break: keep-all !important;
-      overflow-wrap: anywhere !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
       text-align: center !important;
-      line-height: 1.25 !important;
+      line-height: 1.2 !important;
       padding: 0.5rem 0.55rem !important;
       display: flex !important;
       align-items: center !important;
       justify-content: center !important;
-      overflow: visible !important;
+      overflow: hidden !important;
       box-sizing: border-box !important;
     }
     .stTabs [data-baseweb="tab"] p,
     .stTabs [data-baseweb="tab"] span,
     .stTabs [data-baseweb="tab"] div {
       white-space: normal !important;
-      word-break: keep-all !important;
-      overflow-wrap: anywhere !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
       margin: 0 !important;
-      line-height: 1.25 !important;
+      line-height: 1.2 !important;
       text-align: center !important;
       max-width: 100% !important;
     }
-    @media (max-width: 900px) {
-      .stTabs [data-baseweb="tab"] {
-        flex-basis: calc(50% - 0.35rem) !important;
+    @media (max-width: 1200px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
       }
     }
-    @media (max-width: 640px) {
-      .stTabs [data-baseweb="tab"] {
-        flex-basis: 100% !important;
+    @media (max-width: 760px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: minmax(0, 1fr) !important;
       }
     }
 
@@ -168,7 +167,7 @@ st.markdown(
 
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.5625rem;
+      font-size: 1.5rem;
       font-weight: 700;
       line-height: 1.2;
     }
@@ -1373,13 +1372,13 @@ if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
 if "paths_scrub" not in st.session_state:
-    st.session_state.paths_scrub = None
+    st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 if "paths_scrub_input" not in st.session_state:
-    st.session_state.paths_scrub_input = None
+    st.session_state.paths_scrub_input = 0
 if "paths_scrub_slider" not in st.session_state:
-    st.session_state.paths_scrub_slider = None
+    st.session_state.paths_scrub_slider = 0
 if "layer_view_start_input" not in st.session_state:
     st.session_state.layer_view_start_input = 1
 if "layer_view_end_input" not in st.session_state:
@@ -1552,6 +1551,7 @@ m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
 access_key = st.sidebar.text_input("라이선스키", type="password", key="access_key", help="라이선스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+
 if st.session_state.get("access_key", ""):
     if KEY_OK:
         if EXP_DATE is None:
@@ -1563,6 +1563,24 @@ if st.session_state.get("access_key", ""):
         st.sidebar.error(STATUS_TXT)
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
+
+if KEY_OK and LOG_FILE.exists():
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
+            csv_text = f.read()
+        st.sidebar.download_button(
+            "접속 로그 CSV 다운로드",
+            data=csv_text,
+            file_name="access_log.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_access_log_csv",
+        )
+    except Exception as e:
+        st.sidebar.error(f"CSV 파일 읽기 오류: {e}")
+elif KEY_OK:
+    st.sidebar.info("아직 저장된 접속 로그가 없습니다.")
+
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -1621,8 +1639,6 @@ if slice_clicked and st.session_state.mesh is not None:
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
-    st.session_state.paths_scrub_slider = max_seg
-    st.session_state.paths_scrub_input = max_seg
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
     if max_seg == 0:
@@ -2094,13 +2110,9 @@ with right_col:
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
-        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        if "paths_scrub_slider_initialized" not in st.session_state:
-            st.session_state.paths_scrub_slider = default_val
-            st.session_state.paths_scrub_slider_initialized = True
-        if "paths_scrub_input_initialized" not in st.session_state:
-            st.session_state.paths_scrub_input = default_val
-            st.session_state.paths_scrub_input_initialized = True
+        default_val = int(clamp(st.session_state.get("paths_scrub", total_segments), 0, total_segments))
+        st.session_state.paths_scrub_slider = int(clamp(st.session_state.get("paths_scrub_slider", total_segments), 0, total_segments))
+        st.session_state.paths_scrub_input = int(clamp(st.session_state.get("paths_scrub_input", total_segments), 0, total_segments))
 
         st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
         st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
@@ -2291,5 +2303,3 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
-
-    
