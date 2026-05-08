@@ -102,14 +102,21 @@ st.markdown(
       font-weight: 700;
       line-height: 1.2;
     }
-    .profile-topbar {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+     .profile-topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
       gap: 0.75rem;
-      align-items: start;
-      margin-bottom: 0.4rem;
+      width: 100%;
+      margin-bottom: 0.5rem;
+    }
+    .profile-main-menu {
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .profile-stats {
+      flex: 0 0 auto;
+      margin-left: auto;
       text-align: right;
       white-space: nowrap;
       font-size: 0.92rem;
@@ -133,12 +140,12 @@ st.markdown(
       background: #fafafa;
       height: 100%;
     }
-    .profile-main-menu > div[data-testid="stHorizontalBlock"] {
+     .profile-main-menu > div[data-testid="stHorizontalBlock"] {
       display: grid !important;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.5rem;
-      align-items: stretch;
-      width: 100%;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      gap: 0.45rem !important;
+      align-items: stretch !important;
+      width: 100% !important;
     }
     .profile-main-menu [data-testid="column"] {
       min-width: 0 !important;
@@ -148,17 +155,17 @@ st.markdown(
     .profile-main-menu [data-testid="stButton"] {
       width: 100%;
     }
-    .profile-main-menu [data-testid="stButton"] > button {
-      width: 100%;
-      min-height: 48px;
-      max-width: 100%;
+     .profile-main-menu [data-testid="stButton"] > button {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-height: 46px !important;
       white-space: normal !important;
-      word-break: break-word;
-      overflow-wrap: anywhere;
-      line-height: 1.25;
-      text-align: center;
-      padding: 0.65rem 0.5rem;
-      font-size: clamp(0.82rem, 1.6vw, 1rem);
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
+      line-height: 1.15 !important;
+      text-align: center !important;
+      padding: 0.55rem 0.45rem !important;
+      font-size: clamp(0.72rem, 1.4vw, 0.98rem) !important;
     }
     @media (max-width: 1200px) {
       .view-options-grid {
@@ -170,21 +177,30 @@ st.markdown(
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       }
     }
-    @media (max-width: 900px) {
+    @media (max-width: 1100px) {
+      .profile-main-menu > div[data-testid="stHorizontalBlock"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      }
+    }
+    @media (max-width: 820px) {
       .profile-topbar {
-        grid-template-columns: 1fr;
+        flex-direction: column;
       }
       .profile-stats {
-        text-align: left;
+        width: 100%;
+        text-align: right;
         white-space: normal;
       }
       .profile-main-menu > div[data-testid="stHorizontalBlock"] {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
       }
     }
     @media (max-width: 640px) {
       .profile-main-menu > div[data-testid="stHorizontalBlock"] {
-        grid-template-columns: 1fr;
+        grid-template-columns: 1fr !important;
+      }
+      .profile-main-menu [data-testid="stButton"] > button {
+        font-size: 0.92rem !important;
       }
       .view-options-grid {
         grid-template-columns: 1fr;
@@ -2180,7 +2196,11 @@ with center_col:
     with v3:
         if st.button("G-code 뷰어", use_container_width=True):
             st.session_state.main_view = "G-code 뷰어"
-
+    st.markdown("</div>", unsafe_allow_html=True)
+    if current_length_m is not None:
+        st.markdown(f"<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>{current_length_m:.3f} m</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>-</div>", unsafe_allow_html=True)
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
 
     if current_view == "슬라이싱 경로 (3D)":
