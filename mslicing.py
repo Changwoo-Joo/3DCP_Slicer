@@ -26,28 +26,54 @@ st.markdown(
 
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
+    .stTabs { overflow: hidden !important; }
     .stTabs [data-baseweb="tab-list"] {
       margin-top: 0.6rem !important;
-      display: flex !important;
-      flex-wrap: wrap !important;
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
       gap: 0.35rem !important;
+      width: 100% !important;
+      align-items: stretch !important;
+      overflow: hidden !important;
     }
     .stTabs [data-baseweb="tab"] {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
       height: auto !important;
-      min-height: 42px !important;
+      min-height: 48px !important;
       white-space: normal !important;
-      word-break: keep-all !important;
+      word-break: break-word !important;
+      overflow-wrap: anywhere !important;
       text-align: center !important;
       line-height: 1.2 !important;
-      padding: 0.45rem 0.7rem !important;
-      flex: 1 1 140px !important;
+      padding: 0.5rem 0.55rem !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
     }
-    .stTabs [data-baseweb="tab"] p {
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span,
+    .stTabs [data-baseweb="tab"] div {
       white-space: normal !important;
-      word-break: keep-all !important;
+      word-break: break-word !important;
       overflow-wrap: anywhere !important;
       margin: 0 !important;
       line-height: 1.2 !important;
+      text-align: center !important;
+      max-width: 100% !important;
+    }
+    @media (max-width: 1200px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      }
+    }
+    @media (max-width: 760px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: minmax(0, 1fr) !important;
+      }
     }
 
     .left-panel-scroll {
@@ -114,7 +140,7 @@ st.markdown(
 
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.4125rem;
+      font-size: 1.5rem;
       font-weight: 700;
       line-height: 1.2;
     }
@@ -1508,7 +1534,7 @@ if st.session_state.get("access_key", ""):
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.info("라이센스키를 입력하면 만료일 알림이 여기에 표시됩니다.")
+    st.sidebar.info("G-code 생성과 R-code 생성을 사용하려면 라이센스키를 입력해 주세요. 인증 후 이 영역에 만료일 안내가 표시됩니다.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -1865,9 +1891,9 @@ def convert_gcode_to_rapid(
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
-rapid_clicked = st.sidebar.button("Rapid 생성", use_container_width=True, disabled=not KEY_OK)
+rapid_clicked = st.sidebar.button("R-code 생성", use_container_width=True, disabled=not KEY_OK)
 if rapid_clicked and not KEY_OK:
-    st.sidebar.warning("인증키를 입력해야 Rapid 생성을 사용할 수 있습니다.")
+    st.sidebar.warning("인증키를 입력해야 R-code 생성을 사용할 수 있습니다.")
 if KEY_OK and rapid_clicked:
     st.session_state.show_rapid_panel = True
 
