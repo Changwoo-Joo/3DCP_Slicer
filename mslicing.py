@@ -2248,7 +2248,6 @@ with center_col:
             if e_on:
                 travel_mode = "dotted" if show_dotted else "hidden"
             else:
-                st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
                 travel_mode = "solid"
             prev_mode = st.session_state.get("paths_travel_mode", "solid")
             st.session_state.paths_travel_mode = travel_mode
