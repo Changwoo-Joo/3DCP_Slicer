@@ -115,27 +115,29 @@ st.markdown(
       background: #fafafa;
       height: 100%;
     }
-    .profile-main-menu [data-testid="stHorizontalBlock"] {
-      display: flex !important;
-      flex-wrap: wrap !important;
-      row-gap: 0.5rem;
-      column-gap: 0.5rem;
+    .profile-main-menu > div[data-testid="stHorizontalBlock"] {
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.5rem;
       align-items: stretch;
     }
     .profile-main-menu [data-testid="column"] {
-      min-width: 0;
-      flex: 1 1 220px !important;
+      min-width: 0 !important;
+      width: 100% !important;
+      flex: unset !important;
+    }
+    .profile-main-menu [data-testid="stButton"] {
+      width: 100%;
     }
     .profile-main-menu [data-testid="stButton"] > button {
       width: 100%;
-      min-height: 44px;
+      min-height: 48px;
       white-space: normal !important;
       word-break: keep-all;
       overflow-wrap: anywhere;
       line-height: 1.25;
       text-align: center;
-      padding-top: 0.6rem;
-      padding-bottom: 0.6rem;
+      padding: 0.65rem 0.75rem;
     }
     @media (max-width: 1200px) {
       .view-options-grid {
@@ -148,13 +150,13 @@ st.markdown(
       }
     }
     @media (max-width: 900px) {
-      .profile-main-menu [data-testid="column"] {
-        flex-basis: calc(50% - 0.5rem) !important;
+      .profile-main-menu > div[data-testid="stHorizontalBlock"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
       }
     }
     @media (max-width: 640px) {
-      .profile-main-menu [data-testid="column"] {
-        flex-basis: 100% !important;
+      .profile-main-menu > div[data-testid="stHorizontalBlock"] {
+        grid-template-columns: 1fr;
       }
       .view-options-grid {
         grid-template-columns: 1fr;
@@ -2093,7 +2095,7 @@ if segments is not None and total_segments > 0:
 
     if selected_only:
         visible_segments = _filter_segments_by_layer_range(segments, layer_view_start, layer_view_end)
-        _build_buffers_from_segments_subset(visible_segments, travel_mode=st.session_state.paths_travel_mode)
+        _build_buffers_from_segments_subset(segments[:target], travel_mode=st.session_state.paths_travel_mode)
         st.session_state.paths_scrub = target
         if bool(st.session_state.get("apply_offsets_flag", False)):
             half_w = float(trim_dist) * 0.5
@@ -2158,7 +2160,8 @@ with center_col:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
-            segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
+            segments_hover_src = segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
+
             update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -2219,43 +2222,16 @@ with center_col:
                 travel_mode = "solid"
             prev_mode = st.session_state.get("paths_travel_mode", "solid")
             st.session_state.paths_travel_mode = travel_mode
-            st.caption(f"총 레이어 수: {len(_collect_layer_z_values(segments))}")
             st.caption(f"현재 보기: {current_view}")
 
         with c_opt2:
             c_prog1, c_prog2 = st.columns([2.3, 1.0])
             with c_prog1:
                 st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
-            with c_prog2:
-                view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
-                st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
         target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
-        layer_z_values = _collect_layer_z_values(segments)
-        max_layer_no = len(layer_z_values)
-        if max_layer_no > 0:
-            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
-            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
-            if "layer_view_start_input" not in st.session_state:
-                st.session_state["layer_view_start_input"] = default_layer_start
-            if "layer_view_end_input" not in st.session_state:
-                st.session_state["layer_view_end_input"] = default_layer_end
-            c_layer1, c_layer2 = st.columns(2)
-            with c_layer1:
-                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            with c_layer2:
-                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
-            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
-            st.session_state["layer_view_start"] = layer_view_start
-            st.session_state["layer_view_end"] = layer_view_end
-            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
-        else:
-            st.session_state["layer_view_start"] = 1
-            st.session_state["layer_view_end"] = 1
-            st.caption("레이어 범위: -")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.caption(f"현재 보기: {current_view}")
