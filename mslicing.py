@@ -1272,6 +1272,9 @@ def _sync_layer_inputs(max_layer_no: int):
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
+if "main_view" not in st.session_state:
+    st.session_state.main_view = "슬라이싱 경로 (3D)"
+
 if "ext_const_enable_a1" not in st.session_state:
     st.session_state.ext_const_enable_a1 = False
 if "ext_const_enable_a2" not in st.session_state:
@@ -1475,8 +1478,7 @@ if uploaded is not None:
 
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
-    st.session_state.active_tab = "stl"
-    st.session_state.tab_click_target = "STL 미리보기"
+    st.session_state.main_view = "STL 미리보기"
 
 if slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
@@ -1488,8 +1490,7 @@ if slice_clicked and st.session_state.mesh is not None:
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
     st.session_state.paths_items = items
-    st.session_state.active_tab = "paths"
-    st.session_state.tab_click_target = "슬라이싱 경로 (3D)"
+    st.session_state.main_view = "슬라이싱 경로 (3D)"
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
@@ -2056,35 +2057,21 @@ else:
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
 
-# ---- 중앙: 탭 뷰어 ----
+# ---- 중앙: 뷰 전환 ----
 with center_col:
-    active_tab = st.session_state.get("active_tab", "paths")
-    tab_labels = ["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"]
-    default_index = 1 if active_tab == "stl" else (2 if active_tab == "gcode" else 0)
-    tab_paths, tab_stl, tab_gcode = st.tabs(tab_labels)
+    view_options = ["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"]
+    current_view = st.segmented_control(
+        "보기",
+        options=view_options,
+        selection_mode="single",
+        default=st.session_state.get("main_view", "슬라이싱 경로 (3D)"),
+        key="main_view_selector",
+    )
+    if current_view is None:
+        current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
+    st.session_state.main_view = current_view
 
-    _tab_click_target = st.session_state.get("tab_click_target", None)
-    if _tab_click_target:
-        st.markdown(f"""
-        <script>
-        (function() {{
-            const target = {repr('__TARGET__')};
-            const labels = Array.from(window.parent.document.querySelectorAll('button[role="tab"]'));
-            const btn = labels.find(el => (el.innerText || el.textContent || '').trim() === target);
-            if (btn) {{ btn.click(); }}
-        }})();
-        </script>
-        """.replace('__TARGET__', _tab_click_target), unsafe_allow_html=True)
-        st.session_state.tab_click_target = None
-
-    if active_tab == "stl":
-        st.caption("현재 기본 선택 탭: STL 미리보기")
-    elif active_tab == "paths":
-        st.caption("현재 기본 선택 탭: 슬라이싱 경로 (3D)")
-    elif active_tab == "gcode":
-        st.caption("현재 기본 선택 탭: G-code 뷰어")
-
-    with tab_paths:
+    if current_view == "슬라이싱 경로 (3D)":
         if segments is not None and total_segments > 0:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
@@ -2094,8 +2081,10 @@ with center_col:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             tm = st.session_state.paths_travel_mode
-            if not e_on: travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
-            else: travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
+            if not e_on:
+                travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
+            else:
+                travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
             st.caption(
                 f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
                 + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
@@ -2104,19 +2093,18 @@ with center_col:
                 + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
-            st.info("슬라이싱을 실행하세요.")
+            st.info("슬라이싱 결과가 없으면 경로가 표시되지 않습니다.")
 
-    with tab_stl:
-        if st.session_state.get("mesh") is not None:
+    elif current_view == "STL 미리보기":
+        if st.session_state.mesh is not None:
             st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820), use_container_width=True, key="stl_chart", config={"displayModeBar": False})
         else:
-            st.info("STL을 업로드하세요.")
+            st.info("STL 업로드 후 미리보기가 표시됩니다.")
 
-    with tab_gcode:
-        if st.session_state.get("gcode_text"):
-            st.code(st.session_state.gcode_text, language="gcode")
+    elif current_view == "G-code 뷰어":
+        if st.session_state.gcode_text:
+            st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
-            st.info("G-code를 생성하세요.")
+            st.info("G-code 생성 후 표시됩니다.")
 
-if not KEY_OK:
-    st.warning("유효한 접근 키를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+
