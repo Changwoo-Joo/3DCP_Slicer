@@ -1534,7 +1534,7 @@ if st.session_state.get("access_key", ""):
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.info("G-code 생성과 R-code 생성을 사용하려면 라이센스키를 입력해 주세요. 인증 후 이 영역에 만료일 안내가 표시됩니다.")
+    st.sidebar.info("G-code와 R-code를 생성하시려면 유효한 라이센스키를 입력해 주세요.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -2157,23 +2157,66 @@ with center_col:
     st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
     st.markdown("""
     <style>
-    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
-        white-space: nowrap;
-        padding-left: 0.6rem;
-        padding-right: 0.6rem;
+    .view-switch-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: stretch;
+        width: 100%;
+        margin-bottom: 0.35rem;
+    }
+    .view-switch-item {
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+    .view-switch-item div[data-testid="stButton"] {
+        width: 100%;
+    }
+    .view-switch-item div[data-testid="stButton"] > button {
+        white-space: normal !important;
+        word-break: keep-all !important;
+        overflow-wrap: anywhere !important;
+        min-height: 2.6rem;
+        height: auto !important;
+        padding: 0.45rem 0.75rem !important;
+        line-height: 1.2 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: auto !important;
+        max-width: 100%;
+    }
+    .view-switch-item button p {
+        white-space: normal !important;
+        word-break: keep-all !important;
+        overflow-wrap: anywhere !important;
+        margin: 0 !important;
+        line-height: 1.2 !important;
+        text-align: center !important;
     }
     </style>
     """, unsafe_allow_html=True)
-    v1, v2, v3, _sp = st.columns([1.05, 1.0, 0.95, 5.0])
-    with v1:
-        if st.button("슬라이싱 경로 (3D)", use_container_width=True):
+    current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
+    st.markdown('<div class="view-switch-wrap">', unsafe_allow_html=True)
+    b1, b2, b3, _sp = st.columns([1.45, 1.05, 1.0, 4.5])
+    with b1:
+        st.markdown('<div class="view-switch-item">', unsafe_allow_html=True)
+        if st.button("슬라이싱 경로
+(3D)", key="view_btn_path"):
             st.session_state.main_view = "슬라이싱 경로 (3D)"
-    with v2:
-        if st.button("STL 미리보기", use_container_width=True):
+        st.markdown('</div>', unsafe_allow_html=True)
+    with b2:
+        st.markdown('<div class="view-switch-item">', unsafe_allow_html=True)
+        if st.button("STL 미리보기", key="view_btn_stl"):
             st.session_state.main_view = "STL 미리보기"
-    with v3:
-        if st.button("G-code 뷰어", use_container_width=True):
+        st.markdown('</div>', unsafe_allow_html=True)
+    with b3:
+        st.markdown('<div class="view-switch-item">', unsafe_allow_html=True)
+        if st.button("G-code 뷰어", key="view_btn_gcode"):
             st.session_state.main_view = "G-code 뷰어"
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
     st.caption(f"현재 보기: {current_view}")
