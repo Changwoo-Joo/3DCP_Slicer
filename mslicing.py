@@ -794,8 +794,14 @@ def compute_slice_paths_with_travel(
 
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
-                travel = np.vstack([prev_layer_last_end, first_poly_start])
-                all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+                safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
+                safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
+                travel_up = np.vstack([prev_layer_last_end, safe_prev])
+                travel_xy = np.vstack([safe_prev, safe_next])
+                travel_down = np.vstack([safe_next, first_poly_start])
+                all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
+                all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
+                all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
 
             for i_seg in range(len(layer_polys)):
                 poly = layer_polys[i_seg]
@@ -812,16 +818,8 @@ def compute_slice_paths_with_travel(
 
                 if i_seg < len(layer_polys) - 1:
                     nxt = layer_polys[i_seg + 1]
-                    curr_end = poly[-1].copy()
-                    next_start = nxt[0].copy()
-                    safe_curr = curr_end.copy(); safe_curr[2] = safe_z_clearance
-                    safe_next = next_start.copy(); safe_next[2] = safe_z_clearance
-                    travel_up = np.vstack([curr_end, safe_curr])
-                    travel_xy = np.vstack([safe_curr, safe_next])
-                    travel_down = np.vstack([safe_next, next_start])
-                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
-                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
-                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
+                    travel_intra = np.vstack([poly[-1], nxt[0]])
+                    all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
 
             prev_layer_last_end = layer_polys[-1][-1]
 
@@ -1278,6 +1276,9 @@ if "ui_banner" not in st.session_state:
 if "main_view" not in st.session_state:
     st.session_state.main_view = "슬라이싱 경로 (3D)"
 
+if "last_uploaded_name" not in st.session_state:
+    st.session_state.last_uploaded_name = None
+
 if "ext_const_enable_a1" not in st.session_state:
     st.session_state.ext_const_enable_a1 = False
 if "ext_const_enable_a2" not in st.session_state:
@@ -1440,6 +1441,7 @@ if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
 if uploaded is not None:
+    is_new_upload = (st.session_state.get("last_uploaded_name") != uploaded.name)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
         tmp.write(uploaded.read())
         tmp_path = tmp.name
@@ -1478,7 +1480,9 @@ if uploaded is not None:
 
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
-    st.session_state.main_view = "STL 미리보기"
+    st.session_state.last_uploaded_name = uploaded.name
+    if is_new_upload:
+        st.session_state.main_view = "STL 미리보기"
 
 if slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
