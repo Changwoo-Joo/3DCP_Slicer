@@ -2059,17 +2059,42 @@ else:
 
 # ---- 중앙: 뷰 전환 ----
 with center_col:
-    view_options = ["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"]
-    current_view = st.segmented_control(
-        "보기",
-        options=view_options,
-        selection_mode="single",
-        default=st.session_state.get("main_view", "슬라이싱 경로 (3D)"),
-        key="main_view_selector",
-    )
-    if current_view is None:
-        current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
-    st.session_state.main_view = current_view
+    st.markdown("""
+    <style>
+    .sticky-viewbar {
+        position: sticky;
+        top: 0.5rem;
+        z-index: 999;
+        background: rgba(255,255,255,0.96);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(0,0,0,0.08);
+        border-radius: 12px;
+        padding: 0.5rem;
+        margin-bottom: 0.75rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    .sticky-viewbar-label {
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div class="sticky-viewbar"><div class="sticky-viewbar-label">보기</div>', unsafe_allow_html=True)
+    v1, v2, v3 = st.columns(3)
+    with v1:
+        if st.button("슬라이싱 경로 (3D)", use_container_width=True):
+            st.session_state.main_view = "슬라이싱 경로 (3D)"
+    with v2:
+        if st.button("STL 미리보기", use_container_width=True):
+            st.session_state.main_view = "STL 미리보기"
+    with v3:
+        if st.button("G-code 뷰어", use_container_width=True):
+            st.session_state.main_view = "G-code 뷰어"
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
+    st.caption(f"현재 보기: {current_view}")
 
     if current_view == "슬라이싱 경로 (3D)":
         if segments is not None and total_segments > 0:
