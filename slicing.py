@@ -4,6 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
+from shapely.geometry import Polygon, MultiPolygon, LineString
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -17,7 +18,7 @@ st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
 
 # ── 전역 CSS ──
 st.markdown(
-    """
+    '''
     <style>
     footer {visibility: hidden;}
     [data-testid="stFooter"] {visibility: hidden;}
@@ -25,8 +26,107 @@ st.markdown(
 
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
-    .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
+    .stTabs { overflow: hidden !important; }
+    .stTabs [data-baseweb="tab-list"] {
+      margin-top: 0.6rem !important;
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      gap: 0.35rem !important;
+      width: 100% !important;
+      align-items: stretch !important;
+      overflow: hidden !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      height: auto !important;
+      min-height: 48px !important;
+      white-space: normal !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
+      text-align: center !important;
+      line-height: 1.2 !important;
+      padding: 0.5rem 0.55rem !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
+    }
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span,
+    .stTabs [data-baseweb="tab"] div {
+      white-space: normal !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
+      margin: 0 !important;
+      line-height: 1.2 !important;
+      text-align: center !important;
+      max-width: 100% !important;
+    }
+    @media (max-width: 1200px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      }
+    }
+    @media (max-width: 760px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: minmax(0, 1fr) !important;
+      }
+    }
 
+    .left-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 8px;
+      scrollbar-gutter: stable;
+      min-height: 0;
+    }
+    .left-panel-scroll::-webkit-scrollbar,
+    .right-panel::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .left-panel-scroll::-webkit-scrollbar-thumb,
+    .right-panel::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .left-panel-scroll::-webkit-scrollbar-track,
+    .right-panel::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
+    .center-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      scrollbar-gutter: stable;
+      padding-right: 4px;
+    }
+    .center-panel-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .center-panel-scroll::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .center-panel-scroll::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -35,11 +135,12 @@ st.markdown(
       border-left: 1px solid #e6e6e6;
       padding-left: 12px;
       background: white;
+      scrollbar-gutter: stable;
     }
 
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.35rem;
+      font-size: 1.5rem;
       font-weight: 700;
       line-height: 1.2;
     }
@@ -50,7 +151,7 @@ st.markdown(
       font-variant-numeric: tabular-nums;
     }
     </style>
-    """,
+    ''',
     unsafe_allow_html=True
 )
 
@@ -113,41 +214,110 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     return np.asarray(out, dtype=float)
 
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+    """
+    전체를 등간격(min_dist)으로 쪼갠 뒤, 
+    일직선상에 있는 중간 점들은 제거하여 
+    직선은 양 끝점만 남기고, 곡선은 지정된 간격을 유지하도록 변경.
+    """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or min_dist <= 0:
         return pts
-    eps = float(min_dist) / 2.0
-
-    def _perp_dist_xy(p, a, b) -> float:
-        ab = b[:2] - a[:2]
-        ap = p[:2] - a[:2]
-        denom = np.dot(ab, ab)
-        if denom <= 1e-18:
-            return np.linalg.norm(ap)
-        t = np.clip(np.dot(ap, ab) / denom, 0.0, 1.0)
-        proj = a[:2] + t * ab
-        return np.linalg.norm(p[:2] - proj)
-
-    def _rdp_xy(points: np.ndarray, eps_val: float) -> np.ndarray:
-        if len(points) <= 2:
-            return points
-        a, b = points[0], points[-1]
-        dmax, idx = -1.0, -1
-        for i in range(1, len(points) - 1):
-            d = _perp_dist_xy(points[i], a, b)
-            if d > dmax:
-                dmax, idx = d, i
-        if dmax <= eps_val:
-            return np.vstack([a, b])
-        left = _rdp_xy(points[: idx + 1], eps_val)
-        right = _rdp_xy(points[idx:], eps_val)
-        return np.vstack([left[:-1], right])
-
-    return _rdp_xy(pts, eps)
-
+    
+    # 1. 전체 경로의 누적 길이 배열 생성
+    s = _poly_arclen_s_xy(pts)
+    total_length = float(s[-1])
+    
+    if total_length <= min_dist:
+        return np.vstack([pts[0], pts[-1]])
+    
+    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
+    num_segments = max(1, int(np.round(total_length / min_dist)))
+    s_targets = np.linspace(0.0, total_length, num_segments + 1)
+    resampled_pts = _resample_polyline_by_s(pts, s_targets)
+    
+    # 3. 일직선(Collinear) 검사하여 직선 구간의 중간 점 제거
+    if len(resampled_pts) <= 2:
+        return resampled_pts
+        
+    out = [resampled_pts[0]]
+    
+    for i in range(1, len(resampled_pts) - 1):
+        p_prev = out[-1]
+        p_curr = resampled_pts[i]
+        p_next = resampled_pts[i+1]
+        
+        v1 = p_curr - p_prev
+        v2 = p_next - p_curr
+        
+        L1_L2 = float(np.linalg.norm(v1[:2]) * np.linalg.norm(v2[:2]))
+        if L1_L2 < 1e-9:
+            continue
+            
+        # 외적을 이용해 꺾인 각도의 사인(sin)값을 구함
+        sin_angle = abs(v1[0]*v2[1] - v1[1]*v2[0]) / L1_L2
+        
+        # 꺾임이 거의 없는 직선(약 0.05도 이하)이면 점을 버리고, 곡선이면 살림
+        if sin_angle > 1e-3:
+            out.append(p_curr)
+            
+    out.append(resampled_pts[-1])
+    return np.asarray(out, dtype=float)
 def shift_to_nearest_start(segment, ref_point):
-    idx = np.argmin(np.linalg.norm(segment[:, :2] - ref_point, axis=1))
-    return np.concatenate([segment[idx:], segment[:idx]], axis=0), segment[idx]
+    """
+    단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
+    새로운 시작점을 삽입하고 배열을 재배치합니다.
+    """
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts, pts[0]
+        
+    ref = np.array(ref_point[:2], dtype=float)
+    min_dist = float('inf')
+    best_pt = None
+    best_idx = 0
+    
+    # 모든 선분에 대해 가장 가까운 투영점 찾기
+    for i in range(len(pts) - 1):
+        p1 = pts[i]
+        p2 = pts[i+1]
+        
+        v = p2[:2] - p1[:2]
+        w = ref - p1[:2]
+        
+        c1 = float(np.dot(w, v))
+        c2 = float(np.dot(v, v))
+        
+        if c1 <= 0:
+            closest = p1.copy()
+        elif c2 <= c1:
+            closest = p2.copy()
+        else:
+            b = c1 / c2
+            closest = p1 + b * (p2 - p1)
+            
+        d = float(np.linalg.norm(ref - closest[:2]))
+        if d < min_dist:
+            min_dist = d
+            best_pt = closest
+            best_idx = i
+            
+    # 찾은 정확한 좌표를 삽입하고 배열을 재배치
+    if np.linalg.norm(best_pt - pts[best_idx]) < 1e-6:
+        shift_idx = best_idx
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    elif np.linalg.norm(best_pt - pts[best_idx+1]) < 1e-6:
+        shift_idx = best_idx + 1
+        out = np.concatenate([pts[shift_idx:-1], pts[:shift_idx+1]], axis=0)
+    else:
+        out_pts = [best_pt.copy()]
+        for j in range(best_idx + 1, len(pts) - 1):
+            out_pts.append(pts[j].copy())
+        for j in range(0, best_idx + 1):
+            out_pts.append(pts[j].copy())
+        out_pts.append(best_pt.copy())
+        out = np.asarray(out_pts, dtype=float)
+        
+    return out, best_pt
 
 def _poly_arclen_s_xy(poly: np.ndarray) -> np.ndarray:
     pts = np.asarray(poly, dtype=float)
@@ -174,60 +344,16 @@ def _resample_polyline_by_s(poly: np.ndarray, s_targets: np.ndarray) -> np.ndarr
 
     out = []
     j = 0
-    for st in s_targets:
-        while j < len(lens) - 1 and s[j+1] < st:
+    for st_val in s_targets:
+        while j < len(lens) - 1 and s[j+1] < st_val:
             j += 1
         d = float(lens[j])
         if d < 1e-12:
             out.append(pts[j].copy())
         else:
-            t = (st - s[j]) / d
+            t = (st_val - s[j]) / d
             out.append((1.0 - t) * pts[j] + t * pts[j+1])
     return np.asarray(out, dtype=float)
-
-def densify_sparse_corners(poly: np.ndarray,
-                           step_mm: float = 5.0,
-                           window_mm: float = 30.0,
-                           collinear_eps: float = 1e-12) -> np.ndarray:
-    pts = np.asarray(poly, dtype=float)
-    if len(pts) < 3 or step_mm <= 0 or window_mm <= 0:
-        return pts.copy()
-
-    s = _poly_arclen_s_xy(pts)
-    total = float(s[-1])
-    if total < 1e-9:
-        return pts.copy()
-
-    s_targets = [0.0, total]
-
-    for i in range(1, len(pts) - 1):
-        v1 = pts[i] - pts[i-1]
-        v2 = pts[i+1] - pts[i]
-
-        # 각도 임계값 없이: '완전 일직선'만 제외
-        cross = v1[0]*v2[1] - v1[1]*v2[0]
-        if abs(cross) <= collinear_eps:
-            continue
-
-        # 코너에서 앞/뒤 인접 점 간격이 window_mm보다 큰 경우에만 발동
-        gap_prev = float(s[i] - s[i-1])
-        gap_next = float(s[i+1] - s[i])
-        if not (gap_prev > window_mm or gap_next > window_mm):
-            continue
-
-        si = float(s[i])
-        a = max(0.0, si - window_mm)
-        b = min(total, si + window_mm)
-
-        n = int(max(2, math.floor((b - a) / step_mm) + 1))
-        ss = a + step_mm * np.arange(n, dtype=float)
-        ss = ss[ss <= b + 1e-6]
-        s_targets.extend(ss.tolist())
-
-    s_targets = np.unique(np.round(np.asarray(s_targets, dtype=float), 6))
-    s_targets.sort()
-    return _resample_polyline_by_s(pts, s_targets)
-
 
 def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
                              collinear_eps: float = 1e-12,
@@ -279,9 +405,253 @@ def _insert_corner_neighbors(poly: np.ndarray, d_mm: float = 5.0,
 
     return np.asarray(out, dtype=float)
 
+def _resample_closed_polyline_xy(poly: np.ndarray, spacing: float) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2:
+        return pts.copy()
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) > 1e-9:
+        pts = np.vstack([pts, pts[0]])
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total < 1e-9:
+        return pts.copy()
+    step = max(float(spacing), 1.0)
+    count = max(8, int(np.ceil(total / step)))
+    targets = np.linspace(0.0, total, count + 1)
+    out = _resample_polyline_by_s(pts, targets)
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+    return out
+
+
+def _resample_linestring_min_spacing(coords_xy: np.ndarray, spacing: float) -> np.ndarray:
+    coords_xy = np.asarray(coords_xy, dtype=float)
+    if coords_xy.ndim != 2 or coords_xy.shape[0] < 2:
+        return coords_xy
+    spacing = max(float(spacing), 1e-6)
+    try:
+        line = LineString(coords_xy)
+    except Exception:
+        return coords_xy
+    total = float(line.length)
+    if not np.isfinite(total) or total <= 1e-9:
+        return coords_xy
+    dists = [0.0]
+    cur = spacing
+    while cur < total - 1e-9:
+        dists.append(cur)
+        cur += spacing
+    if total > dists[-1] + 1e-9:
+        dists.append(total)
+    pts = []
+    for d in dists:
+        pt = line.interpolate(d)
+        pts.append([pt.x, pt.y])
+    out = np.asarray(pts, dtype=float)
+    if out.shape[0] >= 2 and np.linalg.norm(out[-1] - out[0]) < 1e-9:
+        out = out[:-1]
+    return out
+
+def _compress_collinear_open_path(poly: np.ndarray, collinear_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if pts.ndim != 2 or len(pts) <= 2:
+        return pts
+    out = [pts[0].copy()]
+    for i in range(1, len(pts) - 1):
+        p_prev = out[-1]
+        p_curr = pts[i]
+        p_next = pts[i + 1]
+        v1 = p_curr[:2] - p_prev[:2]
+        v2 = p_next[:2] - p_curr[:2]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-9 or n2 <= 1e-9:
+            continue
+        cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        if cross > collinear_eps:
+            out.append(p_curr.copy())
+    out.append(pts[-1].copy())
+    return np.asarray(out, dtype=float)
+
+def _compress_closed_ring_straights(poly: np.ndarray, collinear_eps: float = 1e-6) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if pts.ndim != 2 or len(pts) < 4:
+        return pts
+    ring = ensure_open_ring(pts)
+    if len(ring) < 3:
+        return pts
+    keep = []
+    n = len(ring)
+    for i in range(n):
+        p_prev = ring[(i - 1) % n]
+        p_curr = ring[i]
+        p_next = ring[(i + 1) % n]
+        v1 = p_curr[:2] - p_prev[:2]
+        v2 = p_next[:2] - p_curr[:2]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 <= 1e-9 or n2 <= 1e-9:
+            continue
+        cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        if cross > collinear_eps:
+            keep.append(p_curr.copy())
+    if len(keep) < 3:
+        keep = [ring[0].copy(), ring[len(ring)//2].copy(), ring[-1].copy()]
+    out = np.asarray(keep, dtype=float)
+    out = np.vstack([out, out[0]])
+    return out
+def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_mm: float = 5.0) -> np.ndarray:
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4:
+        return seg3d_closed
+    if seg3d_closed.shape[1] < 3:
+        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    poly = Polygon(xy)
+    if poly.is_empty or not poly.is_valid or poly.area <= 1e-9:
+        return seg3d_closed
+    try:
+        rounded = poly.buffer(-r_mm, join_style=1).buffer(r_mm, join_style=1)
+    except Exception:
+        return seg3d_closed
+    if rounded.is_empty:
+        return seg3d_closed
+    if isinstance(rounded, MultiPolygon):
+        rounded = max(rounded.geoms, key=lambda g: g.area if not g.is_empty else -1.0)
+    if rounded.is_empty or rounded.area <= 1e-9:
+        return seg3d_closed
+    coords = np.asarray(rounded.exterior.coords, dtype=float)
+    if len(coords) < 4:
+        return seg3d_closed
+    dense = _resample_linestring_min_spacing(coords, spacing=float(spacing_mm))
+    if len(dense) < 3:
+        dense = coords[:-1]
+    out = np.column_stack([dense[:, 0], dense[:, 1], np.full(len(dense), z_val, dtype=float)])
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+    return _compress_closed_ring_straights(out)
+
+def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4 or offset_mm <= 0:
+        return seg3d_closed, False
+    if seg3d_closed.shape[1] < 3:
+        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    try:
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
+        return seg3d_closed, False
+    try:
+        inward = poly.buffer(-float(offset_mm), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+    if inward.is_empty:
+        return seg3d_closed, True
+    if isinstance(inward, MultiPolygon):
+        inward = max(list(inward.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
+    if inward.is_empty or inward.area <= 1e-9:
+        return seg3d_closed, True
+    try:
+        coords = np.asarray(inward.exterior.coords, dtype=float)
+    except Exception:
+        return seg3d_closed, True
+    if len(coords) < 4:
+        return seg3d_closed, True
+    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)])
+    return out, False
+
+def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    max_idx = int(np.argmax(lens))
+
+    p1 = pts[max_idx]
+    p2 = pts[(max_idx + 1) % n]
+    mid = (p1 + p2) / 2.0
+
+    out = [mid]
+    for i in range(1, n + 1):
+        out.append(pts[(max_idx + i) % n].copy())
+    out.append(mid.copy())
+    return np.asarray(out, dtype=float)
+
+def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
+    """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or shift_dist <= 0:
+        return pts
+    
+    # 닫힌 루프 확인 및 중복 끝점 제거
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+        
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    total = float(np.sum(lens))
+    
+    shift_dist = shift_dist % total
+    if shift_dist < 1e-5:
+        return np.vstack([pts, pts[0]]) # 닫아서 반환
+        
+    acc = 0.0
+    i = 0
+    while i < n and acc + lens[i] < shift_dist:
+        acc += lens[i]
+        i += 1
+        
+    p = pts[i]
+    q = pts[(i + 1) % n]
+    d = lens[i]
+    
+    cut = p + ((shift_dist - acc) / d) * (q - p) if d > 0 else p.copy()
+    
+    out = [cut]
+    for j in range(1, n + 1):
+        idx = (i + j) % n
+        out.append(pts[idx].copy())
+        
+    out.append(cut.copy())
+    return np.asarray(out, dtype=float)
+
 # =========================
 # Plotly: STL (정적)
 # =========================
+def _apply_translation_to_mesh(mesh: trimesh.Trimesh, dx: float, dy: float, dz: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    m.apply_translation([float(dx), float(dy), float(dz)])
+    return m
+
+
+def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, rx_deg: float = 0.0, ry_deg: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    c = np.asarray(m.bounding_box.centroid, dtype=float)
+    T1 = trimesh.transformations.translation_matrix(-c)
+    T2 = trimesh.transformations.translation_matrix(c)
+    Rz = trimesh.transformations.rotation_matrix(np.deg2rad(float(rz_deg)), [0, 0, 1])
+    Rx = trimesh.transformations.rotation_matrix(np.deg2rad(float(rx_deg)), [1, 0, 0])
+    Ry = trimesh.transformations.rotation_matrix(np.deg2rad(float(ry_deg)), [0, 1, 0])
+    M = T2 @ (Rz @ Rx @ Ry) @ T1
+    m.apply_transform(M)
+    return m
+
+
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
     f = mesh.faces
@@ -298,180 +668,326 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 def make_slice_z_values(mesh, z_int: float) -> List[float]:
-    z_min = float(mesh.bounds[0, 2])
-    z_max = float(mesh.bounds[1, 2])
-    height = z_max - z_min
-
-    if not np.isfinite(z_min) or not np.isfinite(z_max) or height <= 1e-9:
+    zmin = float(mesh.bounds[0, 2])
+    zmax = float(mesh.bounds[1, 2])
+    height = zmax - zmin
+    if not np.isfinite(zmin) or not np.isfinite(zmax) or height <= 1e-9:
         return []
+    zstep = max(float(z_int), 1e-9)
+    first_z = zmin + 0.5 * zstep
+    if first_z >= zmax - 1e-9:
+        return [float(zmin + 0.5 * height)]
+    zvalues = []
+    z = first_z
+    while z < zmax - 1e-9:
+        zvalues.append(float(z))
+        z += zstep
+    return zvalues
 
-    z_step = max(float(z_int), 1e-9)
-
-    # 기존 동작은 유지하되, 모델 높이/위치 조건 때문에 np.arange 결과가
-    # 비어 있을 때 z_values[-1]에서 IndexError가 나지 않도록 보완한다.
-    z_values = list(np.arange(z_step, z_max + 0.001, z_step))
-    if not z_values:
-        z_values = [z_min + height * 0.5]
-
-    if abs(z_max - z_values[-1]) > 1e-3:
-        z_values.append(z_max)
-    z_values.append(z_max + 0.01)
-    return z_values
-
-# =========================
-# G-code generator
-# =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
-                   trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False):
+                   trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
+                   seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
+                   skip_invalid_offset=True):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
 
-    z_values = make_slice_z_values(mesh, z_int)
+    if seq_print:
+        raw_sub_meshes = mesh.split(only_watertight=False)
+        raw_sub_meshes = sorted(raw_sub_meshes, key=lambda m: m.bounds[0][0])
 
-    prev_start_xy = None
-    for z in z_values:
-        sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
-        if sec is None:
-            continue
-        try:
-            slice2D, to3D = sec.to_2D()
-        except Exception:
-            continue
-
-        segments = []
-        for seg in slice2D.discrete:
-            seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            segments.append(seg3d)
-        if not segments:
-            continue
-
-        g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
-
-        if auto_start and prev_start_xy is not None:
-            ref_pt_layer = prev_start_xy
+        if seq_group_inner:
+            groups = []
+            for m in raw_sub_meshes:
+                b1 = m.bounds
+                placed = False
+                for g_dict in groups:
+                    b2 = g_dict['bounds']
+                    if not (b1[1][0] < b2[0][0] - 1.0 or b1[0][0] > b2[1][0] + 1.0 or
+                            b1[1][1] < b2[0][1] - 1.0 or b1[0][1] > b2[1][1] + 1.0):
+                        g_dict['mesh'] = g_dict['mesh'] + m
+                        g_dict['bounds'][0] = np.minimum(g_dict['bounds'][0], b1[0])
+                        g_dict['bounds'][1] = np.maximum(g_dict['bounds'][1], b1[1])
+                        placed = True
+                        break
+                if not placed:
+                    groups.append({'mesh': m, 'bounds': [b1[0].copy(), b1[1].copy()]})
+            submeshes = [g_dict['mesh'] for g_dict in groups]
         else:
-            ref_pt_layer = np.array(ref_pt_user, dtype=float)
+            submeshes = raw_sub_meshes
+        g[0] = "; *** Generated by 3DCP Slicer (Sequential Printing) ***"
+    else:
+        submeshes = [mesh]
 
-        for i_seg, seg3d in enumerate(segments):
-            seg3d_no_dup = ensure_open_ring(seg3d)
-            shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-            trimmed = trim_closed_ring_tail(shifted, trim_dist)
-            simplified = simplify_segment(trimmed, min_spacing)
-            if enable_corner:
-               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
+    safe_z_clearance = float(mesh.bounds[1][2]) + 150.0
+    prev_start_xy = None
 
-            if i_seg > 0:
-                s = simplified[0]
-                g.append(f"G01 X{s[0]:.3f} Y{s[1]:.3f} Z{z:.3f}")
+    for subidx, submesh in enumerate(submeshes):
+        if seq_print:
+            g.append(f"\n; ==========================================")
+            g.append(f"; Object {subidx + 1} of {len(submeshes)}")
+            g.append(f"; ==========================================")
 
-            start = simplified[0]
-            g.append(f"G01 F{feed}")
-            if start_e_on:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
-            else:
-                g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+        z_values = make_slice_z_values(submesh, z_int)
 
-            for p1, p2 in zip(simplified[:-1], simplified[1:]):
-                dist = np.linalg.norm(p2[:2] - p1[:2])
-                if e_on:
-                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
+        for zidx, z in enumerate(z_values):
+            sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
+            if sec is None: continue
+            try:
+                slice_2D, to_3D = sec.to_2D()
+            except Exception: continue
+
+            segments = []
+            for seg in slice_2D.discrete:
+                seg = np.array(seg)
+                seg3d = (to_3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                segments.append(seg3d)
+            if not segments: continue
+
+            g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
+            ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
+
+            for iseg, seg3d in enumerate(segments):
+                seg3d_no_dup = ensure_open_ring(seg3d)
+                
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                if enable_inward_offset and float(nozzle_width) > 0:
+                    closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                    if offset_inverted and skip_invalid_offset:
+                        start_pt = closed_mid[0]
+                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        continue
+                simplified = simplify_segment(closed_mid, min_spacing)
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                if st.session_state.get('enable_fillet', False):
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
+
+                start = simplified[0]
+
+                if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
+                    g.append(f"; Moving to new object start at Safe Z")
+                    g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
+
+                if iseg > 0:
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+
+                g.append(f"G01 F{feed}")
+                if start_e_on:
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
 
-            if e0_on:
-                g.append("G01 E0")
+                for p1, p2 in zip(simplified[:-1], simplified[1:]):
+                    dist = np.linalg.norm(p2[:2] - p1[:2])
+                    if e_on:
+                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
+                    else:
+                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
 
-            if i_seg == 0:
-                prev_start_xy = start[:2]
+                if e0_on: g.append("G01 E0")
+                if iseg == 0: prev_start_xy = start[:2]
+
+        if seq_print and subidx < len(submeshes) - 1:
+            g.append(f"\n; Retracting to Safe Z before moving to next object")
+            g.append(f"G00 Z{safe_z_clearance:.3f}")
 
     g.append(f"G01 F{feed}")
-    if m30_on:
-        g.append("M30")
+    if m30_on: g.append("M30")
     return "\n".join(g)
 
 # =========================
-# Slice path computation
+# Slice path computation 
 # =========================
 def compute_slice_paths_with_travel(
-    mesh,
-    z_int=30.0,
-    ref_pt_user=(0.0, 0.0),
-    trim_dist=30.0,
-    min_spacing=5.0,
-    auto_start=False,
-    e_on=False
+    mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
+    auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
+    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
-    z_values = make_slice_z_values(mesh, z_int)
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
     prev_layer_last_end: Optional[np.ndarray] = None
     prev_start_xy = None
 
-    for z in z_values:
-        sec = mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
-        if sec is None:
-            continue
-        try:
-            slice2D, to3D = sec.to_2D()
-        except Exception:
-            continue
+    if seq_print:
+        raw_sub_meshes = mesh.split(only_watertight=False)
+        raw_sub_meshes = sorted(raw_sub_meshes, key=lambda m: m.bounds[0][0])
 
-        segments = []
-        for seg in slice2D.discrete:
-            seg = np.array(seg)
-            seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-            segments.append(seg3d)
-        if not segments:
-            continue
+        if seq_group_inner:
+            groups = []
+            for m in raw_sub_meshes:
+                b1 = m.bounds
+                placed = False
+                for g_dict in groups:
+                    b2 = g_dict['bounds']
+                    if not (b1[1][0] < b2[0][0] - 1.0 or b1[0][0] > b2[1][0] + 1.0 or
+                            b1[1][1] < b2[0][1] - 1.0 or b1[0][1] > b2[1][1] + 1.0):
+                        g_dict['mesh'] = g_dict['mesh'] + m
+                        g_dict['bounds'][0] = np.minimum(g_dict['bounds'][0], b1[0])
+                        g_dict['bounds'][1] = np.maximum(g_dict['bounds'][1], b1[1])
+                        placed = True
+                        break
+                if not placed:
+                    groups.append({'mesh': m, 'bounds': [b1[0].copy(), b1[1].copy()]})
+            sub_meshes = [g_dict['mesh'] for g_dict in groups]
+        else:
+            sub_meshes = raw_sub_meshes
+    else:
+        sub_meshes = [mesh]
 
-        ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
+    safe_z_clearance = float(mesh.bounds[1][2]) + 50.0
+    highest_sliced_z = None
+    for _sub_mesh in sub_meshes:
+        _z_values = make_slice_z_values(_sub_mesh, z_int)
+        if _z_values:
+            _top_z = float(max(_z_values))
+            highest_sliced_z = _top_z if highest_sliced_z is None else max(highest_sliced_z, _top_z)
 
-        layer_polys: List[np.ndarray] = []
-        for i_seg, seg3d in enumerate(segments):
-            seg3d_no_dup = ensure_open_ring(seg3d)
-            shifted, _ = shift_to_nearest_start(seg3d_no_dup, ref_point=ref_pt_layer)
-            trimmed = trim_closed_ring_tail(shifted, trim_dist)
-            simplified = simplify_segment(trimmed, min_spacing)
-            if enable_corner:
-               simplified = _insert_corner_neighbors(simplified, d_mm=float(corner_d))
-            layer_polys.append(simplified.copy())
-            if i_seg == 0:
-                prev_start_xy = simplified[0][:2]
+    for sub_idx, sub_mesh in enumerate(sub_meshes):
+        z_values = make_slice_z_values(sub_mesh, z_int)
 
-        if not layer_polys:
-            continue
+        for z in z_values:
+            sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
+            if sec is None:
+                continue
+            try:
+                slice2D, to3D = sec.to_2D()
+            except Exception:
+                continue
 
-        first_poly_start = layer_polys[0][0]
-        if prev_layer_last_end is not None:
-            travel = np.vstack([prev_layer_last_end, first_poly_start])
-            all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+            segments = []
+            for seg in slice2D.discrete:
+                seg = np.array(seg)
+                seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                segments.append(seg3d)
+            if not segments:
+                continue
 
-        for i_seg in range(len(layer_polys)):
-            poly = layer_polys[i_seg]
-            if e_on:
-                e_vals = [0.0]
-                total = 0.0
-                for p1, p2 in zip(poly[:-1], poly[1:]):
-                    dist = np.linalg.norm(p2[:2] - p1[:2])
-                    total += dist * EXTRUSION_K
-                    e_vals.append(total)
-                all_items.append((poly, np.array(e_vals), False))
-            else:
-                all_items.append((poly, None, False))
+            ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
 
-            if i_seg < len(layer_polys) - 1:
-                nxt = layer_polys[i_seg + 1]
-                travel_intra = np.vstack([poly[-1], nxt[0]])
-                all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
+            layer_polys: List[np.ndarray] = []
+            for i_seg, seg3d in enumerate(segments):
+                seg3d_no_dup = ensure_open_ring(seg3d)
 
-        prev_layer_last_end = layer_polys[-1][-1]
+                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                if enable_inward_offset and float(nozzle_width) > 0:
+                    closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                    if offset_inverted and skip_invalid_offset:
+                        start_pt = closed_mid[0]
+                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        continue
+                simplified = simplify_segment(closed_mid, min_spacing)
+                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                if st.session_state.get('enable_fillet', False):
+                    r_val = float(st.session_state.get('fillet_r', 20.0))
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
+
+                layer_polys.append(simplified.copy())
+                if i_seg == 0:
+                    prev_start_xy = simplified[0][:2]
+
+            if not layer_polys:
+                continue
+
+            first_poly_start = layer_polys[0][0]
+            if prev_layer_last_end is not None:
+                prev_z = float(prev_layer_last_end[2])
+                prev_was_top_group = (highest_sliced_z is not None) and (abs(prev_z - float(highest_sliced_z)) <= 1e-6)
+                if prev_was_top_group:
+                    safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
+                    safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
+                    travel_up = np.vstack([prev_layer_last_end, safe_prev])
+                    travel_xy = np.vstack([safe_prev, safe_next])
+                    travel_down = np.vstack([safe_next, first_poly_start])
+                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
+                else:
+                    travel = np.vstack([prev_layer_last_end, first_poly_start])
+                    all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+
+            for i_seg in range(len(layer_polys)):
+                poly = layer_polys[i_seg]
+                if e_on:
+                    e_vals = [0.0]
+                    total = 0.0
+                    for p1, p2 in zip(poly[:-1], poly[1:]):
+                        dist = np.linalg.norm(p2[:2] - p1[:2])
+                        total += dist * EXTRUSION_K
+                        e_vals.append(total)
+                    all_items.append((poly, np.array(e_vals), False))
+                else:
+                    all_items.append((poly, None, False))
+
+                if i_seg < len(layer_polys) - 1:
+                    nxt = layer_polys[i_seg + 1]
+                    travel_intra = np.vstack([poly[-1], nxt[0]])
+                    all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
+
+            prev_layer_last_end = layer_polys[-1][-1]
+
 
     return all_items
 
-# === items -> segments ===
+def _collect_layer_z_values(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]], tol: float = 1e-6) -> List[float]:
+    zs: List[float] = []
+    for p1, p2, is_travel, is_extruding in segments:
+        if not is_extruding:
+            continue
+        zmid = float((p1[2] + p2[2]) * 0.5)
+        if not zs or abs(zmid - zs[-1]) > tol:
+            zs.append(zmid)
+    return zs
+
+
+def _filter_segments_by_layer_range(segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]], layer_start: int, layer_end: int, tol: float = 1e-6):
+    if not segments:
+        return []
+    zs = _collect_layer_z_values(segments, tol=tol)
+    if not zs:
+        return []
+    n_layers = len(zs)
+    layer_start = max(1, min(int(layer_start), n_layers))
+    layer_end = max(layer_start, min(int(layer_end), n_layers))
+    z_lo = zs[layer_start - 1]
+    z_hi = zs[layer_end - 1]
+    out = []
+    for p1, p2, is_travel, is_extruding in segments:
+        zmid = float((p1[2] + p2[2]) * 0.5)
+        if is_extruding:
+            if z_lo - tol <= zmid <= z_hi + tol:
+                out.append((p1, p2, is_travel, is_extruding))
+        else:
+            z1 = float(p1[2]); z2 = float(p2[2])
+            if (z_lo - tol <= z1 <= z_hi + tol) or (z_lo - tol <= z2 <= z_hi + tol):
+                out.append((p1, p2, is_travel, is_extruding))
+    return out
+
+
+def _build_buffers_from_segments_subset(segments, travel_mode: str = 'solid'):
+    reset_anim_buffers()
+    buf = st.session_state.paths_anim_buf
+    for p1, p2, is_travel, _ in segments:
+        if is_travel:
+            if travel_mode == 'hidden':
+                continue
+            key = 'dot' if travel_mode == 'dotted' else 'solid'
+        else:
+            key = 'solid'
+        buf[key]['x'].extend([float(p1[0]), float(p2[0]), None])
+        buf[key]['y'].extend([float(p1[1]), float(p2[1]), None])
+        buf[key]['z'].extend([float(p1[2]), float(p2[2]), None])
+    buf['built_upto'] = len(segments)
+    buf['stride'] = 1
 def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]], e_on: bool
 ) -> List[Tuple[np.ndarray, np.ndarray, bool, bool]]:
     segs: List[Tuple[np.ndarray, np.ndarray, bool, bool]] = []
@@ -490,7 +1006,6 @@ def items_to_segments(items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]]
                 segs.append((p1, p2, is_travel, is_extruding))
     return segs
 
-# === (NEW) 현재 행 기준 레이어 전체 길이 계산 ===
 def compute_layer_length_for_index(
     segments: List[Tuple[np.ndarray, np.ndarray, bool, bool]],
     upto_idx: int
@@ -502,10 +1017,11 @@ def compute_layer_length_for_index(
     upto = min(max(int(upto_idx), 0), N)
 
     layer_z = None
-    for i in range(upto):
+    for i in range(upto - 1, -1, -1):
         p1, p2, is_travel, is_extruding = segments[i]
         if is_extruding:
             layer_z = float((p1[2] + p2[2]) * 0.5)
+            break
     if layer_z is None:
         return None, None
 
@@ -716,7 +1232,7 @@ def ensure_traces(fig: go.Figure, want=5):
         elif n in (2, 3): add_off()
         else: add_caps()
 
-def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
+def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool, segments_for_hover=None):
     ensure_traces(fig, want=5)
     buf = st.session_state.paths_anim_buf
 
@@ -730,6 +1246,32 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
 
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
+
+    if segments_for_hover is not None:
+        layer_map = _collect_layer_z_values(segments_for_hover)
+        def _layer_no(zv):
+            for idx, zz in enumerate(layer_map, start=1):
+                if abs(float(zv) - float(zz)) < 1e-6:
+                    return idx
+            return None
+        solid_cd = []
+        dot_cd = []
+        travel_mode = st.session_state.get("paths_travel_mode", "solid")
+        for p1, p2, is_travel, is_extruding in segments_for_hover:
+            zmid = float((p1[2] + p2[2]) * 0.5)
+            lno = _layer_no(zmid)
+            row = [[lno], [lno], [None]]
+            if is_travel:
+                if travel_mode == "hidden":
+                    continue
+                dot_cd.extend(row if travel_mode == "dotted" else [])
+                solid_cd.extend(row if travel_mode != "dotted" else [])
+            else:
+                solid_cd.extend(row)
+        fig.data[0].customdata = solid_cd
+        fig.data[1].customdata = dot_cd
+        fig.data[0].hovertemplate = "X=%{x:.3f}<br>Y=%{y:.3f}<br>Z=%{z:.3f}<br>레이어=%{customdata[0]}<extra></extra>"
+        fig.data[1].hovertemplate = "X=%{x:.3f}<br>Y=%{y:.3f}<br>Z=%{z:.3f}<br>레이어=%{customdata[0]}<extra></extra>"
 
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
@@ -806,11 +1348,44 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
+if "paths_scrub_input" not in st.session_state:
+    st.session_state.paths_scrub_input = 0
+if "paths_scrub_slider" not in st.session_state:
+    st.session_state.paths_scrub_slider = 0
+if "layer_view_start_input" not in st.session_state:
+    st.session_state.layer_view_start_input = 1
+if "layer_view_end_input" not in st.session_state:
+    st.session_state.layer_view_end_input = 1
+
+
+def _sync_scrub_from_slider():
+    st.session_state.paths_scrub = int(st.session_state.get("paths_scrub_slider", 0))
+    st.session_state.paths_scrub_input = int(st.session_state.paths_scrub)
+
+
+def _sync_scrub_from_input(max_segments: int):
+    v = int(clamp(st.session_state.get("paths_scrub_input", 0), 0, max_segments))
+    st.session_state.paths_scrub = v
+    st.session_state.paths_scrub_slider = v
+    st.session_state.paths_scrub_input = v
+
+
+def _sync_layer_inputs(max_layer_no: int):
+    s = int(clamp(st.session_state.get("layer_view_start_input", 1), 1, max_layer_no))
+    e_raw = int(st.session_state.get("layer_view_end_input", s))
+    e = int(clamp(e_raw, s, max_layer_no))
+    st.session_state["layer_view_start"] = s
+    st.session_state["layer_view_end"] = e
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
-# --- A1/A2 Constant-Speed defaults ---
+if "main_view" not in st.session_state:
+    st.session_state.main_view = "슬라이싱 경로 (3D)"
+
+if "last_uploaded_name" not in st.session_state:
+    st.session_state.last_uploaded_name = None
+
 if "ext_const_enable_a1" not in st.session_state:
     st.session_state.ext_const_enable_a1 = False
 if "ext_const_enable_a2" not in st.session_state:
@@ -820,7 +1395,6 @@ if "ext_use_a3" not in st.session_state:
 if "ext_use_a4" not in st.session_state:
     st.session_state.ext_use_a4 = False
 
-# 기본값(네 범위 기준)
 if "ext_const_xmin" not in st.session_state:
     st.session_state.ext_const_xmin = 0.0
 if "ext_const_xmax" not in st.session_state:
@@ -835,9 +1409,9 @@ if "ext_const_ymin" not in st.session_state:
 if "ext_const_ymax" not in st.session_state:
     st.session_state.ext_const_ymax = 1000.0
 if "ext_const_a2_at_ymin" not in st.session_state:
-    st.session_state.ext_const_a2_at_ymin = 0.0
+    st.session_state.ext_const_a2_at_ymin = 500.0
 if "ext_const_a2_at_ymax" not in st.session_state:
-    st.session_state.ext_const_a2_at_ymax = 4000.0
+    st.session_state.ext_const_a2_at_ymax = 0.0
 
 if "ext_const_speed_mm_s" not in st.session_state:
     st.session_state.ext_const_speed_mm_s = 200.0
@@ -851,16 +1425,18 @@ if "extconsta2usestep" not in st.session_state:
     st.session_state.extconsta2usestep = False
 if "extconsta2stepmm" not in st.session_state:
     st.session_state.extconsta2stepmm = 60.0
-
+if "singularity_avoid_enable" not in st.session_state:
+    st.session_state.singularity_avoid_enable = False
+if "singularity_z_trigger" not in st.session_state:
+    st.session_state.singularity_z_trigger = 0.0
+if "singularity_lift_z" not in st.session_state:
+    st.session_state.singularity_lift_z = 300.0
 ensure_anim_buffers()
 
 # =========================
 # 접근 권한
 # =========================
-st.sidebar.header("접근 권한")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
-access_key = st.sidebar.text_input("접근 키", type="password", key="access_key")
-
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
@@ -880,8 +1456,75 @@ def check_key_valid(k: str):
     else:
         return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
 
-KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
-if access_key:
+KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
+uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
+with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
+    move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
+    move_y = st.number_input("이동 Y(mm)", value=float(st.session_state.get("stl_move_y", 0.0)), step=10.0, format="%.3f")
+    move_z = st.number_input("이동 Z(mm)", value=float(st.session_state.get("stl_move_z", 0.0)), step=10.0, format="%.3f")
+    if st.button("이동 적용", use_container_width=True, key="apply_stl_move"):
+        st.session_state["stl_move_x"] = float(move_x)
+        st.session_state["stl_move_y"] = float(move_y)
+        st.session_state["stl_move_z"] = float(move_z)
+        st.session_state["stl_apply_move"] = True
+        st.sidebar.success("STL 이동 좌표를 적용했습니다.")
+
+    rot_x = st.number_input("회전 Rx(deg)", value=float(st.session_state.get("stl_rot_x", 0.0)), step=1.0, format="%.3f")
+    rot_y = st.number_input("회전 Ry(deg)", value=float(st.session_state.get("stl_rot_y", 0.0)), step=1.0, format="%.3f")
+    rot_z = st.number_input("회전 Rz(deg)", value=float(st.session_state.get("stl_rot_z", 0.0)), step=1.0, format="%.3f")
+    if st.button("회전 적용", use_container_width=True, key="apply_stl_rot"):
+        st.session_state["stl_rot_x"] = float(rot_x)
+        st.session_state["stl_rot_y"] = float(rot_y)
+        st.session_state["stl_rot_z"] = float(rot_z)
+        st.session_state["stl_apply_rot"] = True
+        st.sidebar.success("중심점 기준 STL 회전을 적용했습니다.")
+
+
+# =========================
+# 파라미터
+# =========================
+st.sidebar.header("기본 파라미터")
+z_int = st.sidebar.number_input("레이어(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
+feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
+ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
+ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
+
+# [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
+fix_start = st.sidebar.checkbox("시작점 고정", value=False)
+# [수정] 자동 연결 UI는 제거하고, 시작점 고정 여부에 따라 내부적으로 자동 전환되도록 설정
+actual_auto_start = not fix_start
+
+st.sidebar.subheader("압출 옵션")
+e_on = st.sidebar.checkbox("재료토출(E) 삽입")
+start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
+start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
+e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
+
+st.sidebar.subheader("경로처리")
+seq_print = st.sidebar.checkbox("순차 출력 (1개씩)", value=False)
+seq_group_inner = st.sidebar.checkbox("내부 폐구간 그룹화", value=True, disabled=not seq_print)
+
+
+with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
+    enable_fillet = st.checkbox("라운딩 적용", value=False, key="enable_fillet")
+    fillet_r = st.number_input("R 반경 (mm)", min_value=0.0, max_value=1000.0, value=20.0, step=1.0, key="fillet_r", disabled=not enable_fillet)
+
+trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
+min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
+with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
+    nozzle_diameter = st.number_input("노즐 직경(mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.get("nozzle_diameter_mm", 0.0)), step=0.5, help="입력한 노즐 직경의 반지름(직경/2)만큼 안쪽으로 오프셋합니다.")
+    st.session_state["nozzle_diameter_mm"] = float(nozzle_diameter)
+    enable_inward_offset = st.checkbox("노즐 반지름만큼 안쪽 오프셋 출력", value=bool(st.session_state.get("enable_inward_offset", False)))
+    st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
+    skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
+    st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
+
+# [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
+m30_on = st.sidebar.checkbox("M30 추가", value=False)
+
+slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
+access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+if st.session_state.get("access_key", ""):
     if KEY_OK:
         if EXP_DATE is None:
             st.sidebar.success(STATUS_TXT)
@@ -891,64 +1534,13 @@ if access_key:
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.warning("접근 키를 입력하세요.")
+    st.sidebar.info("CODE를 생성하시려면 라이센스키를 입력하세요.")
+gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
+if gen_clicked and not KEY_OK:
+    st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
-uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], disabled=not KEY_OK)
-stl_unit_mode = st.sidebar.selectbox(
-    "STL 단위",
-    ["자동 감지", "mm", "m → mm (×1000)"],
-    index=0,
-    disabled=not KEY_OK,
-    help="첨부한 column_1x1x3_m.stl처럼 좌표가 0~3이면 m 단위로 보고 mm로 변환해야 합니다."
-)
-
-# =========================
-# 파라미터
-# =========================
-st.sidebar.header("기본 파라미터")
-z_int = st.sidebar.number_input("Z 간격 (mm)", 1.0, 1000.0, 15.0)
-feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
-ref_x = st.sidebar.number_input("기준 X", value=0.0)
-ref_y = st.sidebar.number_input("기준 Y", value=0.0)
-
-st.sidebar.subheader("압출 옵션")
-e_on = st.sidebar.checkbox("E 값 삽입")
-start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
-start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
-e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
-
-st.sidebar.subheader("경로처리")
-
-with st.sidebar.expander("코너 주변점 옵션", expanded=False):
-    enable_corner = st.checkbox(
-        "코너 주변점 활성화",
-        value=False,
-        key="enable_corner_points"
-    )
-    corner_d = st.number_input(
-        "거리(mm)",
-        min_value=0.0,
-        max_value=1000.0,
-        value=5.0,
-        step=1.0,
-        key="corner_neighbor_distance_mm",
-        disabled=not enable_corner
-    )
-
-trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
-min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-auto_start = st.sidebar.checkbox("자동 시작점 연결")
-m30_on = st.sidebar.checkbox("M30 추가", value=False)
-
-b1 = st.sidebar.container()
-b2 = st.sidebar.container()
-slice_clicked = b1.button("모델 슬라이싱", use_container_width=True)
-gen_clicked = b2.button("G-code 생성", use_container_width=True)
-
-# =========================
-# Load mesh on upload
-# =========================
 if uploaded is not None:
+    is_new_upload = (st.session_state.get("last_uploaded_name") != uploaded.name)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
         tmp.write(uploaded.read())
         tmp_path = tmp.name
@@ -958,34 +1550,46 @@ if uploaded is not None:
         st.stop()
     extents = np.asarray(mesh.extents, dtype=float)
     max_extent = float(np.max(extents)) if extents.size else 0.0
-    scale_to_mm = 1.0
-    if stl_unit_mode == "m → mm (×1000)" or (stl_unit_mode == "자동 감지" and 0.0 < max_extent <= 20.0):
-        scale_to_mm = 1000.0
+    scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
+    if scale_to_mm != 1.0:
         mesh.apply_scale(scale_to_mm)
-        st.sidebar.info(f"STL 단위 자동 변환: m → mm (최대 치수 {max_extent:.3f} → {max_extent * scale_to_mm:.1f} mm)")
-    else:
-        st.sidebar.info(f"STL 단위: mm 기준 사용 (최대 치수 {max_extent:.1f} mm)")
-    # Z 아주 미세 확장 (절단면 인식)
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
+
+    if bool(st.session_state.get("stl_apply_move", False)):
+        mesh = _apply_translation_to_mesh(
+            mesh,
+            dx=float(st.session_state.get("stl_move_x", 0.0)),
+            dy=float(st.session_state.get("stl_move_y", 0.0)),
+            dz=float(st.session_state.get("stl_move_z", 0.0)),
+        )
+
+    if bool(st.session_state.get("stl_apply_rot", False)):
+        mesh = _apply_rotation_about_centroid(
+            mesh,
+            rz_deg=float(st.session_state.get("stl_rot_z", 0.0)),
+            rx_deg=float(st.session_state.get("stl_rot_x", 0.0)),
+            ry_deg=float(st.session_state.get("stl_rot_y", 0.0)),
+        )
+
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
+    st.session_state.last_uploaded_name = uploaded.name
+    if is_new_upload:
+        st.session_state.main_view = "STL 미리보기"
 
-# =========================
-# Slicing Actions
-# =========================
-if KEY_OK and slice_clicked and st.session_state.mesh is not None:
+if slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
-        st.session_state.mesh,
-        z_int=z_int,
-        ref_pt_user=(ref_x, ref_y),
-        trim_dist=trim_dist,
-        min_spacing=min_spacing,
-        auto_start=auto_start,
-        e_on=e_on
+        st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
+        e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner,
+        nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
+        enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
     st.session_state.paths_items = items
+    st.session_state.main_view = "슬라이싱 경로 (3D)"
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
@@ -998,18 +1602,10 @@ if KEY_OK and slice_clicked and st.session_state.mesh is not None:
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
-        st.session_state.mesh,
-        z_int=z_int,
-        feed=feed,
-        ref_pt_user=(ref_x, ref_y),
-        e_on=e_on,
-        start_e_on=start_e_on,
-        start_e_val=start_e_val,
-        e0_on=e0_on,
-        trim_dist=trim_dist,
-        min_spacing=min_spacing,
-        auto_start=auto_start,
-        m30_on=m30_on
+        st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
+        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
+        trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start, m30_on=m30_on,
+        seq_print=seq_print  
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
@@ -1019,13 +1615,11 @@ if st.session_state.get("gcode_text"):
     st.sidebar.download_button("G-code 저장", st.session_state.gcode_text,
                                file_name=f"{base}.gcode", mime="text/plain",
                                use_container_width=True)
-
 # =========================
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
 def _fmt_pos(v: float) -> str:
-    if abs(v) < 5e-5:
-        v = 0.0
+    if abs(v) < 5e-5: v = 0.0
     s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -1033,8 +1627,7 @@ def _fmt_pos(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _fmt_ang(v: float) -> str:
-    if abs(v) < 5e-5:
-        v = 0.0
+    if abs(v) < 5e-5: v = 0.0
     s = f"{v:+.2f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
@@ -1042,8 +1635,7 @@ def _fmt_ang(v: float) -> str:
     return f"{sign}{intpart}.{dec}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
-    if abs(a1 - a0) < 1e-12:
-        return float(b0)
+    if abs(a1 - a0) < 1e-12: return float(b0)
     t = (val - a0) / (a1 - a0)
     t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
     return float(b0 + t * (b1 - b0))
@@ -1056,7 +1648,7 @@ DEFAULT_PRESET = {
     },
     "90": {
         "X": {"in": [0.0, 6500.0]},
-        "Y": {"in": [0.0, 1000.0], "A3_out": [500.0, 0.0]},
+        "Y": {"in": [0.0, 1000.0], "A3_out": [0.0, 500.0]},
         "Z": {"in": [0.0, 3000.0], "A4_out": [0.0, 1000.0]},
     },
     "-90": {
@@ -1086,237 +1678,81 @@ def _extract_xyz_lines_count(gcode_text: str) -> int:
             cnt += 1
     return cnt
 
-# =========================
-# ✅ (FIX) A1/A2 Constant-Speed profile (robust)
-#   - 경계(xmin/xmax, ymin/ymax) 없어도 고정되지 않음
-#   - A1: raw_x의 |ΔX|만으로 진행 (Y로는 절대 진행 X)
-#   - A2: raw_y의 |ΔY|만으로 진행
-#   - 경계에 "있을 때"는 정확히 스냅/홀드, 경계에서 "벗어나는 순간"은 바로 진행
-# =========================
 def _apply_const_speed_profile_on_nodes(
-    nodes: List[Dict[str, Any]],
-    axis_key: str,
-    coord_key: str,
-    coord_min: float,
-    coord_max: float,
-    axis_at_min: float,
-    axis_at_max: float,
-    speed_mm_s: float = 200.0,
-    deadband_mm: float = 11.0,
-    eps_mm: float = 0.5,
-    apply_print_only: bool = False,
-    travel_interp: bool = True,
-    step_mm: float = 0.0,             # (추가) 0이면 기존처럼 연속, >0이면 계단
-    step_round: str = "floor",        # (추가) "floor" / "round" / "ceil"
+    nodes: List[Dict[str, Any]], axis_key: str, coord_key: str, coord_min: float, coord_max: float,
+    axis_at_min: float, axis_at_max: float, speed_mm_s: float = 200.0, deadband_mm: float = 11.0,
+    eps_mm: float = 0.5, apply_print_only: bool = False, travel_interp: bool = True, step_mm: float = 0.0, step_round: str = "floor"
 ) -> None:
-    if not nodes or axis_key not in ("a1", "a2"):
-        return
+    if not nodes or axis_key not in ("a1", "a2"): return
     n = len(nodes)
-    if n == 0:
-        return
+    if n == 0: return
 
     coord_min = float(coord_min)
     coord_max = float(coord_max)
     axis_at_min = float(axis_at_min)
     axis_at_max = float(axis_at_max)
     eps = float(max(0.0, eps_mm))
-
     span = float(coord_max - coord_min)
     span_abs = abs(span)
+
     if span_abs <= 1e-9:
-        for nd in nodes:
-            nd[axis_key] = float(axis_at_min)
+        for nd in nodes: nd[axis_key] = float(axis_at_min)
         return
 
-    axis_per_mm = (axis_at_max - axis_at_min) / float(span_abs)
-
-    def _coord(i: int) -> float:
-        return float(nodes[i].get(coord_key, 0.0))
-
-    def _at_min(c: float) -> bool:
-        return c <= coord_min + eps
-
-    def _at_max(c: float) -> bool:
-        return c >= coord_max - eps
+    def _at_min(c: float) -> bool: return c <= coord_min + eps
+    def _at_max(c: float) -> bool: return c >= coord_max - eps
 
     def _snap_linear(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
+        if _at_min(c): return float(axis_at_min)
+        if _at_max(c): return float(axis_at_max)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
         return float(axis_at_min + t * (axis_at_max - axis_at_min))
 
     def _snap_step(c: float) -> float:
-        if _at_min(c):
-            return float(axis_at_min)
-        if _at_max(c):
-            return float(axis_at_max)
-
+        if _at_min(c): return float(axis_at_min)
+        if _at_max(c): return float(axis_at_max)
         t = (c - coord_min) / span_abs
         t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
-
         dt = float(step_mm) / span_abs if step_mm is not None else 0.0
-        if dt <= 1e-12:
-            return _snap_linear(c)
+        if dt <= 1e-12: return _snap_linear(c)
 
-        if step_round == "round":
-            tq = round(t / dt) * dt
-        elif step_round == "ceil":
-            tq = math.ceil(t / dt) * dt
-        else:  # "floor"
-            tq = math.floor(t / dt) * dt
-
+        if step_round == "round": tq = round(t / dt) * dt
+        elif step_round == "ceil": tq = math.ceil(t / dt) * dt
+        else: tq = math.floor(t / dt) * dt
         tq = 0.0 if tq < 0.0 else 1.0 if tq > 1.0 else tq
         return float(axis_at_min + tq * (axis_at_max - axis_at_min))
 
     use_step = (step_mm is not None) and (float(step_mm) > 0.0)
     snap_for_coord = _snap_step if use_step else _snap_linear
-
     extr_node = [bool(nd.get("extr", False)) for nd in nodes]
 
-    c0 = _coord(0)
-    nodes[0][axis_key] = float(snap_for_coord(c0))
+    for i in range(n):
+        c = float(nodes[i].get(coord_key, 0.0))
+        target_val = snap_for_coord(c)
+        if apply_print_only and not extr_node[i]:
+            if travel_interp: nodes[i][axis_key] = target_val
+            else: nodes[i][axis_key] = nodes[i-1][axis_key] if i > 0 else target_val
+        else: nodes[i][axis_key] = target_val
 
-    # 초기 진행 방향
-    if _at_min(c0):
-        dir_mode = "fwd"
-    elif _at_max(c0):
-        dir_mode = "bwd"
-    else:
-        dir_mode = "fwd"
-
-    # 매크로 왕복 추적용 상태
-    macro_peak = c0
-    macro_valley = c0
-    turn_thresh = max(float(deadband_mm) * 3.0, span_abs * 0.05)  # 예: 4000 span이면 200mm
-
-    ai = float(nodes[0][axis_key])
-
-    for i in range(1, n):
-        ci = _coord(i - 1)
-        cj = _coord(i)
-
-        # 새 레이어 시작 시 방향 리셋
-        zi = float(nodes[i - 1].get("z", 0.0))
-        zj = float(nodes[i].get("z", 0.0))
-        if abs(zj - zi) > 1e-4:
-            idx_next = min(n - 1, i + 50)
-            c_next = float(nodes[idx_next].get(coord_key, cj))
-            dir_mode = "fwd" if (c_next - cj) >= 0.0 else "bwd"
-            macro_peak = cj
-            macro_valley = cj
-
-        # 경계에 정확히 안 닿아도, 충분한 반전이 생기면 왕복 방향 전환
-        if dir_mode == "fwd":
-            if cj > macro_peak:
-                macro_peak = cj
-            elif (macro_peak - cj) >= turn_thresh:
-                dir_mode = "bwd"
-                macro_valley = cj
-        else:
-            if cj < macro_valley:
-                macro_valley = cj
-            elif (cj - macro_valley) >= turn_thresh:
-                dir_mode = "fwd"
-                macro_peak = cj
-
-        active = True
-        if apply_print_only:
-            active = bool(extr_node[i - 1])
-
-        dcoord = float(cj - ci)
-
-        # 경계 근처는 deadband보다 우선해서 즉시 끝값 스냅
-        if _at_min(cj):
-            nodes[i][axis_key] = float(axis_at_min)
-            ai = float(axis_at_min)
-            dir_mode = "fwd"
-            macro_peak = cj
-            macro_valley = cj
-            continue
-
-        if _at_max(cj):
-            nodes[i][axis_key] = float(axis_at_max)
-            ai = float(axis_at_max)
-            dir_mode = "bwd"
-            macro_peak = cj
-            macro_valley = cj
-            continue
-
-        if abs(dcoord) < float(deadband_mm):
-            nodes[i][axis_key] = float(ai)
-            continue
-
-        if (not active) or abs(dcoord) <= 1e-12:
-            aj = ai
-        else:
-            if _at_min(cj):
-                aj = float(axis_at_min)
-                dir_mode = "fwd"
-                macro_peak = cj
-                macro_valley = cj
-
-            elif _at_max(cj):
-                aj = float(axis_at_max)
-                dir_mode = "bwd"
-                macro_peak = cj
-                macro_valley = cj
-
-            else:
-                # 현재 왕복 방향과 같은 방향일 때만 축 이동
-                if (dir_mode == "fwd" and dcoord > 0) or (dir_mode == "bwd" and dcoord < 0):
-                    step = float(axis_per_mm) * abs(dcoord)
-                    aj = (ai + step) if (dir_mode == "fwd") else (ai - step)
-                else:
-                    aj = ai
-
-                lo = min(float(axis_at_min), float(axis_at_max))
-                hi = max(float(axis_at_min), float(axis_at_max))
-                if aj < lo:
-                    aj = lo
-                if aj > hi:
-                    aj = hi
-
-                # 축이 실제 끝점에 닿은 경우도 방향 전환
-                if abs(aj - float(axis_at_min)) <= 1e-9:
-                    dir_mode = "fwd"
-                    macro_peak = cj
-                    macro_valley = cj
-                elif abs(aj - float(axis_at_max)) <= 1e-9:
-                    dir_mode = "bwd"
-                    macro_peak = cj
-                    macro_valley = cj
-
-        nodes[i][axis_key] = float(aj)
-        ai = float(aj)
-
-        ai = float(aj)
-
-    # travel 구간 보간(기존 동작 유지)
     if travel_interp and apply_print_only:
         active_node = extr_node
         if any(active_node):
             i = 0
             while i < n:
                 if active_node[i]:
-                    i += 1
-                    continue
+                    i += 1; continue
                 t0 = i
-                while i < n and not active_node[i]:
-                    i += 1
+                while i < n and not active_node[i]: i += 1
                 t1 = i - 1
 
                 prev_idx = t0 - 1 if (t0 - 1) >= 0 else None
                 next_idx = i if i < n else None
-
                 if prev_idx is None or next_idx is None:
                     base = float(nodes[prev_idx][axis_key]) if prev_idx is not None else (
                         float(nodes[next_idx][axis_key]) if next_idx is not None else float(axis_at_min)
                     )
-                    for k in range(t0, t1 + 1):
-                        nodes[k][axis_key] = base
+                    for k in range(t0, t1 + 1): nodes[k][axis_key] = base
                     continue
 
                 a0 = float(nodes[prev_idx][axis_key])
@@ -1326,35 +1762,13 @@ def _apply_const_speed_profile_on_nodes(
                     u = (kk + 1) / float(total + 1)
                     nodes[k][axis_key] = float(a0 + (a1 - a0) * u)
 
-        elif _at_max(c):
-            nodes[i][axis_key] = float(axis_at_max)
-
-# =========================
-# Rapid Converter (UPDATED)
-# =========================
 def convert_gcode_to_rapid(
-    gcode_text: str,
-    rx: float,
-    ry: float,
-    rz: float,
-    preset: Dict[str, Any],
-    swap_a3_a4: bool = False,
-    enable_a1_const: bool = False,
-    enable_a2_const: bool = False,
-    enable_a3: bool = False,
-    enable_a4: bool = False,
-    x_min: float = 0.0,
-    x_max: float = 6000.0,
-    a1_at_xmin: float = 4000.0,
-    a1_at_xmax: float = 0.0,
-    y_min: float = 0.0,
-    y_max: float = 1000.0,
-    a2_at_ymin: float = 0.0,
-    a2_at_ymax: float = 4000.0,
-    speed_mm_s: float = 200.0,
-    boundary_eps_mm: float = 0.5,
-    apply_print_only: bool = False,
-    travel_interp: bool = True,
+    gcode_text: str, rx: float, ry: float, rz: float, preset: Dict[str, Any], swap_a3_a4: bool = False,
+    enable_a1_const: bool = False, enable_a2_const: bool = False, enable_a3: bool = False, enable_a4: bool = False,
+    x_min: float = 0.0, x_max: float = 6000.0, a1_at_xmin: float = 4000.0, a1_at_xmax: float = 0.0,
+    y_min: float = 0.0, y_max: float = 1000.0, a2_at_ymin: float = 0.0, a2_at_ymax: float = 4000.0,
+    speed_mm_s: float = 200.0, boundary_eps_mm: float = 0.5, apply_print_only: bool = False,
+    travel_interp: bool = True, singularity_avoid: bool = False, singularity_z_trigger: float = 0.0, singularity_lift_z: float = 300.0,
 ) -> str:
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
@@ -1362,61 +1776,32 @@ def convert_gcode_to_rapid(
     def gi(d: Dict[str, Any], path: list, default: float) -> float:
         try:
             cur = d
-            for k in path[:-1]:
-                cur = cur[k]
+            for k in path[:-1]: cur = cur[k]
             return float(cur[path[-1]])
-        except Exception:
-            return float(default)
+        except Exception: return float(default)
 
     x0, x1 = gi(P, ["X","in",0], 0.0), gi(P, ["X","in",1], 1.0)
     y0, y1 = gi(P, ["Y","in",0], 0.0), gi(P, ["Y","in",1], 1.0)
     z0, z1 = gi(P, ["Z","in",0], 0.0), gi(P, ["Z","in",1], 1.0)
-
     a4_0, a4_1 = gi(P, ["Z","A4_out",0], 0.0), gi(P, ["Z","A4_out",1], 0.0)
-    
+
     a3_on_x = bool(enable_a3) and ("A3_out" in P.get("X", {}))
     a3_on_y = bool(enable_a3) and ("A3_out" in P.get("Y", {}))
     a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
-    def _prop_split_local(delta: float, in0: float, in1: float, out0: float, out1: float) -> float:
-        span_in = abs(float(in1) - float(in0))
-        span_out = abs(float(out1) - float(out0))
-        total = span_in + span_out
-        if total <= 1e-12 or span_out <= 1e-12:
-            return 0.0
-        same_dir = ((in1 >= in0 and out1 >= out0) or (in1 <= in0 and out1 <= out0))
-        ext_part = float(delta) * (span_out / total)
-        if not same_dir:
-            ext_part = -ext_part
-        return ext_part
-
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
+    have_prev = False; prev_x = prev_y = prev_z = 0.0; prev_e = None; cur_a3 = 0.0
+    singularity_a4_offset = 0.0; singularity_applied = False
 
-    have_prev = False
-    prev_x = prev_y = prev_z = 0.0
-    prev_e = None
-    cur_a3 = 0.0
-
-    xs_out: List[float] = []
-    ys_out: List[float] = []
-    zs_out: List[float] = []
-    raw_xs: List[float] = []
-    raw_ys: List[float] = []
-    a1_list: List[float] = []
-    a2_list: List[float] = []
-    a3_list: List[float] = []
-    a4_list: List[float] = []
-    is_extruding_list: List[bool] = []
+    xs_out, ys_out, zs_out, raw_xs, raw_ys = [], [], [], [], []
+    a1_list, a2_list, a3_list, a4_list, is_extruding_list = [], [], [], [], []
 
     for raw in gcode_text.splitlines():
         t = raw.strip()
-        if not t or not t.startswith(("G0","G00","G1","G01")):
-            continue
-
+        if not t or not t.startswith(("G0","G00","G1","G01")): continue
         cx, cy, cz = prev_x, prev_y, prev_z
-        ce = None
-        has_any = False
+        ce = None; has_any = False
         for p in t.split():
             if p.startswith("X"):
                 try: cx = float(p[1:]); has_any = True
@@ -1430,225 +1815,104 @@ def convert_gcode_to_rapid(
             elif p.startswith("E"):
                 try: ce = float(p[1:])
                 except: ce = None
-        if not has_any:
-            continue
+        if not has_any: continue
 
-        # E 기반 extruding 판정
         is_extruding = False
         if ce is not None and prev_e is not None:
-            if (ce - prev_e) > 1e-12:
-                is_extruding = True
-        if ce is not None:
-            prev_e = ce
+            if (ce - prev_e) > 1e-12: is_extruding = True
+        if ce is not None: prev_e = ce
 
-        # A4(절대, Z축 보정)
-        a4_abs = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
-
-        # 기본 좌표 보정: Z에서 A4를 뺌
+        a4_nominal = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
+        a4_abs = a4_nominal - singularity_a4_offset if bool(enable_a4) else 0.0
         x_out, y_out, z_out = cx, cy, cz - a4_abs
+        curr_h_raw = float(z_out + a4_abs)
 
-        # A3(분해축): Rz에 따라 분담 축 결정
-        if key == "0" and a3_on_x:
-            cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1)
-            x_out = cx - cur_a3
+        if key == "0" and a3_on_x: cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1); x_out = cx - cur_a3
+        elif key == "90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); y_out = cy - cur_a3
+        elif key == "-90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); y_out = cy + cur_a3
+        else: cur_a3 = 0.0
 
-        elif key == "90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy - cur_a3
+        if (bool(enable_a4) and bool(singularity_avoid) and (not singularity_applied) and curr_h_raw >= float(singularity_z_trigger) - 1e-9):
+            z_bump = float(singularity_lift_z)
+            trigger_a4_after = float(a4_nominal) - (singularity_a4_offset + z_bump)
+            if trigger_a4_after < 0.0:
+                raise ValueError("싱귤러리티 회피 불가: A4 값이 음수가 됩니다. 강제 상승/하강 수치를 조정하세요.")
+            singularity_a4_offset += z_bump
+            singularity_applied = True
+            a4_abs = a4_nominal - singularity_a4_offset
+            z_out = cz - a4_abs
 
-        elif key == "-90" and a3_on_y:
-            cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1)
-            y_out = cy + cur_a3
-
-        else:
-            cur_a3 = 0.0
+            if key == "0" and a3_on_x: cur_a3 = _linmap(cx, x0, x1, a3x_0, a3x_1); x_out = cx - cur_a3; y_out = cy
+            elif key == "90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); x_out = cx; y_out = cy - cur_a3
+            elif key == "-90" and a3_on_y: cur_a3 = _linmap(cy, y0, y1, a3y_0, a3y_1); x_out = cx; y_out = cy + cur_a3
+            else: cur_a3 = 0.0; x_out = cx; y_out = cy
 
         have_prev = True
-
-        # 저장
-        raw_xs.append(float(cx))
-        raw_ys.append(float(cy))
-        xs_out.append(float(x_out))
-        ys_out.append(float(y_out))
-        zs_out.append(float(z_out))
-        a1_list.append(0.0)
-        a2_list.append(0.0)
-        a3_list.append(float(cur_a3))
-        a4_list.append(float(a4_abs))
+        raw_xs.append(float(cx)); raw_ys.append(float(cy))
+        xs_out.append(float(x_out)); ys_out.append(float(y_out)); zs_out.append(float(z_out))
+        a1_list.append(0.0); a2_list.append(0.0); a3_list.append(float(cur_a3)); a4_list.append(float(a4_abs))
         is_extruding_list.append(bool(is_extruding))
 
-        if len(xs_out) >= MAX_LINES:
-            break
-
+        if len(xs_out) >= MAX_LINES: break
         prev_x, prev_y, prev_z = cx, cy, cz
 
     if len(xs_out) == 0:
         lines_out = [PAD_LINE] * MAX_LINES
         ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-        header = ("MODULE Converted\n"
-                  "!******************************************************************************************************************************\n"
-                  "!*\n"
-                  f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-                  "!\n"
-                  "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-                  "!\n"
-                  "!******************************************************************************************************************************\n")
-        cnt_str = str(MAX_LINES)
-        open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-        body = ""
-        for i, ln in enumerate(lines_out):
-            q = f'"{ln}"'
-            body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-        close_decl = "];\nENDMODULE\n"
-        return header + open_decl + body + close_decl
+        return (f"MODULE Converted\n!*** Generated {ts}\nVAR string sFileCount:=\"{MAX_LINES}\";\n"
+                f"VAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n" + ",\n".join(f'"{ln}"' for ln in lines_out) + "\n];\nENDMODULE\n")
 
-    # nodes
-    nodes = []
-    for i in range(len(xs_out)):
-        nodes.append({
-            "x": float(xs_out[i]),
-            "y": float(ys_out[i]),
-            "z": float(zs_out[i]),
-            "raw_x": float(raw_xs[i]),
-            "raw_y": float(raw_ys[i]),
-            "a1": float(a1_list[i]),
-            "a2": float(a2_list[i]),
-            "a3": float(a3_list[i]),
-            "a4": float(a4_list[i]),
-            "extr": bool(is_extruding_list[i]),
-        })
-
+    nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
+              "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
 
     if bool(enable_a1_const):
-        _apply_const_speed_profile_on_nodes(
-            nodes=nodes,
-            axis_key="a1",
-            coord_key="raw_x",
-            coord_min=float(x_min),
-            coord_max=float(x_max),
-            axis_at_min=float(a1_at_xmin),
-            axis_at_max=float(a1_at_xmax),
-            speed_mm_s=float(speed_mm_s),
-            eps_mm=float(boundary_eps_mm),
-            apply_print_only=bool(apply_print_only),
-            travel_interp=bool(travel_interp),
-        )
-    else:
-        for nd in nodes:
-            nd["a1"] = 0.0
-
+        _apply_const_speed_profile_on_nodes(nodes, "a1", "raw_x", x_min, x_max, a1_at_xmin, a1_at_xmax, speed_mm_s, 11.0, boundary_eps_mm, apply_print_only, travel_interp)
     if bool(enable_a2_const):
         use_step = bool(st.session_state.get("extconsta2usestep", False))
-        if use_step:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-                step_mm=float(st.session_state.get("extconsta2stepmm", 0.0)),
-                step_round="floor",
-            )
-        else:
-            _apply_const_speed_profile_on_nodes(
-                nodes=nodes,
-                axis_key="a2",
-                coord_key="raw_y",
-                coord_min=float(y_min),
-                coord_max=float(y_max),
-                axis_at_min=float(a2_at_ymin),
-                axis_at_max=float(a2_at_ymax),
-                speed_mm_s=float(speed_mm_s),
-                eps_mm=float(boundary_eps_mm),
-                apply_print_only=bool(apply_print_only),
-                travel_interp=bool(travel_interp),
-            )
-    else:
-        for nd in nodes:
-            nd["a2"] = 0.0
-
-
+        _apply_const_speed_profile_on_nodes(nodes, "a2", "raw_y", y_min, y_max, a2_at_ymin, a2_at_ymax, speed_mm_s, 11.0, boundary_eps_mm, apply_print_only, travel_interp,
+                                            float(st.session_state.get("extconsta2stepmm", 0.0)) if use_step else 0.0)
 
     lines_out = []
     for nd in nodes:
-        if len(lines_out) >= MAX_LINES:
-            break
-
-        x = _fmt_pos(float(nd["x"]))
-        y = _fmt_pos(float(nd["y"]))
-        z = _fmt_pos(float(nd["z"]))
-
-        if swap_a3_a4:
-            a3_v = nd["a4"]
-            a4_v = nd["a3"]
-        else:
-            a3_v = nd["a3"]
-            a4_v = nd["a4"]
-
-        a1s = _fmt_pos(float(nd["a1"]))
-        a2s = _fmt_pos(float(nd["a2"]))
-        a3s = _fmt_pos(float(a3_v))
-        a4s = _fmt_pos(float(a4_v))
-
+        if len(lines_out) >= MAX_LINES: break
+        x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
+        a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
+        a1s, a2s, a3s, a4s = _fmt_pos(nd["a1"]), _fmt_pos(nd["a2"]), _fmt_pos(a3_v), _fmt_pos(a4_v)
         lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s}")
 
-    while len(lines_out) < MAX_LINES:
-        lines_out.append(PAD_LINE)
+    while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
-    header = ("MODULE Converted\n"
-              "!******************************************************************************************************************************\n"
-              "!*\n"
-              f"!*** Generated {ts} by Gcode→RAPID converter.\n"
-              "!\n"
-              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n"
-              "!*** A1: raw_x |ΔX| based + boundary snap/hold (leave-boundary resumes)\n"
-              "!*** A2: raw_y |ΔY| based + boundary snap/hold (leave-boundary resumes)\n"
-              "!\n"
-              "!******************************************************************************************************************************\n")
-    cnt_str = str(MAX_LINES)
-    open_decl = f'VAR string sFileCount:="{cnt_str}";\nVAR string d3dpDynLoad{{{cnt_str}}}:=[\n'
-    body = ""
-    for i, ln in enumerate(lines_out):
-        q = f'"{ln}"'
-        body += (q + ",\n") if i < len(lines_out) - 1 else (q + "\n")
-    close_decl = "];\nENDMODULE\n"
-    return header + open_decl + body + close_decl
+    header = ("MODULE Converted\n!*** Generated {0} by Gcode→RAPID converter.\n"
+              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n").format(ts)
+    open_decl = f'VAR string sFileCount:="{MAX_LINES}";\nVAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n'
+    body = ",\n".join(f'"{ln}"' for ln in lines_out) + "\n"
+    return header + open_decl + body + "];\nENDMODULE\n"
 
 # ---- 사이드바: Rapid UI ----
 st.sidebar.markdown("---")
-if KEY_OK:
-    if st.sidebar.button("Rapid 생성", use_container_width=True):
-        st.session_state.show_rapid_panel = True
+rapid_clicked = st.sidebar.button("R-code 생성", use_container_width=True, disabled=not KEY_OK)
+if rapid_clicked and not KEY_OK:
+    st.sidebar.warning("인증키를 입력해야 R-code 생성을 사용할 수 있습니다.")
+if KEY_OK and rapid_clicked:
+    st.session_state.show_rapid_panel = True
 
-    if st.session_state.show_rapid_panel:
+if KEY_OK and st.session_state.show_rapid_panel:
         with st.sidebar.expander("Rapid 설정", expanded=True):
             st.session_state.rapid_rx = st.number_input("Rx (deg)", value=float(st.session_state.rapid_rx), step=0.1, format="%.2f")
             st.session_state.rapid_ry = st.number_input("Ry (deg)", value=float(st.session_state.rapid_ry), step=0.1, format="%.2f")
-
             rz_preset = st.selectbox("Rz (deg) 프리셋", options=[0.00, 90.0, -90.0],
                                      index={0.00:0, 90.0:1, -90.0:2}.get(float(st.session_state.get("rapid_rz", 0.0)), 0))
             st.session_state.rapid_rz = float(rz_preset)
 
         with st.sidebar.expander("외부축 (A1/A2 등속 왕복 · 경계정지)", expanded=True):
             st.caption("X/Y 입력 범위를 실제 외부축 A1/A2 위치로 매핑합니다.")
-
-            # 일반 화면에서는 고급 옵션을 고정값으로 사용해 혼동을 줄인다.
             st.session_state.ext_const_apply_print_only = False
             st.session_state.ext_const_travel_interp = True
             st.session_state.extconsta2usestep = False
 
             st.markdown("**A1 설정 (X → A1)**")
-            st.session_state.ext_const_enable_a1 = st.checkbox(
-                "A1 사용",
-                value=bool(st.session_state.ext_const_enable_a1)
-            )
+            st.session_state.ext_const_enable_a1 = st.checkbox("A1 사용", value=bool(st.session_state.ext_const_enable_a1))
             cols = st.columns(2)
             st.session_state.ext_const_xmin = cols[0].number_input("X 입력 최소값 (mm)", value=float(st.session_state.ext_const_xmin), step=50.0, format="%.3f")
             st.session_state.ext_const_xmax = cols[1].number_input("X 입력 최대값 (mm)", value=float(st.session_state.ext_const_xmax), step=50.0, format="%.3f")
@@ -1657,10 +1921,7 @@ if KEY_OK:
             st.session_state.ext_const_a1_at_xmax = cols2[1].number_input("A1 최대 위치", value=float(st.session_state.ext_const_a1_at_xmax), step=50.0, format="%.3f")
 
             st.markdown("**A2 설정 (Y → A2)**")
-            st.session_state.ext_const_enable_a2 = st.checkbox(
-                "A2 사용",
-                value=bool(st.session_state.ext_const_enable_a2)
-            )
+            st.session_state.ext_const_enable_a2 = st.checkbox("A2 사용", value=bool(st.session_state.ext_const_enable_a2))
             cols3 = st.columns(2)
             st.session_state.ext_const_ymin = cols3[0].number_input("Y 입력 최소값 (mm)", value=float(st.session_state.ext_const_ymin), step=50.0, format="%.3f")
             st.session_state.ext_const_ymax = cols3[1].number_input("Y 입력 최대값 (mm)", value=float(st.session_state.ext_const_ymax), step=50.0, format="%.3f")
@@ -1669,194 +1930,102 @@ if KEY_OK:
             st.session_state.ext_const_a2_at_ymax = cols4[1].number_input("A2 최대 위치", value=float(st.session_state.ext_const_a2_at_ymax), step=50.0, format="%.3f")
 
             with st.expander("고급 설정", expanded=False):
-                st.session_state.ext_const_speed_mm_s = st.number_input(
-                    "축 기준 속도 (mm/s)",
-                    min_value=1.0, max_value=2000.0,
-                    value=float(st.session_state.ext_const_speed_mm_s),
-                    step=10.0, format="%.1f"
-                )
-                st.session_state.ext_const_eps_mm = st.number_input(
-                    "경계 허용값 eps (mm)",
-                    min_value=0.0, max_value=50.0,
-                    value=float(st.session_state.ext_const_eps_mm),
-                    step=0.1, format="%.2f"
-                )
+                st.session_state.ext_const_speed_mm_s = st.number_input("축 기준 속도 (mm/s)", min_value=1.0, max_value=2000.0, value=float(st.session_state.ext_const_speed_mm_s), step=10.0, format="%.1f")
+                st.session_state.ext_const_eps_mm = st.number_input("경계 허용값 eps (mm)", min_value=0.0, max_value=50.0, value=float(st.session_state.ext_const_eps_mm), step=0.1, format="%.2f")
 
-        with st.sidebar.expander("A3/A4", expanded=False):
-            st.caption("Rz 프리셋에 따라 XYZ → A3/A4 매핑을 설정합니다.")
-        
             def edit_axis(title_key: str, axis_key: str):
                 use_a3 = bool(st.session_state.get("ext_use_a3", False))
                 use_a4 = bool(st.session_state.get("ext_use_a4", False))
-        
                 visible = False
-                if axis_key == "Z" and use_a4:
-                    visible = True
-                elif title_key == "0" and axis_key == "X" and use_a3:
-                    visible = True
-                elif title_key in ("90", "-90") and axis_key == "Y" and use_a3:
-                    visible = True
-        
-                if not visible:
-                    return
-        
+                if axis_key == "Z" and use_a4: visible = True
+                elif title_key == "0" and axis_key == "X" and use_a3: visible = True
+                elif title_key in ("90", "-90") and axis_key == "Y" and use_a3: visible = True
+                if not visible: return
+
                 st.write(f"Rz {title_key} · {axis_key}")
-        
-                if title_key not in st.session_state.mapping_preset:
-                    st.session_state.mapping_preset[title_key] = {}
-                if axis_key not in st.session_state.mapping_preset[title_key]:
-                    st.session_state.mapping_preset[title_key][axis_key] = {}
-        
+                if title_key not in st.session_state.mapping_preset: st.session_state.mapping_preset[title_key] = {}
+                if axis_key not in st.session_state.mapping_preset[title_key]: st.session_state.mapping_preset[title_key][axis_key] = {}
+
                 PAX = st.session_state.mapping_preset[title_key][axis_key]
-        
                 base = DEFAULT_PRESET.get(title_key, {}).get(axis_key, {})
-        
-                if "in" not in PAX:
-                    PAX["in"] = list(base.get("in", [0.0, 0.0]))
-        
+                if "in" not in PAX: PAX["in"] = list(base.get("in", [0.0, 0.0]))
+
                 cols_in = st.columns(2)
-                in0 = cols_in[0].number_input(
-                    "in0",
-                    value=float(PAX["in"][0]),
-                    step=50.0,
-                    format="%.1f",
-                    key=f"{title_key}_{axis_key}_in0",
-                )
-                in1 = cols_in[1].number_input(
-                    "in1",
-                    value=float(PAX["in"][1]),
-                    step=50.0,
-                    format="%.1f",
-                    key=f"{title_key}_{axis_key}_in1",
-                )
+                in0 = cols_in[0].number_input("in0", value=float(PAX["in"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in0")
+                in1 = cols_in[1].number_input("in1", value=float(PAX["in"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_in1")
                 PAX["in"] = [float(in0), float(in1)]
-        
+
                 cols_out = st.columns(2)
-        
                 if axis_key in ("X", "Y"):
-                    if "A3_out" not in PAX:
-                        PAX["A3_out"] = list(base.get("A3_out", [0.0, 0.0]))
-        
-                    a30 = cols_out[0].number_input(
-                        "A3out0",
-                        value=float(PAX["A3_out"][0]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a30",
-                    )
-                    a31 = cols_out[1].number_input(
-                        "A3out1",
-                        value=float(PAX["A3_out"][1]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a31",
-                    )
+                    if "A3_out" not in PAX: PAX["A3_out"] = list(base.get("A3_out", [0.0, 0.0]))
+                    a30 = cols_out[0].number_input("A3out0", value=float(PAX["A3_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a30")
+                    a31 = cols_out[1].number_input("A3out1", value=float(PAX["A3_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a31")
                     PAX["A3_out"] = [float(a30), float(a31)]
-        
                 elif axis_key == "Z":
-                    if "A4_out" not in PAX:
-                        PAX["A4_out"] = list(base.get("A4_out", [0.0, 0.0]))
-        
-                    a40 = cols_out[0].number_input(
-                        "A4out0",
-                        value=float(PAX["A4_out"][0]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a40",
-                    )
-                    a41 = cols_out[1].number_input(
-                        "A4out1",
-                        value=float(PAX["A4_out"][1]),
-                        step=50.0,
-                        format="%.1f",
-                        key=f"{title_key}_{axis_key}_a41",
-                    )
+                    if "A4_out" not in PAX: PAX["A4_out"] = list(base.get("A4_out", [0.0, 0.0]))
+                    a40 = cols_out[0].number_input("A4out0", value=float(PAX["A4_out"][0]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a40")
+                    a41 = cols_out[1].number_input("A4out1", value=float(PAX["A4_out"][1]), step=50.0, format="%.1f", key=f"{title_key}_{axis_key}_a41")
                     PAX["A4_out"] = [float(a40), float(a41)]
-        
                 st.session_state.mapping_preset[title_key][axis_key] = PAX
-        
-            st.session_state.ext_use_a3 = st.checkbox(
-                "A3 사용",
-                value=bool(st.session_state.get("ext_use_a3", False)),
-                key="ext_use_a3_checkbox"
-            )
-            st.session_state.ext_use_a4 = st.checkbox(
-                "A4 사용",
-                value=bool(st.session_state.get("ext_use_a4", False)),
-                key="ext_use_a4_checkbox"
-            )
-        
+
+            st.session_state.ext_use_a3 = st.checkbox("A3 사용", value=bool(st.session_state.get("ext_use_a3", False)), key="ext_use_a3_checkbox")
+            st.session_state.ext_use_a4 = st.checkbox("A4 사용", value=bool(st.session_state.get("ext_use_a4", False)), key="ext_use_a4_checkbox")
+
             current_rz = float(st.session_state.get("rapid_rz", 0.0))
-            if abs(current_rz - 0.0) < 1e-6:
-                key_title = "0"
-            elif abs(current_rz - 90.0) < 1e-6:
-                key_title = "90"
-            elif abs(current_rz + 90.0) < 1e-6:
-                key_title = "-90"
-            else:
-                key_title = "0"
-        
+            if abs(current_rz - 0.0) < 1e-6: key_title = "0"
+            elif abs(current_rz - 90.0) < 1e-6: key_title = "90"
+            elif abs(current_rz + 90.0) < 1e-6: key_title = "-90"
+            else: key_title = "0"
+
             st.markdown(f"---\n### Rz {key_title} 프리셋")
-            edit_axis(key_title, "X")
-            edit_axis(key_title, "Y")
-            edit_axis(key_title, "Z")
-        
+            edit_axis(key_title, "X"); edit_axis(key_title, "Y"); edit_axis(key_title, "Z")
+
             preset_json = json.dumps(st.session_state.mapping_preset, ensure_ascii=False, indent=2)
-            st.download_button(
-                "매핑 프리셋 JSON 저장",
-                preset_json,
-                file_name="mapping_preset.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            st.download_button("매핑 프리셋 JSON 저장", preset_json, file_name="mapping_preset.json", mime="application/json", use_container_width=True)
 
-        gtxt = st.session_state.get("gcode_text")
-        over = None
-        if gtxt is not None:
-            xyz_count = _extract_xyz_lines_count(gtxt)
-            over = (xyz_count > MAX_LINES)
+        with st.sidebar.expander("싱귤러리티 회피", expanded=False):
+            a4_enabled_now = bool(st.session_state.get("ext_use_a4", False))
+            st.session_state.singularity_avoid_enable = st.checkbox("싱귤러리티 회피 사용", value=bool(st.session_state.get("singularity_avoid_enable", False)), disabled=not a4_enabled_now, help="A4 사용 시에만 적용됩니다.")
+            st.session_state.singularity_z_trigger = st.number_input("싱귤러리티 발생 Z 높이 (mm)", value=float(st.session_state.get("singularity_z_trigger", 0.0)), step=10.0, format="%.3f", disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable))
+            st.session_state.singularity_lift_z = st.number_input("강제 상승/하강 거리 (mm)", value=float(st.session_state.get("singularity_lift_z", 300.0)), step=10.0, format="%.3f", disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable))
+            if not a4_enabled_now: st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
 
-        save_rapid_clicked = st.sidebar.button("Rapid 저장 (.modx)", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
-        elif over:
-            st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
-            st.session_state.rapid_text = convert_gcode_to_rapid(
-                gtxt,
-                rx=st.session_state.rapid_rx,
-                ry=st.session_state.rapid_ry,
-                rz=st.session_state.rapid_rz,
-                preset=st.session_state.mapping_preset,
-                swap_a3_a4=False,
-                enable_a1_const=bool(st.session_state.ext_const_enable_a1),
-                enable_a2_const=bool(st.session_state.ext_const_enable_a2),
-                enable_a3=bool(st.session_state.get("ext_use_a3", False)),
-                enable_a4=bool(st.session_state.get("ext_use_a4", False)),
-                x_min=float(st.session_state.ext_const_xmin),
-                x_max=float(st.session_state.ext_const_xmax),
-                a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin),
-                a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
-                y_min=float(st.session_state.ext_const_ymin),
-                y_max=float(st.session_state.ext_const_ymax),
-                a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin),
-                a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                speed_mm_s=float(st.session_state.ext_const_speed_mm_s),
-                boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
-                apply_print_only=bool(st.session_state.ext_const_apply_print_only),
-                travel_interp=bool(st.session_state.ext_const_travel_interp),
-            )
-            st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+            gtxt = st.session_state.get("gcode_text")
+            over = False
+            if gtxt is not None:
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > MAX_LINES)
 
-        if st.session_state.get("rapid_text"):
-            base = st.session_state.get("base_name", "output")
-            st.sidebar.download_button(
-                "Rapid 저장 (.modx)",
-                st.session_state.rapid_text,
-                file_name=f"{base}.modx",
-                mime="text/plain",
-                use_container_width=True
-            )
+            save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
+            if gtxt is None:
+                st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
+            elif over:
+                st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+            elif save_rapid_clicked:
+                try:
+                    st.session_state.rapid_text = convert_gcode_to_rapid(
+                        gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
+                        preset=st.session_state.mapping_preset, swap_a3_a4=False,
+                        enable_a1_const=bool(st.session_state.ext_const_enable_a1), enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                        enable_a3=bool(st.session_state.get("ext_use_a3", False)), enable_a4=bool(st.session_state.get("ext_use_a4", False)),
+                        x_min=float(st.session_state.ext_const_xmin), x_max=float(st.session_state.ext_const_xmax),
+                        a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
+                        y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
+                        a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
+                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                        apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
+                        singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
+                        singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
+                        singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
+                    )
+                    st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+                except ValueError as e:
+                    st.session_state.rapid_text = None
+                    st.sidebar.warning(str(e), icon="⚠️")
+
+            if st.session_state.get("rapid_text"):
+                base = st.session_state.get("base_name", "output")
+                st.sidebar.download_button("Rapid 저장 (.modx)", st.session_state.rapid_text, file_name=f"{base}.modx", mime="text/plain", use_container_width=True)
 
 # =========================
 # Layout (Center + Right)
@@ -1871,39 +2040,20 @@ if st.session_state.get("paths_items") is not None:
 
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
-
-    if st.session_state.get("ui_banner"):
-        st.success(st.session_state.ui_banner)
+    if st.session_state.get("ui_banner"): st.success(st.session_state.ui_banner)
 
     st.subheader("보기 옵션")
-    apply_offsets = st.checkbox(
-        "레이어 폭 적용",
-        value=bool(st.session_state.get("apply_offsets_flag", False)),
-        help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.",
-        disabled=(segments is None)
-    )
+    apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
     st.session_state.apply_offsets_flag = bool(apply_offsets)
 
-    include_z_climb = st.checkbox(
-        "Z 상승 오프셋 포함",
-        value=True,
-        help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
-
-    emphasize_caps = st.checkbox(
-        "캡 강조",
-        value=False,
-        help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.",
-        disabled=(segments is None or not apply_offsets)
-    )
+    include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
+    emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
 
     if e_on:
         show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=True, disabled=(segments is None))
         travel_mode = "dotted" if show_dotted else "hidden"
     else:
-        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True,
-                    help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
+        st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
         travel_mode = "solid"
     prev_mode = st.session_state.get("paths_travel_mode", "solid")
     st.session_state.paths_travel_mode = travel_mode
@@ -1915,88 +2065,174 @@ with right_col:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        if "paths_scrub_slider_initialized" not in st.session_state:
+            st.session_state.paths_scrub_slider = default_val
+            st.session_state.paths_scrub_slider_initialized = True
+        if "paths_scrub_input_initialized" not in st.session_state:
+            st.session_state.paths_scrub_input = default_val
+            st.session_state.paths_scrub_input_initialized = True
 
-        scrub = st.slider("진행(세그먼트)", 0, int(total_segments), int(default_val), 1,
-                          help="해당 세그먼트까지 누적 표시")
-        scrub_num = st.number_input("행 번호", 0, int(total_segments),
-                                    int(default_val), 1,
-                                    help="표시할 최종 세그먼트(행) 번호")
+        st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
+        st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
 
-        target = default_val
-        if scrub != default_val:
-            target = int(scrub)
-        if scrub_num != default_val:
-            target = int(scrub_num)
+        target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
 
-        target = int(clamp(target, 0, total_segments))
-        st.session_state.paths_scrub = target
-
-        layer_z, layer_len = compute_layer_length_for_index(segments, target)
-        if layer_z is not None and layer_len is not None:
-            st.caption(
-                f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · "
-                f"{layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)"
-            )
+        layer_z_values = _collect_layer_z_values(segments)
+        max_layer_no = len(layer_z_values)
+        view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
+        st.caption(f"총 레이어 수: {max_layer_no}")
+        st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
+        if max_layer_no > 0:
+            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
+            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
+            if "layer_view_start_input" not in st.session_state:
+                st.session_state["layer_view_start_input"] = default_layer_start
+            if "layer_view_end_input" not in st.session_state:
+                st.session_state["layer_view_end_input"] = default_layer_end
+            c_layer1, c_layer2 = st.columns(2)
+            with c_layer1:
+                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
+            with c_layer2:
+                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
+            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
+            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
+            st.session_state["layer_view_start"] = layer_view_start
+            st.session_state["layer_view_end"] = layer_view_end
+            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
         else:
-            st.caption("현재 레이어 길이: -")
+            st.session_state["layer_view_start"] = 1
+            st.session_state["layer_view_end"] = 1
+            st.caption("레이어 범위: -")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-
     DRAW_LIMIT = 150000
     draw_stride = 1
+    selected_only = bool(st.session_state.get("view_selected_layers_only", False))
+    layer_view_start = int(st.session_state.get("layer_view_start", 1))
+    layer_view_end = int(st.session_state.get("layer_view_end", layer_view_start))
 
-    built = st.session_state.paths_anim_buf["built_upto"]
-    prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-    mode_changed = (prev_mode != st.session_state.paths_travel_mode)
+    if selected_only:
+        visible_segments = _filter_segments_by_layer_range(segments, layer_view_start, layer_view_end)
+        _build_buffers_from_segments_subset(visible_segments, travel_mode=st.session_state.paths_travel_mode)
+        st.session_state.paths_scrub = target
+        if bool(st.session_state.get("apply_offsets_flag", False)):
+            half_w = float(trim_dist) * 0.5
+            compute_offsets_into_buffers(visible_segments, len(visible_segments), half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
+            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+            add_global_endcaps_into_buffers(visible_segments, len(visible_segments), half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
+        if visible_segments:
+            total_len = sum(float(np.linalg.norm(p2[:2] - p1[:2])) for (p1, p2, is_travel, is_extruding) in visible_segments if is_extruding)
+            st.markdown(f"**선택 레이어 총 길이:** {total_len/1000:.3f} m")
+    else:
+        built = st.session_state.paths_anim_buf["built_upto"]
+        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
+        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
 
-    if mode_changed or (draw_stride != prev_stride) or (target < built):
-        rebuild_buffers_to(segments, target, stride=draw_stride)
-    elif target > built:
-        append_segments_to_buffers(segments, built, target, stride=draw_stride)
+        if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
+        elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
 
-    st.session_state.paths_scrub = target
+        st.session_state.paths_scrub = target
 
-    if bool(st.session_state.get("apply_offsets_flag", False)):
-        half_w = float(trim_dist) * 0.5
-        compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-        st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-        add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-        bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-        dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
-        dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
+        if bool(st.session_state.get("apply_offsets_flag", False)):
+            half_w = float(trim_dist) * 0.5
+            compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
+            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
+            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
 
-    if segments is not None and target > 0:
-        total_len = 0.0
-        for i in range(target):
-            p1, p2, is_travel, is_extruding = segments[i]
-            if is_extruding:
-                total_len += float(np.linalg.norm(p2[:2] - p1[:2]))
-        st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
+        if segments is not None and target > 0:
+            total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
+            st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
 else:
     if "paths_anim_buf" in st.session_state:
         st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
         st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
 
-# ---- 중앙: 탭 뷰어 ----
+# ---- 중앙: 뷰 전환 ----
 with center_col:
-    tab_paths, tab_stl, tab_gcode = st.tabs(["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"])
+    st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
+    st.markdown("""
+    <style>
+    .view-switch-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 3rem;
+        align-items: stretch;
+        width: 100%;
+        margin-bottom: 0.18rem;
+    }
+    .view-switch-item {
+        min-width: 0;
+        display: flex;
+        align-items: stretch;
+    }
+    .view-switch-item.view-switch-item-wide {
+        flex: 1.3 1 0;
+    }
+    .view-switch-item.view-switch-item-normal {
+        flex: 1 1 0;
+    }
+    .view-switch-item div[data-testid="stButton"] {
+        width: 100%;
+    }
+    .view-switch-item div[data-testid="stButton"] > button {
+        white-space: normal !important;
+        word-break: normal !important;
+        overflow-wrap: anywhere !important;
+        min-height: 2.75rem;
+        height: 100% !important;
+        padding: 0.45rem 0.9rem !important;
+        line-height: 1.2 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: 100%;
+        box-sizing: border-box !important;
+    }
+    .view-switch-item button p {
+        white-space: normal !important;
+        word-break: normal !important;
+        overflow-wrap: anywhere !important;
+        margin: 0 !important;
+        line-height: 1.2 !important;
+        text-align: center !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
+    sw1, sw2, sw3, _swsp = st.columns([1.3, 1.0, 1.0, 4.2], gap="small")
+    with sw1:
+        st.markdown('<div class="view-switch-item view-switch-item-wide">', unsafe_allow_html=True)
+        if st.button("슬라이싱 경로 (3D)", key="view_btn_path", use_container_width=True):
+            st.session_state.main_view = "슬라이싱 경로 (3D)"
+        st.markdown('</div>', unsafe_allow_html=True)
+    with sw2:
+        st.markdown('<div class="view-switch-item view-switch-item-normal">', unsafe_allow_html=True)
+        if st.button("STL 미리보기", key="view_btn_stl", use_container_width=True):
+            st.session_state.main_view = "STL 미리보기"
+        st.markdown('</div>', unsafe_allow_html=True)
+    with sw3:
+        st.markdown('<div class="view-switch-item view-switch-item-normal">', unsafe_allow_html=True)
+        if st.button("G-code 뷰어", key="view_btn_gcode", use_container_width=True):
+            st.session_state.main_view = "G-code 뷰어"
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    with tab_paths:
+    current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
+
+    if current_view == "슬라이싱 경로 (3D)":
         if segments is not None and total_segments > 0:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(
-                fig,
-                show_offsets=bool(st.session_state.get("apply_offsets_flag", False)),
-                show_caps=bool(emphasize_caps)
-            )
+            segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
+            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             tm = st.session_state.paths_travel_mode
@@ -2009,28 +2245,19 @@ with center_col:
                 + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
                 + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
-                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}"
-                   if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
+                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
-            st.info("슬라이싱을 실행하세요.")
+            st.info("슬라이싱 결과가 없으면 경로가 표시되지 않습니다.")
 
-    with tab_stl:
-        if st.session_state.get("mesh") is not None:
-            st.plotly_chart(
-                plot_trimesh(st.session_state.mesh, height=820),
-                use_container_width=True,
-                key="stl_chart",
-                config={"displayModeBar": False}
-            )
+    elif current_view == "STL 미리보기":
+        if st.session_state.mesh is not None:
+            st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820), use_container_width=True, key="stl_chart", config={"displayModeBar": False})
         else:
-            st.info("STL을 업로드하세요.")
+            st.info("STL 업로드 후 미리보기가 표시됩니다.")
 
-    with tab_gcode:
-        if st.session_state.get("gcode_text"):
-            st.code(st.session_state.gcode_text, language="gcode")
+    elif current_view == "G-code 뷰어":
+        if st.session_state.gcode_text:
+            st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
-            st.info("G-code를 생성하세요.")
-
-if not KEY_OK:
-    st.warning("유효한 접근 키를 입력해야 프로그램이 작동합니다. (업로드/슬라이싱/G-code 버튼 비활성화)")
+            st.info("G-code 생성 후 표시됩니다.")
