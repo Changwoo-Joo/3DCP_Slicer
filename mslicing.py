@@ -794,21 +794,8 @@ def compute_slice_paths_with_travel(
 
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
-                prev_z = float(prev_layer_last_end[2])
-                next_z = float(first_poly_start[2])
-                same_print_z = abs(prev_z - next_z) <= 1e-9
-                if same_print_z:
-                    travel = np.vstack([prev_layer_last_end, first_poly_start])
-                    all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
-                else:
-                    safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
-                    safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
-                    travel_up = np.vstack([prev_layer_last_end, safe_prev])
-                    travel_xy = np.vstack([safe_prev, safe_next])
-                    travel_down = np.vstack([safe_next, first_poly_start])
-                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
-                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
-                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
+                travel = np.vstack([prev_layer_last_end, first_poly_start])
+                all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
             for i_seg in range(len(layer_polys)):
                 poly = layer_polys[i_seg]
@@ -830,12 +817,6 @@ def compute_slice_paths_with_travel(
 
             prev_layer_last_end = layer_polys[-1][-1]
 
-        if seq_print and sub_idx < len(sub_meshes) - 1 and prev_layer_last_end is not None:
-            safe_pt_up = prev_layer_last_end.copy()
-            safe_pt_up[2] = safe_z_clearance
-            travel_up = np.vstack([prev_layer_last_end, safe_pt_up])
-            all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
-            prev_layer_last_end = safe_pt_up
 
     return all_items
 
@@ -1977,15 +1958,17 @@ with right_col:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        if int(st.session_state.get("paths_scrub_slider", 0)) != default_val:
+        if "paths_scrub_slider_initialized" not in st.session_state:
             st.session_state.paths_scrub_slider = default_val
-        if int(st.session_state.get("paths_scrub_input", 0)) != default_val:
+            st.session_state.paths_scrub_slider_initialized = True
+        if "paths_scrub_input_initialized" not in st.session_state:
             st.session_state.paths_scrub_input = default_val
+            st.session_state.paths_scrub_input_initialized = True
 
         st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
         st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
 
-        target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
 
         layer_z_values = _collect_layer_z_values(segments)
         max_layer_no = len(layer_z_values)
@@ -2128,4 +2111,5 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
+
 
