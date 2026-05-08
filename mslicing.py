@@ -568,27 +568,20 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     return fig
 
 def make_slice_z_values(mesh, z_int: float) -> List[float]:
-    z_min = float(mesh.bounds[0, 2])
-    z_max = float(mesh.bounds[1, 2])
-    height = z_max - z_min
-
-    if not np.isfinite(z_min) or not np.isfinite(z_max) or height <= 1e-9:
+    zmin = float(mesh.bounds[0, 2])
+    zmax = float(mesh.bounds[1, 2])
+    height = zmax - zmin
+    if not np.isfinite(zmin) or not np.isfinite(zmax) or height <= 1e-9:
         return []
+    zstep = max(float(z_int), 1e-9)
+    n_full = int(np.floor((height + 1e-9) / zstep))
+    zvalues = [zmin + zstep * i for i in range(1, n_full + 1)]
+    zvalues = [float(z) for z in zvalues if z < zmax - 1e-9 or abs(z - zmax) <= 1e-9]
+    if not zvalues:
+        mid = zmin + height * 0.5
+        return [float(mid)]
+    return zvalues
 
-    z_step = max(float(z_int), 1e-9)
-
-    z_values = list(np.arange(z_step, z_max + 0.001, z_step))
-    if not z_values:
-        z_values = [z_min + height * 0.5]
-
-    if abs(z_max - z_values[-1]) > 1e-3:
-        z_values.append(z_max)
-    z_values.append(z_max + 0.01)
-    return z_values
-
-# =========================
-# G-code generator 
-# =========================
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
@@ -2069,19 +2062,14 @@ with center_col:
         backdrop-filter: blur(6px);
         border: 1px solid rgba(0,0,0,0.08);
         border-radius: 12px;
-        padding: 0.5rem;
+        padding: 0.35rem 0.45rem;
         margin-bottom: 0.75rem;
         box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     }
-    .sticky-viewbar-label {
-        font-size: 0.9rem;
-        font-weight: 600;
-        margin-bottom: 0.35rem;
-    }
-    </style>
+        </style>
     """, unsafe_allow_html=True)
-    st.markdown('<div class="sticky-viewbar"><div class="sticky-viewbar-label">보기</div>', unsafe_allow_html=True)
-    v1, v2, v3 = st.columns(3)
+    st.markdown('<div class="sticky-viewbar">', unsafe_allow_html=True)
+    s1, v1, s2, v2, s3, v3 = st.columns([1, 2, 1, 2, 1, 2])
     with v1:
         if st.button("슬라이싱 경로 (3D)", use_container_width=True):
             st.session_state.main_view = "슬라이싱 경로 (3D)"
