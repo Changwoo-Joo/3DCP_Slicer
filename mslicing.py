@@ -84,13 +84,53 @@ st.markdown(
       background: #f3f3f3;
       border-radius: 999px;
     }
+    .middle-scroll-wrap {
+      position: sticky;
+      top: 2.0rem;
+      height: calc(100vh - 2rem);
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      background: linear-gradient(to right, #ffffff 0%, #f7f7f7 50%, #ffffff 100%);
+    }
+    .middle-scroll {
+      width: 16px;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      border-left: 1px solid #e5e5e5;
+      border-right: 1px solid #e5e5e5;
+      background: #fafafa;
+      border-radius: 10px;
+      box-shadow: inset 0 0 0 1px #f0f0f0;
+    }
+    .middle-scroll-inner {
+      width: 1px;
+      height: 200vh;
+      opacity: 0;
+    }
+    .middle-scroll::-webkit-scrollbar {
+      width: 12px;
+    }
+    .middle-scroll::-webkit-scrollbar-thumb {
+      background: #bdbdbd;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .middle-scroll::-webkit-scrollbar-track {
+      background: #efefef;
+      border-radius: 999px;
+    }
     .right-panel {
       position: sticky;
       top: 2.0rem;
       max-height: calc(100vh - 2rem);
       overflow-y: auto;
-      border-left: 1px solid #e6e6e6;
-      padding-left: 12px;
+      border-left: 1px solid #dcdcdc;
+      box-shadow: -8px 0 18px rgba(0,0,0,0.04);
+      padding-left: 14px;
       background: white;
       scrollbar-gutter: stable;
     }
@@ -1993,13 +2033,16 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, right_col = st.columns([14, 3], gap="large")
+center_col, mid_col, right_col = st.columns([14, 0.42, 3], gap="small")
 
 segments = None
 total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
+
+with mid_col:
+    st.markdown('<div class="middle-scroll-wrap"><div class="middle-scroll" id="middle-scrollbar"><div class="middle-scroll-inner" id="middle-scrollbar-inner"></div></div></div>', unsafe_allow_html=True)
 
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
@@ -2118,6 +2161,51 @@ else:
 # ---- 중앙: 뷰 전환 ----
 with center_col:
     st.markdown('<div class="left-panel-scroll">', unsafe_allow_html=True)
+    st.markdown("""
+    <script>
+    (function middleScrollbarSync(){
+      const rootDoc = window.parent.document;
+      let bound = false;
+      function bind(){
+        if (bound) return true;
+        const center = rootDoc.querySelector('.left-panel-scroll');
+        const mid = rootDoc.querySelector('#middle-scrollbar');
+        const inner = rootDoc.querySelector('#middle-scrollbar-inner');
+        if (!center || !mid || !inner) return false;
+        const syncSize = () => {
+          inner.style.height = Math.max(center.scrollHeight, center.clientHeight + 1) + 'px';
+          if (Math.abs(mid.scrollTop - center.scrollTop) > 1) mid.scrollTop = center.scrollTop;
+        };
+        let lock = false;
+        center.addEventListener('scroll', () => {
+          if (lock) return;
+          lock = true;
+          mid.scrollTop = center.scrollTop;
+          requestAnimationFrame(() => lock = false);
+        }, {passive:true});
+        mid.addEventListener('scroll', () => {
+          if (lock) return;
+          lock = true;
+          center.scrollTop = mid.scrollTop;
+          requestAnimationFrame(() => lock = false);
+        }, {passive:true});
+        syncSize();
+        new ResizeObserver(syncSize).observe(center);
+        window.addEventListener('load', syncSize);
+        setTimeout(syncSize, 300);
+        setTimeout(syncSize, 1000);
+        setTimeout(syncSize, 2000);
+        bound = true;
+        return true;
+      }
+      let tries = 0;
+      const t = setInterval(() => {
+        tries += 1;
+        if (bind() || tries > 60) clearInterval(t);
+      }, 200);
+    })();
+    </script>
+    """, unsafe_allow_html=True)
     st.markdown("""
     <style>
     div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
