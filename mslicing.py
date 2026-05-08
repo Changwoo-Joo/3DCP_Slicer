@@ -1476,6 +1476,7 @@ if uploaded is not None:
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
     st.session_state.active_tab = "stl"
+    st.session_state.tab_click_target = "STL 미리보기"
 
 if slice_clicked and st.session_state.mesh is not None:
     items = compute_slice_paths_with_travel(
@@ -1488,6 +1489,7 @@ if slice_clicked and st.session_state.mesh is not None:
     )
     st.session_state.paths_items = items
     st.session_state.active_tab = "paths"
+    st.session_state.tab_click_target = "슬라이싱 경로 (3D)"
     segs = items_to_segments(items, e_on=e_on)
     max_seg = len(segs)
     st.session_state.paths_scrub = max_seg
@@ -2060,6 +2062,20 @@ with center_col:
     tab_labels = ["슬라이싱 경로 (3D)", "STL 미리보기", "G-code 뷰어"]
     default_index = 1 if active_tab == "stl" else (2 if active_tab == "gcode" else 0)
     tab_paths, tab_stl, tab_gcode = st.tabs(tab_labels)
+
+    _tab_click_target = st.session_state.get("tab_click_target", None)
+    if _tab_click_target:
+        st.markdown(f"""
+        <script>
+        (function() {{
+            const target = {repr('__TARGET__')};
+            const labels = Array.from(window.parent.document.querySelectorAll('button[role="tab"]'));
+            const btn = labels.find(el => (el.innerText || el.textContent || '').trim() === target);
+            if (btn) {{ btn.click(); }}
+        }})();
+        </script>
+        """.replace('__TARGET__', _tab_click_target), unsafe_allow_html=True)
+        st.session_state.tab_click_target = None
 
     if active_tab == "stl":
         st.caption("현재 기본 선택 탭: STL 미리보기")
