@@ -794,8 +794,20 @@ def compute_slice_paths_with_travel(
 
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
-                travel = np.vstack([prev_layer_last_end, first_poly_start])
-                all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+                next_z = float(first_poly_start[2])
+                z_top = float(sub_mesh.bounds[1][2])
+                if abs(next_z - z_top) <= 1e-9:
+                    safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
+                    safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
+                    travel_up = np.vstack([prev_layer_last_end, safe_prev])
+                    travel_xy = np.vstack([safe_prev, safe_next])
+                    travel_down = np.vstack([safe_next, first_poly_start])
+                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
+                else:
+                    travel = np.vstack([prev_layer_last_end, first_poly_start])
+                    all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
             for i_seg in range(len(layer_polys)):
                 poly = layer_polys[i_seg]
