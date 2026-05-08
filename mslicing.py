@@ -28,6 +28,30 @@ st.markdown(
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
+    .left-panel-scroll {
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 8px;
+      scrollbar-gutter: stable;
+    }
+    .left-panel-scroll::-webkit-scrollbar,
+    .right-panel::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .left-panel-scroll::-webkit-scrollbar-thumb,
+    .right-panel::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .left-panel-scroll::-webkit-scrollbar-track,
+    .right-panel::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -36,6 +60,7 @@ st.markdown(
       border-left: 1px solid #e6e6e6;
       padding-left: 12px;
       background: white;
+      scrollbar-gutter: stable;
     }
 
     .sidebar-title {
@@ -1335,7 +1360,6 @@ ensure_anim_buffers()
 # =========================
 # 접근 권한
 # =========================
-st.sidebar.header("라이센스")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
@@ -1369,13 +1393,7 @@ if st.session_state.get("access_key", ""):
 else:
     pass
 
-uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"])
-stl_unit_mode = st.sidebar.selectbox(
-    "STL 단위",
-    ["자동 감지", "mm", "m → mm (×1000)"],
-    index=0,
-    help="첨부한 column_1x1x3_m.stl처럼 좌표가 0~3이면 m 단위로 보고 mm로 변환해야 합니다."
-)
+uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
 with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
     move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
     move_y = st.number_input("이동 Y(mm)", value=float(st.session_state.get("stl_move_y", 0.0)), step=10.0, format="%.3f")
@@ -1457,13 +1475,9 @@ if uploaded is not None:
         st.stop()
     extents = np.asarray(mesh.extents, dtype=float)
     max_extent = float(np.max(extents)) if extents.size else 0.0
-    scale_to_mm = 1.0
-    if stl_unit_mode == "m → mm (×1000)" or (stl_unit_mode == "자동 감지" and 0.0 < max_extent <= 20.0):
-        scale_to_mm = 1000.0
+    scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
+    if scale_to_mm != 1.0:
         mesh.apply_scale(scale_to_mm)
-        st.sidebar.info(f"STL 단위 자동 변환: m → mm (최대 치수 {max_extent:.3f} → {max_extent * scale_to_mm:.1f} mm)")
-    else:
-        st.sidebar.info(f"STL 단위: mm 기준 사용 (최대 치수 {max_extent:.1f} mm)")
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
@@ -2071,6 +2085,7 @@ else:
 
 # ---- 중앙: 뷰 전환 ----
 with center_col:
+    st.markdown('<div class="left-panel-scroll">', unsafe_allow_html=True)
     st.markdown("""
     <style>
     div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
