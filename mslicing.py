@@ -1124,7 +1124,7 @@ def ensure_traces(fig: go.Figure, want=5):
         elif n in (2, 3): add_off()
         else: add_caps()
 
-def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool):
+def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool, segments_for_hover=None):
     ensure_traces(fig, want=5)
     buf = st.session_state.paths_anim_buf
 
@@ -1138,6 +1138,32 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool)
 
     fig.data[0].x = buf["solid"]["x"]; fig.data[0].y = buf["solid"]["y"]; fig.data[0].z = buf["solid"]["z"]
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
+
+    if segments_for_hover is not None:
+        layer_map = _collect_layer_z_values(segments_for_hover)
+        def _layer_no(zv):
+            for idx, zz in enumerate(layer_map, start=1):
+                if abs(float(zv) - float(zz)) < 1e-6:
+                    return idx
+            return None
+        solid_cd = []
+        dot_cd = []
+        travel_mode = st.session_state.get("paths_travel_mode", "solid")
+        for p1, p2, is_travel, is_extruding in segments_for_hover:
+            zmid = float((p1[2] + p2[2]) * 0.5)
+            lno = _layer_no(zmid)
+            row = [[lno], [lno], [None]]
+            if is_travel:
+                if travel_mode == "hidden":
+                    continue
+                dot_cd.extend(row if travel_mode == "dotted" else [])
+                solid_cd.extend(row if travel_mode != "dotted" else [])
+            else:
+                solid_cd.extend(row)
+        fig.data[0].customdata = solid_cd
+        fig.data[1].customdata = dot_cd
+        fig.data[0].hovertemplate = "X=%{x:.3f}<br>Y=%{y:.3f}<br>Z=%{z:.3f}<br>레이어=%{customdata[0]}<extra></extra>"
+        fig.data[1].hovertemplate = "X=%{x:.3f}<br>Y=%{y:.3f}<br>Z=%{z:.3f}<br>레이어=%{customdata[0]}<extra></extra>"
 
     if show_offsets:
         fig.data[2].x = buf["off_l"]["x"]; fig.data[2].y = buf["off_l"]["y"]; fig.data[2].z = buf["off_l"]["z"]
@@ -1216,6 +1242,8 @@ if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 if "paths_is_playing" not in st.session_state:
     st.session_state.paths_is_playing = False
+if "paths_check_mode" not in st.session_state:
+    st.session_state.paths_check_mode = False
 if "paths_play_step" not in st.session_state:
     st.session_state.paths_play_step = 50
 if "paths_play_ms" not in st.session_state:
@@ -1919,24 +1947,23 @@ with right_col:
         scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
 
         target = default_val
-        if scrub != default_val: target = int(scrub)
-        if scrub_num != default_val: target = int(scrub_num)
+        if not bool(st.session_state.get("paths_check_mode", False)):
+            if scrub != default_val: target = int(scrub)
+            if scrub_num != default_val: target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
-
-        cplay1, cplay2, cplay3 = st.columns(3)
+        cplay1, cplay2 = st.columns(2)
         with cplay1:
-            if st.button("▶ 재생", use_container_width=True):
+            if st.button("경로확인", use_container_width=True):
+                st.session_state.paths_check_mode = True
                 st.session_state.paths_is_playing = True
-        with cplay2:
-            if st.button("⏸ 일시정지", use_container_width=True):
-                st.session_state.paths_is_playing = False
-        with cplay3:
-            if st.button("■ 정지", use_container_width=True):
-                st.session_state.paths_is_playing = False
                 st.session_state.paths_scrub = 0
                 if segments is not None:
                     reset_anim_buffers()
+        with cplay2:
+            if st.button("경로확인 종료", use_container_width=True):
+                st.session_state.paths_check_mode = False
+                st.session_state.paths_is_playing = False
 
         cp1, cp2 = st.columns(2)
         with cp1:
@@ -1949,6 +1976,7 @@ with right_col:
         layer_z_values = _collect_layer_z_values(segments)
         max_layer_no = len(layer_z_values)
         view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
+        st.caption(f"총 레이어 수: {max_layer_no}")
         st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
         if max_layer_no > 0:
             default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
@@ -2048,7 +2076,8 @@ with center_col:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps))
+            segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
+            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
             if bool(st.session_state.get("paths_is_playing", False)):
                 st.markdown(f"<script>setTimeout(function(){{ window.parent.location.reload(); }}, {int(st.session_state.get("paths_play_ms", 80))});</script>", unsafe_allow_html=True)
@@ -2061,6 +2090,7 @@ with center_col:
                 + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
                 + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
+                + (" | 경로확인 모드" if st.session_state.get("paths_check_mode", False) else "")
                 + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
