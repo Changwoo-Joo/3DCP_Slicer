@@ -102,6 +102,24 @@ st.markdown(
       font-weight: 700;
       line-height: 1.2;
     }
+    .profile-topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.75rem;
+      align-items: start;
+      margin-bottom: 0.4rem;
+    }
+    .profile-stats {
+      text-align: right;
+      white-space: nowrap;
+      font-size: 0.92rem;
+      line-height: 1.35;
+      color: #444;
+      padding-top: 0.15rem;
+    }
+    .profile-stats strong {
+      font-weight: 700;
+    }
     .view-options-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -120,6 +138,7 @@ st.markdown(
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 0.5rem;
       align-items: stretch;
+      width: 100%;
     }
     .profile-main-menu [data-testid="column"] {
       min-width: 0 !important;
@@ -132,12 +151,14 @@ st.markdown(
     .profile-main-menu [data-testid="stButton"] > button {
       width: 100%;
       min-height: 48px;
+      max-width: 100%;
       white-space: normal !important;
-      word-break: keep-all;
+      word-break: break-word;
       overflow-wrap: anywhere;
       line-height: 1.25;
       text-align: center;
-      padding: 0.65rem 0.75rem;
+      padding: 0.65rem 0.5rem;
+      font-size: clamp(0.82rem, 1.6vw, 1rem);
     }
     @media (max-width: 1200px) {
       .view-options-grid {
@@ -150,6 +171,13 @@ st.markdown(
       }
     }
     @media (max-width: 900px) {
+      .profile-topbar {
+        grid-template-columns: 1fr;
+      }
+      .profile-stats {
+        text-align: left;
+        white-space: normal;
+      }
       .profile-main-menu > div[data-testid="stHorizontalBlock"] {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -2211,11 +2239,13 @@ with center_col:
             apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
             st.session_state.apply_offsets_flag = bool(apply_offsets)
             include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
-            emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
+            if e_on:
+                show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=(st.session_state.get("paths_travel_mode", "dotted") != "hidden"), disabled=(segments is None))
+            else:
+                st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
 
         with c_opt2:
             if e_on:
-                show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=(st.session_state.get("paths_travel_mode", "dotted") != "hidden"), disabled=(segments is None))
                 travel_mode = "dotted" if show_dotted else "hidden"
             else:
                 st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
