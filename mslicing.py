@@ -1381,7 +1381,7 @@ if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
 
 if "main_view" not in st.session_state:
-    st.session_state.main_view = "슬라이싱 경로"
+    st.session_state.main_view = "슬라이싱 경로 (3D)"
 
 if "last_uploaded_name" not in st.session_state:
     st.session_state.last_uploaded_name = None
