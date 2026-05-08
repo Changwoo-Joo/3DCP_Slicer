@@ -155,6 +155,9 @@ st.markdown(
     .profile-main-menu [data-testid="stButton"] {
       width: 100%;
     }
+    .profile-main-menu [data-testid="stButton"] > div {
+      width: 100%;
+    }
      .profile-main-menu [data-testid="stButton"] > button {
       width: 100% !important;
       max-width: 100% !important;
@@ -193,6 +196,11 @@ st.markdown(
       }
       .profile-main-menu > div[data-testid="stHorizontalBlock"] {
         grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      }
+    }
+    @media (max-width: 900px) {
+      div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:has(.profile-stats) {
+        align-self: start;
       }
     }
     @media (max-width: 640px) {
@@ -2177,30 +2185,36 @@ else:
 # ---- 중앙: 뷰 전환 ----
 with center_col:
     st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
-    st.markdown("""
-    <style>
-    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
-        white-space: nowrap;
-        padding-left: 0.6rem;
-        padding-right: 0.6rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    v1, v2, v3, _sp = st.columns([1.05, 1.0, 0.95, 5.0])
-    with v1:
-        if st.button("슬라이싱 경로 (3D)", use_container_width=True):
-            st.session_state.main_view = "슬라이싱 경로 (3D)"
-    with v2:
-        if st.button("STL 미리보기", use_container_width=True):
-            st.session_state.main_view = "STL 미리보기"
-    with v3:
-        if st.button("G-code 뷰어", use_container_width=True):
-            st.session_state.main_view = "G-code 뷰어"
-    st.markdown("</div>", unsafe_allow_html=True)
-    if current_length_m is not None:
-        st.markdown(f"<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>{current_length_m:.3f} m</div>", unsafe_allow_html=True)
-    else:
-        st.markdown("<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>-</div>", unsafe_allow_html=True)
+
+    current_length_m = None
+    if segments is not None and total_segments > 0:
+        _, current_layer_len = compute_layer_length_for_index(
+            segments,
+            int(clamp(st.session_state.get("paths_scrub", total_segments), 0, total_segments))
+        )
+        if current_layer_len is not None:
+            current_length_m = current_layer_len / 1000.0
+
+    top_left, top_right = st.columns([5.8, 1.6], gap="small")
+    with top_left:
+        st.markdown("<div class='profile-main-menu'>", unsafe_allow_html=True)
+        v1, v2, v3 = st.columns(3, gap="small")
+        with v1:
+            if st.button("슬라이싱 경로 (3D)", use_container_width=True, key="main_view_paths"):
+                st.session_state.main_view = "슬라이싱 경로 (3D)"
+        with v2:
+            if st.button("STL 미리보기", use_container_width=True, key="main_view_stl"):
+                st.session_state.main_view = "STL 미리보기"
+        with v3:
+            if st.button("G-code 뷰어", use_container_width=True, key="main_view_gcode"):
+                st.session_state.main_view = "G-code 뷰어"
+        st.markdown("</div>", unsafe_allow_html=True)
+    with top_right:
+        if current_length_m is not None:
+            st.markdown(f"<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>{current_length_m:.3f} m</div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='profile-stats'><strong>누적 레이어 총 길이</strong><br>-</div>", unsafe_allow_html=True)
+
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
 
     if current_view == "슬라이싱 경로 (3D)":
