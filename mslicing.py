@@ -533,6 +533,25 @@ def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.n
 # =========================
 # Plotly: STL (정적)
 # =========================
+def _apply_translation_to_mesh(mesh: trimesh.Trimesh, dx: float, dy: float, dz: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    m.apply_translation([float(dx), float(dy), float(dz)])
+    return m
+
+
+def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, rx_deg: float = 0.0, ry_deg: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    c = np.asarray(m.bounding_box.centroid, dtype=float)
+    T1 = trimesh.transformations.translation_matrix(-c)
+    T2 = trimesh.transformations.translation_matrix(c)
+    Rz = trimesh.transformations.rotation_matrix(np.deg2rad(float(rz_deg)), [0, 0, 1])
+    Rx = trimesh.transformations.rotation_matrix(np.deg2rad(float(rx_deg)), [1, 0, 0])
+    Ry = trimesh.transformations.rotation_matrix(np.deg2rad(float(ry_deg)), [0, 1, 0])
+    M = T2 @ (Rz @ Rx @ Ry) @ T1
+    m.apply_transform(M)
+    return m
+
+
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
     f = mesh.faces
@@ -1292,6 +1311,27 @@ stl_unit_mode = st.sidebar.selectbox(
     index=0,
     help="첨부한 column_1x1x3_m.stl처럼 좌표가 0~3이면 m 단위로 보고 mm로 변환해야 합니다."
 )
+with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
+    move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
+    move_y = st.number_input("이동 Y(mm)", value=float(st.session_state.get("stl_move_y", 0.0)), step=10.0, format="%.3f")
+    move_z = st.number_input("이동 Z(mm)", value=float(st.session_state.get("stl_move_z", 0.0)), step=10.0, format="%.3f")
+    if st.button("이동 적용", use_container_width=True, key="apply_stl_move"):
+        st.session_state["stl_move_x"] = float(move_x)
+        st.session_state["stl_move_y"] = float(move_y)
+        st.session_state["stl_move_z"] = float(move_z)
+        st.session_state["stl_apply_move"] = True
+        st.sidebar.success("STL 이동 좌표를 적용했습니다.")
+
+    rot_x = st.number_input("회전 Rx(deg)", value=float(st.session_state.get("stl_rot_x", 0.0)), step=1.0, format="%.3f")
+    rot_y = st.number_input("회전 Ry(deg)", value=float(st.session_state.get("stl_rot_y", 0.0)), step=1.0, format="%.3f")
+    rot_z = st.number_input("회전 Rz(deg)", value=float(st.session_state.get("stl_rot_z", 0.0)), step=1.0, format="%.3f")
+    if st.button("회전 적용", use_container_width=True, key="apply_stl_rot"):
+        st.session_state["stl_rot_x"] = float(rot_x)
+        st.session_state["stl_rot_y"] = float(rot_y)
+        st.session_state["stl_rot_z"] = float(rot_z)
+        st.session_state["stl_apply_rot"] = True
+        st.sidebar.success("중심점 기준 STL 회전을 적용했습니다.")
+
 
 # =========================
 # 파라미터
@@ -1324,10 +1364,10 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-with st.sidebar.expander("노즐 두께/오프셋 옵션", expanded=False):
-    nozzle_width = st.number_input("노즐 두께(mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.get("nozzle_width_mm", 0.0)), step=0.5)
-    st.session_state["nozzle_width_mm"] = float(nozzle_width)
-    enable_inward_offset = st.checkbox("노즐 두께만큼 안쪽 오프셋 출력", value=bool(st.session_state.get("enable_inward_offset", False)))
+with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
+    nozzle_diameter = st.number_input("노즐 직경(mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.get("nozzle_diameter_mm", 0.0)), step=0.5, help="입력한 노즐 직경의 반지름(직경/2)만큼 안쪽으로 오프셋합니다.")
+    st.session_state["nozzle_diameter_mm"] = float(nozzle_diameter)
+    enable_inward_offset = st.checkbox("노즐 반지름만큼 안쪽 오프셋 출력", value=bool(st.session_state.get("enable_inward_offset", False)))
     st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
@@ -1362,6 +1402,23 @@ if uploaded is not None:
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
+
+    if bool(st.session_state.get("stl_apply_move", False)):
+        mesh = _apply_translation_to_mesh(
+            mesh,
+            dx=float(st.session_state.get("stl_move_x", 0.0)),
+            dy=float(st.session_state.get("stl_move_y", 0.0)),
+            dz=float(st.session_state.get("stl_move_z", 0.0)),
+        )
+
+    if bool(st.session_state.get("stl_apply_rot", False)):
+        mesh = _apply_rotation_about_centroid(
+            mesh,
+            rz_deg=float(st.session_state.get("stl_rot_z", 0.0)),
+            rx_deg=float(st.session_state.get("stl_rot_x", 0.0)),
+            ry_deg=float(st.session_state.get("stl_rot_y", 0.0)),
+        )
+
     st.session_state.mesh = mesh
     st.session_state.base_name = Path(uploaded.name).stem or "output"
     st.session_state.active_tab = "stl"
@@ -1371,7 +1428,7 @@ if slice_clicked and st.session_state.mesh is not None:
         st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner,
-        nozzle_width=float(st.session_state.get("nozzle_width_mm", 0.0)),
+        nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
@@ -1909,10 +1966,6 @@ if segments is not None and total_segments > 0:
             compute_offsets_into_buffers(visible_segments, len(visible_segments), half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
             st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
             add_global_endcaps_into_buffers(visible_segments, len(visible_segments), half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
-            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-            dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
-            dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
         if visible_segments:
             total_len = sum(float(np.linalg.norm(p2[:2] - p1[:2])) for (p1, p2, is_travel, is_extruding) in visible_segments if is_extruding)
             st.markdown(f"**선택 레이어 총 길이:** {total_len/1000:.3f} m")
@@ -1931,10 +1984,6 @@ if segments is not None and total_segments > 0:
             compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
             st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
             add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-            bbox_r = _bbox_from_buffer(st.session_state.paths_anim_buf["off_r"])
-            z_r = _last_z_from_buffer(st.session_state.paths_anim_buf["off_r"])
-            dims_html = _fmt_dims_block_html("외부치수", bbox_r, z_r)
-            dims_placeholder.markdown(dims_html, unsafe_allow_html=True)
 
         if segments is not None and target > 0:
             total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
