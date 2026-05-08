@@ -11,6 +11,7 @@ from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
 import csv
+import requests
 
 # =========================
 # App basics
@@ -21,15 +22,73 @@ LOG_DIR = Path("/var/data")
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "access_log.csv"
 
+def lookup_ip_location(ip: str) -> dict:
+    if not ip:
+        return {
+            "geo_status": "no_ip",
+            "country": "",
+            "region": "",
+            "city": "",
+            "lat": "",
+            "lon": "",
+            "isp": "",
+        }
+
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,lat,lon,isp,query"
+        r = requests.get(url, timeout=3)
+        data = r.json()
+
+        if data.get("status") != "success":
+            return {
+                "geo_status": f"fail:{data.get('message', '')}",
+                "country": "",
+                "region": "",
+                "city": "",
+                "lat": "",
+                "lon": "",
+                "isp": "",
+            }
+
+        return {
+            "geo_status": "success",
+            "country": str(data.get("country", "") or ""),
+            "region": str(data.get("regionName", "") or ""),
+            "city": str(data.get("city", "") or ""),
+            "lat": str(data.get("lat", "") or ""),
+            "lon": str(data.get("lon", "") or ""),
+            "isp": str(data.get("isp", "") or ""),
+        }
+    except Exception as e:
+        return {
+            "geo_status": f"error:{e}",
+            "country": "",
+            "region": "",
+            "city": "",
+            "lat": "",
+            "lon": "",
+            "isp": "",
+        }
+
 def save_access_log():
     headers = getattr(st.context, "headers", {})
+    ip = str(getattr(st.context, "ip_address", "") or "")
+    geo = lookup_ip_location(ip)
+
     row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "ip": str(getattr(st.context, "ip_address", "") or ""),
+        "ip": ip,
         "timezone": str(getattr(st.context, "timezone", "") or ""),
         "locale": str(getattr(st.context, "locale", "") or ""),
         "url": str(getattr(st.context, "url", "") or ""),
         "user_agent": str(headers.get("user-agent", "")),
+        "geo_status": geo["geo_status"],
+        "country": geo["country"],
+        "region": geo["region"],
+        "city": geo["city"],
+        "lat": geo["lat"],
+        "lon": geo["lon"],
+        "isp": geo["isp"],
     }
 
     file_exists = LOG_FILE.exists()
@@ -2306,4 +2365,3 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
-
