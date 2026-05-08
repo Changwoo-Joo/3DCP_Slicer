@@ -10,11 +10,38 @@ import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
+import csv
 
 # =========================
 # App basics
 # =========================
 st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
+
+LOG_DIR = Path("/var/data")
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "access_log.csv"
+
+def save_access_log():
+    headers = getattr(st.context, "headers", {})
+    row = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "ip": str(getattr(st.context, "ip_address", "") or ""),
+        "timezone": str(getattr(st.context, "timezone", "") or ""),
+        "locale": str(getattr(st.context, "locale", "") or ""),
+        "url": str(getattr(st.context, "url", "") or ""),
+        "user_agent": str(headers.get("user-agent", "")),
+    }
+
+    file_exists = LOG_FILE.exists()
+    with open(LOG_FILE, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+if "access_logged" not in st.session_state:
+    save_access_log()
+    st.session_state.access_logged = True
 
 # ── 전역 CSS ──
 st.markdown(
@@ -23,7 +50,7 @@ st.markdown(
     footer {visibility: hidden;}
     [data-testid="stFooter"] {visibility: hidden;}
     [data-testid="stDecoration"] {visibility: hidden;}
-
+    
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
     .stTabs { overflow: hidden !important; }
