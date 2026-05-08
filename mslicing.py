@@ -26,7 +26,29 @@ st.markdown(
 
     .block-container { padding-top: 2.0rem; }
     .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
-    .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
+    .stTabs [data-baseweb="tab-list"] {
+      margin-top: 0.6rem !important;
+      display: flex !important;
+      flex-wrap: wrap !important;
+      gap: 0.35rem !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+      height: auto !important;
+      min-height: 42px !important;
+      white-space: normal !important;
+      word-break: keep-all !important;
+      text-align: center !important;
+      line-height: 1.2 !important;
+      padding: 0.45rem 0.7rem !important;
+      flex: 1 1 140px !important;
+    }
+    .stTabs [data-baseweb="tab"] p {
+      white-space: normal !important;
+      word-break: keep-all !important;
+      overflow-wrap: anywhere !important;
+      margin: 0 !important;
+      line-height: 1.2 !important;
+    }
 
     .left-panel-scroll {
       position: sticky;
@@ -92,7 +114,7 @@ st.markdown(
 
     .sidebar-title {
       margin: 0.25rem 0 0.6rem 0;
-      font-size: 1.35rem;
+      font-size: 1.4125rem;
       font-weight: 700;
       line-height: 1.2;
     }
@@ -1297,13 +1319,13 @@ if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
 if "paths_scrub" not in st.session_state:
-    st.session_state.paths_scrub = 0
+    st.session_state.paths_scrub = total_segments
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 if "paths_scrub_input" not in st.session_state:
-    st.session_state.paths_scrub_input = 0
+    st.session_state.paths_scrub_input = total_segments
 if "paths_scrub_slider" not in st.session_state:
-    st.session_state.paths_scrub_slider = 0
+    st.session_state.paths_scrub_slider = total_segments
 if "layer_view_start_input" not in st.session_state:
     st.session_state.layer_view_start_input = 1
 if "layer_view_end_input" not in st.session_state:
@@ -1409,18 +1431,6 @@ def check_key_valid(k: str):
         return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
-if st.session_state.get("access_key", ""):
-    if KEY_OK:
-        if EXP_DATE is None:
-            st.sidebar.success(STATUS_TXT)
-        else:
-            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
-            st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
-    else:
-        st.sidebar.error(STATUS_TXT)
-else:
-    pass
-
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
 with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
     move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
@@ -1488,13 +1498,17 @@ m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
 access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
-if access_key:
+if st.session_state.get("access_key", ""):
     if KEY_OK:
-        if EXP_DATE is not None:
+        if EXP_DATE is None:
+            st.sidebar.success(STATUS_TXT)
+        else:
             d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
-            st.sidebar.caption(f"만료일: {EXP_DATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
+            st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
     else:
-        st.sidebar.caption(STATUS_TXT)
+        st.sidebar.error(STATUS_TXT)
+else:
+    st.sidebar.info("라이센스키를 입력하면 만료일 알림이 여기에 표시됩니다.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -2173,5 +2187,4 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
-
 
