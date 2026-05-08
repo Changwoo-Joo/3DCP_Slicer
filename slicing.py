@@ -1464,6 +1464,7 @@ ensure_anim_buffers()
 # 접근 권한
 # =========================
 ALLOWED_WITH_EXPIRY = {"wnckddn!@": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
+LOG_DOWNLOAD_KEYS = {"wnckddn!@"}
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
@@ -1564,7 +1565,9 @@ if st.session_state.get("access_key", ""):
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
 
-if KEY_OK and LOG_FILE.exists():
+can_download_log = KEY_OK and (st.session_state.get("access_key", "") in LOG_DOWNLOAD_KEYS)
+
+if can_download_log and LOG_FILE.exists():
     try:
         with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
             csv_text = f.read()
@@ -1578,7 +1581,7 @@ if KEY_OK and LOG_FILE.exists():
         )
     except Exception as e:
         st.sidebar.error(f"CSV 파일 읽기 오류: {e}")
-elif KEY_OK:
+elif can_download_log:
     st.sidebar.info("아직 저장된 접속 로그가 없습니다.")
 
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
@@ -2303,3 +2306,4 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
+
