@@ -574,12 +574,14 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
     if not np.isfinite(zmin) or not np.isfinite(zmax) or height <= 1e-9:
         return []
     zstep = max(float(z_int), 1e-9)
-    n_full = int(np.floor((height + 1e-9) / zstep))
-    zvalues = [zmin + zstep * i for i in range(1, n_full + 1)]
-    zvalues = [float(z) for z in zvalues if z < zmax - 1e-9 or abs(z - zmax) <= 1e-9]
-    if not zvalues:
-        mid = zmin + height * 0.5
-        return [float(mid)]
+    first_z = zmin + 0.5 * zstep
+    if first_z >= zmax - 1e-9:
+        return [float(zmin + 0.5 * height)]
+    zvalues = []
+    z = first_z
+    while z < zmax - 1e-9:
+        zvalues.append(float(z))
+        z += zstep
     return zvalues
 
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
@@ -1318,10 +1320,8 @@ ensure_anim_buffers()
 # =========================
 # 접근 권한
 # =========================
-st.sidebar.header("접근 권한")
+st.sidebar.header("라이센스")
 ALLOWED_WITH_EXPIRY = {"robotics5107": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
-access_key = st.sidebar.text_input("접근 키", type="password", key="access_key")
-
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
@@ -1341,8 +1341,8 @@ def check_key_valid(k: str):
     else:
         return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
 
-KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(access_key)
-if access_key:
+KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
+if st.session_state.get("access_key", ""):
     if KEY_OK:
         if EXP_DATE is None:
             st.sidebar.success(STATUS_TXT)
@@ -1352,7 +1352,7 @@ if access_key:
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.warning("접근 키를 입력하세요.")
+    pass
 
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"])
 stl_unit_mode = st.sidebar.selectbox(
@@ -1425,12 +1425,15 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
-b1 = st.sidebar.container()
-b2 = st.sidebar.container()
-slice_clicked = b1.button("모델 슬라이싱", use_container_width=True)
-gen_clicked = b2.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
+c_btn1, c_key, c_btn2 = st.sidebar.columns([1.15, 1.1, 1.15])
+with c_btn1:
+    slice_clicked = st.button("모델 슬라이싱", use_container_width=True)
+with c_key:
+    access_key = st.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+with c_btn2:
+    gen_clicked = st.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
-    st.sidebar.warning("인증키를 입력해야 G-code 생성을 사용할 수 있습니다.")
+    st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
 if uploaded is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
@@ -2054,22 +2057,14 @@ else:
 with center_col:
     st.markdown("""
     <style>
-    .sticky-viewbar {
-        position: sticky;
-        top: 0.5rem;
-        z-index: 999;
-        background: rgba(255,255,255,0.96);
-        backdrop-filter: blur(6px);
-        border: 1px solid rgba(0,0,0,0.08);
-        border-radius: 12px;
-        padding: 0.35rem 0.45rem;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
+        white-space: nowrap;
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
     }
-        </style>
+    </style>
     """, unsafe_allow_html=True)
-    st.markdown('<div class="sticky-viewbar">', unsafe_allow_html=True)
-    s1, v1, s2, v2, s3, v3 = st.columns([1, 2, 1, 2, 1, 2])
+    v1, v2, v3, _sp = st.columns([1.05, 1.0, 0.95, 5.0])
     with v1:
         if st.button("슬라이싱 경로 (3D)", use_container_width=True):
             st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -2079,7 +2074,6 @@ with center_col:
     with v3:
         if st.button("G-code 뷰어", use_container_width=True):
             st.session_state.main_view = "G-code 뷰어"
-    st.markdown('</div>', unsafe_allow_html=True)
 
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
     st.caption(f"현재 보기: {current_view}")
