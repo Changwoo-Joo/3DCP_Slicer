@@ -1240,6 +1240,35 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
+if "paths_scrub_input" not in st.session_state:
+    st.session_state.paths_scrub_input = 0
+if "paths_scrub_slider" not in st.session_state:
+    st.session_state.paths_scrub_slider = 0
+if "layer_view_start_input" not in st.session_state:
+    st.session_state.layer_view_start_input = 1
+if "layer_view_end_input" not in st.session_state:
+    st.session_state.layer_view_end_input = 1
+
+
+def _sync_scrub_from_slider():
+    st.session_state.paths_scrub = int(st.session_state.get("paths_scrub_slider", 0))
+    st.session_state.paths_scrub_input = int(st.session_state.paths_scrub)
+
+
+def _sync_scrub_from_input(max_segments: int):
+    v = int(clamp(st.session_state.get("paths_scrub_input", 0), 0, max_segments))
+    st.session_state.paths_scrub = v
+    st.session_state.paths_scrub_slider = v
+    st.session_state.paths_scrub_input = v
+
+
+def _sync_layer_inputs(max_layer_no: int):
+    s = int(clamp(st.session_state.get("layer_view_start_input", 1), 1, max_layer_no))
+    e = int(clamp(st.session_state.get("layer_view_end_input", s), s, max_layer_no))
+    st.session_state["layer_view_start"] = s
+    st.session_state["layer_view_end"] = e
+    st.session_state.layer_view_start_input = s
+    st.session_state.layer_view_end_input = e
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -1935,14 +1964,15 @@ with right_col:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        scrub = st.slider("진행(세그먼트)", 0, int(total_segments), int(default_val), 1, help="해당 세그먼트까지 누적 표시")
-        scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
+        if int(st.session_state.get("paths_scrub_slider", 0)) != default_val:
+            st.session_state.paths_scrub_slider = default_val
+        if int(st.session_state.get("paths_scrub_input", 0)) != default_val:
+            st.session_state.paths_scrub_input = default_val
 
-        target = default_val
-        if scrub != default_val: target = int(scrub)
-        if scrub_num != default_val: target = int(scrub_num)
-        target = int(clamp(target, 0, total_segments))
-        st.session_state.paths_scrub = target
+        st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
+        st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
+
+        target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
 
         layer_z_values = _collect_layer_z_values(segments)
         max_layer_no = len(layer_z_values)
@@ -1952,16 +1982,17 @@ with right_col:
         if max_layer_no > 0:
             default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
             default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
+            if int(st.session_state.get("layer_view_start_input", 1)) != default_layer_start:
+                st.session_state.layer_view_start_input = default_layer_start
+            if int(st.session_state.get("layer_view_end_input", default_layer_start)) != default_layer_end:
+                st.session_state.layer_view_end_input = default_layer_end
             c_layer1, c_layer2 = st.columns(2)
             with c_layer1:
-                layer_view_start = st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, value=default_layer_start, step=1)
+                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
             with c_layer2:
-                layer_view_end = st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, value=max(default_layer_end, int(layer_view_start)), step=1)
-            layer_view_start = int(layer_view_start)
-            layer_view_end = int(max(layer_view_start, layer_view_end))
-            st.session_state["layer_view_start"] = layer_view_start
-            st.session_state["layer_view_end"] = layer_view_end
-            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
+                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
+            _sync_layer_inputs(int(max_layer_no))
+            st.caption(f"레이어 범위: {st.session_state['layer_view_start']} ~ {st.session_state['layer_view_end']}")
         else:
             st.session_state["layer_view_start"] = 1
             st.session_state["layer_view_end"] = 1
