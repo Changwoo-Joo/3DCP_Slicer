@@ -1264,11 +1264,10 @@ def _sync_scrub_from_input(max_segments: int):
 
 def _sync_layer_inputs(max_layer_no: int):
     s = int(clamp(st.session_state.get("layer_view_start_input", 1), 1, max_layer_no))
-    e = int(clamp(st.session_state.get("layer_view_end_input", s), s, max_layer_no))
+    e_raw = int(st.session_state.get("layer_view_end_input", s))
+    e = int(clamp(e_raw, s, max_layer_no))
     st.session_state["layer_view_start"] = s
     st.session_state["layer_view_end"] = e
-    st.session_state.layer_view_start_input = s
-    st.session_state.layer_view_end_input = e
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -1982,17 +1981,20 @@ with right_col:
         if max_layer_no > 0:
             default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
             default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
-            if int(st.session_state.get("layer_view_start_input", 1)) != default_layer_start:
-                st.session_state.layer_view_start_input = default_layer_start
-            if int(st.session_state.get("layer_view_end_input", default_layer_start)) != default_layer_end:
-                st.session_state.layer_view_end_input = default_layer_end
+            if "layer_view_start_input" not in st.session_state:
+                st.session_state["layer_view_start_input"] = default_layer_start
+            if "layer_view_end_input" not in st.session_state:
+                st.session_state["layer_view_end_input"] = default_layer_end
             c_layer1, c_layer2 = st.columns(2)
             with c_layer1:
                 st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
             with c_layer2:
                 st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            _sync_layer_inputs(int(max_layer_no))
-            st.caption(f"레이어 범위: {st.session_state['layer_view_start']} ~ {st.session_state['layer_view_end']}")
+            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
+            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
+            st.session_state["layer_view_start"] = layer_view_start
+            st.session_state["layer_view_end"] = layer_view_end
+            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
         else:
             st.session_state["layer_view_start"] = 1
             st.session_state["layer_view_end"] = 1
