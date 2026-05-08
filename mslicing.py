@@ -1488,6 +1488,13 @@ m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
 access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+if access_key:
+    if KEY_OK:
+        if EXPDATE is not None:
+            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
+            st.sidebar.caption(f"만료일: {EXPDATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
+    else:
+        st.sidebar.caption(STATUS_TXT)
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -2056,120 +2063,3 @@ with right_col:
             st.session_state["layer_view_start"] = 1
             st.session_state["layer_view_end"] = 1
             st.caption("레이어 범위: -")
-
-        layer_z, layer_len = compute_layer_length_for_index(segments, target)
-        if layer_z is not None and layer_len is not None:
-            st.caption(f"현재 레이어 전체 길이: Z = {layer_z:.2f} mm · {layer_len:.1f} mm (≈ {layer_len/1000:.3f} m)")
-        else:
-            st.caption("현재 레이어 길이: -")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# ---- 계산/버퍼 구성 ----
-if segments is not None and total_segments > 0:
-    target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-    DRAW_LIMIT = 150000
-    draw_stride = 1
-    selected_only = bool(st.session_state.get("view_selected_layers_only", False))
-    layer_view_start = int(st.session_state.get("layer_view_start", 1))
-    layer_view_end = int(st.session_state.get("layer_view_end", layer_view_start))
-
-    if selected_only:
-        visible_segments = _filter_segments_by_layer_range(segments, layer_view_start, layer_view_end)
-        _build_buffers_from_segments_subset(visible_segments, travel_mode=st.session_state.paths_travel_mode)
-        st.session_state.paths_scrub = target
-        if bool(st.session_state.get("apply_offsets_flag", False)):
-            half_w = float(trim_dist) * 0.5
-            compute_offsets_into_buffers(visible_segments, len(visible_segments), half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-            add_global_endcaps_into_buffers(visible_segments, len(visible_segments), half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-        if visible_segments:
-            total_len = sum(float(np.linalg.norm(p2[:2] - p1[:2])) for (p1, p2, is_travel, is_extruding) in visible_segments if is_extruding)
-            st.markdown(f"**선택 레이어 총 길이:** {total_len/1000:.3f} m")
-    else:
-        built = st.session_state.paths_anim_buf["built_upto"]
-        prev_stride = st.session_state.paths_anim_buf.get("stride", 1)
-        mode_changed = (prev_mode != st.session_state.paths_travel_mode)
-
-        if mode_changed or (draw_stride != prev_stride) or (target < built): rebuild_buffers_to(segments, target, stride=draw_stride)
-        elif target > built: append_segments_to_buffers(segments, built, target, stride=draw_stride)
-
-        st.session_state.paths_scrub = target
-
-        if bool(st.session_state.get("apply_offsets_flag", False)):
-            half_w = float(trim_dist) * 0.5
-            compute_offsets_into_buffers(segments, target, half_w, include_travel_climb=bool(include_z_climb), climb_z_thresh=1e-9)
-            st.session_state.paths_anim_buf["caps"] = {"x": [], "y": [], "z": []}
-            add_global_endcaps_into_buffers(segments, target, half_width=half_w, samples=32, store_caps=bool(emphasize_caps))
-
-        if segments is not None and target > 0:
-            total_len = sum([float(np.linalg.norm(p2[:2] - p1[:2])) for i, (p1, p2, is_travel, is_extruding) in enumerate(segments[:target]) if is_extruding])
-            st.markdown(f"**누적 레이어 총 길이:** {total_len/1000:.3f} m")
-else:
-    if "paths_anim_buf" in st.session_state:
-        st.session_state.paths_anim_buf["off_l"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["off_r"] = {"x": [], "y": [], "z": []}
-        st.session_state.paths_anim_buf["caps"]  = {"x": [], "y": [], "z": []}
-
-# ---- 중앙: 뷰 전환 ----
-with center_col:
-    st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
-    st.markdown("""
-    <style>
-    div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
-        white-space: nowrap;
-        padding-left: 0.6rem;
-        padding-right: 0.6rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    v1, v2, v3, _sp = st.columns([1.05, 1.0, 0.95, 5.0])
-    with v1:
-        if st.button("슬라이싱 경로 (3D)", use_container_width=True):
-            st.session_state.main_view = "슬라이싱 경로 (3D)"
-    with v2:
-        if st.button("STL 미리보기", use_container_width=True):
-            st.session_state.main_view = "STL 미리보기"
-    with v3:
-        if st.button("G-code 뷰어", use_container_width=True):
-            st.session_state.main_view = "G-code 뷰어"
-
-    current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
-    st.caption(f"현재 보기: {current_view}")
-
-    if current_view == "슬라이싱 경로 (3D)":
-        if segments is not None and total_segments > 0:
-            if "paths_base_fig" not in st.session_state:
-                st.session_state.paths_base_fig = make_base_fig(height=820)
-            fig = st.session_state.paths_base_fig
-            segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
-            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-            tm = st.session_state.paths_travel_mode
-            if not e_on:
-                travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
-            else:
-                travel_lbl = "비출력 이동: 점선" if tm == "dotted" else ("비출력 이동: 숨김" if tm == "hidden" else "비출력 이동: 실선")
-            st.caption(
-                f"세그먼트 총 {total_segments:,} | 현재 {st.session_state.paths_scrub:,}"
-                + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
-                + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
-                + (f" | {travel_lbl}")
-                + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
-            )
-        else:
-            st.info("슬라이싱 결과가 없으면 경로가 표시되지 않습니다.")
-
-    elif current_view == "STL 미리보기":
-        if st.session_state.mesh is not None:
-            st.plotly_chart(plot_trimesh(st.session_state.mesh, height=820), use_container_width=True, key="stl_chart", config={"displayModeBar": False})
-        else:
-            st.info("STL 업로드 후 미리보기가 표시됩니다.")
-
-    elif current_view == "G-code 뷰어":
-        if st.session_state.gcode_text:
-            st.text_area("G-code", st.session_state.gcode_text, height=820)
-        else:
-            st.info("G-code 생성 후 표시됩니다.")
-
