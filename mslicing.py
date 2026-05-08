@@ -1523,7 +1523,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
-access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
+access_key = st.sidebar.text_input("라이선스키", type="password", key="access_key", help="라이선스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
 if st.session_state.get("access_key", ""):
     if KEY_OK:
         if EXP_DATE is None:
@@ -1534,10 +1534,10 @@ if st.session_state.get("access_key", ""):
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.info("CODE를 생성하시려면 라이센스키를 입력하세요.")
+    st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
-    st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
+    st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
 if uploaded is not None:
     is_new_upload = (st.session_state.get("last_uploaded_name") != uploaded.name)
