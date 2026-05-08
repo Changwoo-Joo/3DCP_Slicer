@@ -1345,13 +1345,13 @@ if "rapid_text" not in st.session_state:
     st.session_state.rapid_text = None
 
 if "paths_scrub" not in st.session_state:
-    st.session_state.paths_scrub = total_segments
+    st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
 if "paths_scrub_input" not in st.session_state:
-    st.session_state.paths_scrub_input = total_segments
+    st.session_state.paths_scrub_input = 0
 if "paths_scrub_slider" not in st.session_state:
-    st.session_state.paths_scrub_slider = total_segments
+    st.session_state.paths_scrub_slider = 0
 if "layer_view_start_input" not in st.session_state:
     st.session_state.layer_view_start_input = 1
 if "layer_view_end_input" not in st.session_state:
@@ -1534,7 +1534,7 @@ if st.session_state.get("access_key", ""):
     else:
         st.sidebar.error(STATUS_TXT)
 else:
-    st.sidebar.info("CODE를 생성하시려면 유효한 라이센스키를 입력하세요.")
+    st.sidebar.info("CODE를 생성하시려면 라이센스키를 입력하세요.")
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
