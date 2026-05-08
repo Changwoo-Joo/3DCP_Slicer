@@ -1490,9 +1490,9 @@ slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=Tru
 access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
 if access_key:
     if KEY_OK:
-        if EXPDATE is not None:
+        if EXP_DATE is not None:
             d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
-            st.sidebar.caption(f"만료일: {EXPDATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
+            st.sidebar.caption(f"만료일: {EXP_DATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
     else:
         st.sidebar.caption(STATUS_TXT)
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
