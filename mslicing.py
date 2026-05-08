@@ -741,10 +741,15 @@ def compute_slice_paths_with_travel(
         sub_meshes = [mesh]
 
     safe_z_clearance = float(mesh.bounds[1][2]) + 50.0
+    highest_sliced_z = None
+    for _sub_mesh in sub_meshes:
+        _z_values = make_slice_z_values(_sub_mesh, z_int)
+        if _z_values:
+            _top_z = float(max(_z_values))
+            highest_sliced_z = _top_z if highest_sliced_z is None else max(highest_sliced_z, _top_z)
 
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
-        top_print_z = float(max(z_values)) if z_values else None
 
         for z in z_values:
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
@@ -796,7 +801,7 @@ def compute_slice_paths_with_travel(
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
                 prev_z = float(prev_layer_last_end[2])
-                prev_was_top_group = (top_print_z is not None) and (abs(prev_z - float(top_print_z)) <= 1e-6)
+                prev_was_top_group = (highest_sliced_z is not None) and (abs(prev_z - float(highest_sliced_z)) <= 1e-6)
                 if prev_was_top_group:
                     safe_prev = prev_layer_last_end.copy(); safe_prev[2] = safe_z_clearance
                     safe_next = first_poly_start.copy(); safe_next[2] = safe_z_clearance
