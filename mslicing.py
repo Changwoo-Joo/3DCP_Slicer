@@ -79,37 +79,7 @@ st.markdown(
       background: #f3f3f3;
       border-radius: 999px;
     }
-    .mid-scrollbar {
-      position: sticky;
-      top: 2.0rem;
-      height: calc(100vh - 2rem);
-      overflow-y: auto;
-      overflow-x: hidden;
-      scrollbar-gutter: stable;
-      border-left: 1px solid #ececec;
-      border-right: 1px solid #ececec;
-      background: #fafafa;
-    }
-    .mid-scrollbar::before {
-      content: "";
-      display: block;
-      height: 220vh;
-      width: 1px;
-      opacity: 0;
-    }
-    .mid-scrollbar::-webkit-scrollbar {
-      width: 12px;
-    }
-    .mid-scrollbar::-webkit-scrollbar-thumb {
-      background: #c8c8c8;
-      border-radius: 999px;
-      border: 2px solid transparent;
-      background-clip: padding-box;
-    }
-    .mid-scrollbar::-webkit-scrollbar-track {
-      background: #f1f1f1;
-      border-radius: 999px;
-    }
+
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -146,6 +116,7 @@ st.markdown(
       height: 100%;
     }
     .profile-main-menu [data-testid="stHorizontalBlock"] {
+      display: flex !important;
       flex-wrap: wrap !important;
       row-gap: 0.5rem;
       column-gap: 0.5rem;
@@ -153,7 +124,7 @@ st.markdown(
     }
     .profile-main-menu [data-testid="column"] {
       min-width: 0;
-      flex: 1 1 160px;
+      flex: 1 1 220px !important;
     }
     .profile-main-menu [data-testid="stButton"] > button {
       width: 100%;
@@ -161,9 +132,10 @@ st.markdown(
       white-space: normal !important;
       word-break: keep-all;
       overflow-wrap: anywhere;
-      line-height: 1.2;
-      padding-top: 0.55rem;
-      padding-bottom: 0.55rem;
+      line-height: 1.25;
+      text-align: center;
+      padding-top: 0.6rem;
+      padding-bottom: 0.6rem;
     }
     @media (max-width: 1200px) {
       .view-options-grid {
@@ -175,9 +147,14 @@ st.markdown(
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       }
     }
+    @media (max-width: 900px) {
+      .profile-main-menu [data-testid="column"] {
+        flex-basis: calc(50% - 0.5rem) !important;
+      }
+    }
     @media (max-width: 640px) {
       .profile-main-menu [data-testid="column"] {
-        flex-basis: calc(50% - 0.5rem);
+        flex-basis: 100% !important;
       }
       .view-options-grid {
         grid-template-columns: 1fr;
@@ -2075,7 +2052,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center only; view options moved below profile area)
 # =========================
-center_col, split_col = st.columns([1, 0.02], gap="small")
+center_col = st.container()
 
 segments = None
 total_segments = 0
@@ -2083,8 +2060,6 @@ if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
 
-with split_col:
-    st.markdown('<div class="mid-scrollbar"></div>', unsafe_allow_html=True)
 
 show_ui_banner = bool(st.session_state.get("ui_banner"))
 apply_offsets = bool(st.session_state.get("apply_offsets_flag", False))
@@ -2178,77 +2153,6 @@ with center_col:
 
     current_view = st.session_state.get("main_view", "슬라이싱 경로 (3D)")
 
-    st.markdown("<div class='view-options-wrap'>", unsafe_allow_html=True)
-    st.markdown("<div class='view-options-title'>보기 옵션</div>", unsafe_allow_html=True)
-    if segments is None or total_segments == 0:
-        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
-        dims_placeholder = st.empty()
-    else:
-        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
-        if "paths_scrub_slider_initialized" not in st.session_state:
-            st.session_state.paths_scrub_slider = default_val
-            st.session_state.paths_scrub_slider_initialized = True
-        if "paths_scrub_input_initialized" not in st.session_state:
-            st.session_state.paths_scrub_input = default_val
-            st.session_state.paths_scrub_input_initialized = True
-
-        dims_placeholder = st.empty()
-        st.markdown("<div class='view-options-grid'>", unsafe_allow_html=True)
-        c_opt1, c_opt2, c_opt3 = st.columns(3)
-        with c_opt1:
-            apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
-            st.session_state.apply_offsets_flag = bool(apply_offsets)
-            include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
-            emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
-
-        with c_opt2:
-            if e_on:
-                show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=(st.session_state.get("paths_travel_mode", "dotted") != "hidden"), disabled=(segments is None))
-                travel_mode = "dotted" if show_dotted else "hidden"
-            else:
-                st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
-                travel_mode = "solid"
-            prev_mode = st.session_state.get("paths_travel_mode", "solid")
-            st.session_state.paths_travel_mode = travel_mode
-            st.caption(f"총 레이어 수: {len(_collect_layer_z_values(segments))}")
-            st.caption(f"현재 보기: {current_view}")
-
-        with c_opt3:
-            st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
-            st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
-        layer_z_values = _collect_layer_z_values(segments)
-        max_layer_no = len(layer_z_values)
-        view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
-        st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
-        if max_layer_no > 0:
-            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
-            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
-            if "layer_view_start_input" not in st.session_state:
-                st.session_state["layer_view_start_input"] = default_layer_start
-            if "layer_view_end_input" not in st.session_state:
-                st.session_state["layer_view_end_input"] = default_layer_end
-            c_layer1, c_layer2 = st.columns(2)
-            with c_layer1:
-                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            with c_layer2:
-                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
-            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
-            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
-            st.session_state["layer_view_start"] = layer_view_start
-            st.session_state["layer_view_end"] = layer_view_end
-            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
-        else:
-            st.session_state["layer_view_start"] = 1
-            st.session_state["layer_view_end"] = 1
-            st.caption("레이어 범위: -")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.caption(f"현재 보기: {current_view}")
-
     if current_view == "슬라이싱 경로 (3D)":
         if segments is not None and total_segments > 0:
             if "paths_base_fig" not in st.session_state:
@@ -2284,4 +2188,75 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
+
+    st.markdown("<div class='view-options-wrap'>", unsafe_allow_html=True)
+    st.markdown("<div class='view-options-title'>보기 옵션</div>", unsafe_allow_html=True)
+    if segments is None or total_segments == 0:
+        st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
+        dims_placeholder = st.empty()
+    else:
+        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        if "paths_scrub_slider_initialized" not in st.session_state:
+            st.session_state.paths_scrub_slider = int(total_segments)
+            st.session_state.paths_scrub = int(total_segments)
+            st.session_state.paths_scrub_slider_initialized = True
+
+        dims_placeholder = st.empty()
+        st.markdown("<div class='view-options-grid'>", unsafe_allow_html=True)
+        c_opt1, c_opt2 = st.columns([1.15, 1.85])
+        with c_opt1:
+            apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="트림/레이어 폭(mm)을 W로 사용하여 중심 경로와 좌/우 오프셋을 표시합니다.", disabled=(segments is None))
+            st.session_state.apply_offsets_flag = bool(apply_offsets)
+            include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
+            emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
+
+        with c_opt2:
+            if e_on:
+                show_dotted = st.checkbox("비출력 이동 경로를 점선으로 표시", value=(st.session_state.get("paths_travel_mode", "dotted") != "hidden"), disabled=(segments is None))
+                travel_mode = "dotted" if show_dotted else "hidden"
+            else:
+                st.checkbox("비출력 이동 경로를 점선으로 표시", value=False, disabled=True, help="E 값 삽입 OFF이면 비출력 이동 경로는 실선으로 표기")
+                travel_mode = "solid"
+            prev_mode = st.session_state.get("paths_travel_mode", "solid")
+            st.session_state.paths_travel_mode = travel_mode
+            st.caption(f"총 레이어 수: {len(_collect_layer_z_values(segments))}")
+            st.caption(f"현재 보기: {current_view}")
+
+        with c_opt2:
+            c_prog1, c_prog2 = st.columns([2.3, 1.0])
+            with c_prog1:
+                st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
+            with c_prog2:
+                view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
+                st.session_state["view_selected_layers_only"] = bool(view_selected_layers_only)
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        target = int(clamp(st.session_state.get("paths_scrub", default_val), 0, total_segments))
+        layer_z_values = _collect_layer_z_values(segments)
+        max_layer_no = len(layer_z_values)
+        if max_layer_no > 0:
+            default_layer_start = int(clamp(st.session_state.get("layer_view_start", 1), 1, max_layer_no))
+            default_layer_end = int(clamp(st.session_state.get("layer_view_end", default_layer_start), default_layer_start, max_layer_no))
+            if "layer_view_start_input" not in st.session_state:
+                st.session_state["layer_view_start_input"] = default_layer_start
+            if "layer_view_end_input" not in st.session_state:
+                st.session_state["layer_view_end_input"] = default_layer_end
+            c_layer1, c_layer2 = st.columns(2)
+            with c_layer1:
+                st.number_input("시작 레이어", min_value=1, max_value=max_layer_no, key="layer_view_start_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
+            with c_layer2:
+                st.number_input("끝 레이어", min_value=1, max_value=max_layer_no, key="layer_view_end_input", step=1, on_change=_sync_layer_inputs, args=(int(max_layer_no),))
+            layer_view_start = int(clamp(st.session_state.get("layer_view_start_input", default_layer_start), 1, max_layer_no))
+            layer_view_end = int(clamp(st.session_state.get("layer_view_end_input", layer_view_start), layer_view_start, max_layer_no))
+            st.session_state["layer_view_start"] = layer_view_start
+            st.session_state["layer_view_end"] = layer_view_end
+            st.caption(f"레이어 범위: {layer_view_start} ~ {layer_view_end}")
+        else:
+            st.session_state["layer_view_start"] = 1
+            st.session_state["layer_view_end"] = 1
+            st.caption("레이어 범위: -")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.caption(f"현재 보기: {current_view}")
 
