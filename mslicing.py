@@ -79,6 +79,37 @@ st.markdown(
       background: #f3f3f3;
       border-radius: 999px;
     }
+    .mid-scrollbar {
+      position: sticky;
+      top: 2.0rem;
+      height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      border-left: 1px solid #ececec;
+      border-right: 1px solid #ececec;
+      background: #fafafa;
+    }
+    .mid-scrollbar::before {
+      content: "";
+      display: block;
+      height: 220vh;
+      width: 1px;
+      opacity: 0;
+    }
+    .mid-scrollbar::-webkit-scrollbar {
+      width: 12px;
+    }
+    .mid-scrollbar::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .mid-scrollbar::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 999px;
+    }
     .right-panel {
       position: sticky;
       top: 2.0rem;
@@ -1409,17 +1440,6 @@ def check_key_valid(k: str):
         return True, exp_date, remaining, f"만료일: {exp_date.isoformat()} · {remaining}일 남음"
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
-if st.session_state.get("access_key", ""):
-    if KEY_OK:
-        if EXP_DATE is None:
-            st.sidebar.success(STATUS_TXT)
-        else:
-            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
-            st.sidebar.info(f"{STATUS_TXT} ({d_mark})")
-    else:
-        st.sidebar.error(STATUS_TXT)
-else:
-    pass
 
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
 with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
@@ -1490,7 +1510,9 @@ slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=Tru
 access_key = st.sidebar.text_input("라이센스키", type="password", key="access_key", help="라이센스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
 if access_key:
     if KEY_OK:
-        if EXP_DATE is not None:
+        if EXP_DATE is None:
+            st.sidebar.caption("만료일 없음")
+        else:
             d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
             st.sidebar.caption(f"만료일: {EXP_DATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
     else:
@@ -1990,13 +2012,16 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, right_col = st.columns([14, 3], gap="large")
+center_col, split_col, right_col = st.columns([14, 0.28, 3], gap="small")
 
 segments = None
 total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
+
+with split_col:
+    st.markdown('<div class="mid-scrollbar"></div>', unsafe_allow_html=True)
 
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
@@ -2173,5 +2198,4 @@ with center_col:
             st.text_area("G-code", st.session_state.gcode_text, height=820)
         else:
             st.info("G-code 생성 후 표시됩니다.")
-
 
