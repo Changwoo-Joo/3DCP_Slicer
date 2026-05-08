@@ -29,8 +29,6 @@ st.markdown(
     .stTabs [data-baseweb="tab-list"] { margin-top: 0.6rem !important; }
 
     .left-panel-scroll {
-      position: sticky;
-      top: 2.0rem;
       max-height: calc(100vh - 2rem);
       overflow-y: auto;
       overflow-x: hidden;
@@ -55,18 +53,23 @@ st.markdown(
       background: #f3f3f3;
       border-radius: 999px;
     }
-    .center-panel-scroll {
-      position: sticky;
-      top: 2.0rem;
-      position: sticky;
-      top: 2.0rem;
-      max-height: calc(100vh - 2rem);
-      overflow-y: auto;
-      overflow-x: hidden;
-      min-height: 0;
-      scrollbar-gutter: stable;
-      padding-right: 4px;
+    .right-panel::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
     }
+    .left-panel-scroll::-webkit-scrollbar-thumb,
+    .right-panel::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .left-panel-scroll::-webkit-scrollbar-track,
+    .right-panel::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
+    
     .center-panel-scroll::-webkit-scrollbar {
       width: 10px;
       height: 10px;
@@ -80,25 +83,6 @@ st.markdown(
     .center-panel-scroll::-webkit-scrollbar-track {
       background: #f3f3f3;
       border-radius: 999px;
-    }
-    .mid-scrollbar-placeholder {
-      height: calc(100vh - 2rem);
-      opacity: 0;
-      pointer-events: none;
-    }
-    .center-scroll-handle {
-      position: sticky;
-      top: 0;
-      float: right;
-      width: 12px;
-      height: calc(100vh - 2rem);
-      margin-left: 8px;
-      margin-right: -4px;
-      background: #fafafa;
-      border-left: 1px solid #ececec;
-      border-right: 1px solid #ececec;
-      z-index: 5;
-      pointer-events: none;
     }
     .right-panel {
       position: sticky;
@@ -1507,6 +1491,13 @@ if access_key:
             st.sidebar.caption(f"만료일: {EXP_DATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
     else:
         st.sidebar.caption(STATUS_TXT)
+if access_key:
+    if KEY_OK:
+        if EXP_DATE is not None:
+            d_mark = f"D-{REMAINING}" if REMAINING > 0 else "D-DAY"
+            st.sidebar.caption(f"만료일: {EXP_DATE.isoformat()} · {REMAINING}일 남음 ({d_mark})")
+    else:
+        st.sidebar.caption(STATUS_TXT)
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이센스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -2002,16 +1993,13 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, split_col, right_col = st.columns([14, 0.28, 3], gap="small")
+center_col, right_col = st.columns([14, 3], gap="large")
 
 segments = None
 total_segments = 0
 if st.session_state.get("paths_items") is not None:
     segments = items_to_segments(st.session_state.paths_items, e_on=e_on)
     total_segments = len(segments)
-
-with split_col:
-    st.markdown('<div class="mid-scrollbar-placeholder"></div>', unsafe_allow_html=True)
 
 with right_col:
     st.markdown("<div class='right-panel'>", unsafe_allow_html=True)
@@ -2129,8 +2117,7 @@ else:
 
 # ---- 중앙: 뷰 전환 ----
 with center_col:
-    st.markdown('<div class="left-panel-scroll center-panel-scroll">', unsafe_allow_html=True)
-    st.markdown('<div class="center-scroll-handle"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="left-panel-scroll">', unsafe_allow_html=True)
     st.markdown("""
     <style>
     div[data-testid="stHorizontalBlock"] div[data-testid="stButton"] > button {
