@@ -2202,8 +2202,7 @@ with center_col:
     b1, b2, b3, _sp = st.columns([1.45, 1.05, 1.0, 4.5])
     with b1:
         st.markdown('<div class="view-switch-item">', unsafe_allow_html=True)
-        if st.button("슬라이싱 경로
-(3D)", key="view_btn_path"):
+        if st.button("슬라이싱 경로\n(3D)", key="view_btn_path"):
             st.session_state.main_view = "슬라이싱 경로 (3D)"
         st.markdown('</div>', unsafe_allow_html=True)
     with b2:
