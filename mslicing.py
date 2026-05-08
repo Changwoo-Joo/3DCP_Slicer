@@ -1240,14 +1240,6 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
-if "paths_is_playing" not in st.session_state:
-    st.session_state.paths_is_playing = False
-if "paths_check_mode" not in st.session_state:
-    st.session_state.paths_check_mode = False
-if "paths_play_step" not in st.session_state:
-    st.session_state.paths_play_step = 50
-if "paths_play_ms" not in st.session_state:
-    st.session_state.paths_play_ms = 80
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -1947,31 +1939,10 @@ with right_col:
         scrub_num = st.number_input("행 번호", 0, int(total_segments), int(default_val), 1, help="표시할 최종 세그먼트(행) 번호")
 
         target = default_val
-        if not bool(st.session_state.get("paths_check_mode", False)):
-            if scrub != default_val: target = int(scrub)
-            if scrub_num != default_val: target = int(scrub_num)
+        if scrub != default_val: target = int(scrub)
+        if scrub_num != default_val: target = int(scrub_num)
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
-        cplay1, cplay2 = st.columns(2)
-        with cplay1:
-            if st.button("경로확인", use_container_width=True):
-                st.session_state.paths_check_mode = True
-                st.session_state.paths_is_playing = True
-                st.session_state.paths_scrub = 0
-                if segments is not None:
-                    reset_anim_buffers()
-        with cplay2:
-            if st.button("종료", use_container_width=True):
-                st.session_state.paths_check_mode = False
-                st.session_state.paths_is_playing = False
-
-        cp1, cp2 = st.columns(2)
-        with cp1:
-            play_step = st.number_input("재생 step(세그먼트)", min_value=1, max_value=max(1, int(total_segments)), value=int(st.session_state.get("paths_play_step", 50)), step=1)
-            st.session_state.paths_play_step = int(play_step)
-        with cp2:
-            play_ms = st.number_input("재생 간격(ms)", min_value=10, max_value=2000, value=int(st.session_state.get("paths_play_ms", 80)), step=10)
-            st.session_state.paths_play_ms = int(play_ms)
 
         layer_z_values = _collect_layer_z_values(segments)
         max_layer_no = len(layer_z_values)
@@ -2006,13 +1977,6 @@ with right_col:
 
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
-    if bool(st.session_state.get("paths_is_playing", False)):
-        cur_scrub = int(st.session_state.get("paths_scrub", 0))
-        play_step = int(max(1, st.session_state.get("paths_play_step", 50)))
-        if cur_scrub < int(total_segments):
-            st.session_state.paths_scrub = int(min(int(total_segments), cur_scrub + play_step))
-        else:
-            st.session_state.paths_is_playing = False
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     DRAW_LIMIT = 150000
     draw_stride = 1
@@ -2079,8 +2043,6 @@ with center_col:
             segments_hover_src = visible_segments if bool(st.session_state.get("view_selected_layers_only", False)) else segments[:int(clamp(st.session_state.paths_scrub, 0, total_segments))]
             update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), segments_for_hover=segments_hover_src)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-            if bool(st.session_state.get("paths_is_playing", False)):
-                st.markdown(f"<script>setTimeout(function(){{ window.parent.location.reload(); }}, {int(st.session_state.get("paths_play_ms", 80))});</script>", unsafe_allow_html=True)
 
             tm = st.session_state.paths_travel_mode
             if not e_on: travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
@@ -2090,7 +2052,6 @@ with center_col:
                 + (f" | 오프셋: ON (W/2 = {float(trim_dist)*0.5:.2f} mm)" if st.session_state.get('apply_offsets_flag', False) else "")
                 + (" | 캡 강조" if (st.session_state.get('apply_offsets_flag', False) and emphasize_caps) else "")
                 + (f" | {travel_lbl}")
-                + (" | 경로확인 모드" if st.session_state.get("paths_check_mode", False) else "")
                 + (f" | 표시 간격: ×{st.session_state.paths_anim_buf.get('stride',1)}" if st.session_state.paths_anim_buf.get('stride',1) > 1 else "")
             )
         else:
