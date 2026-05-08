@@ -1214,6 +1214,12 @@ if "paths_scrub" not in st.session_state:
     st.session_state.paths_scrub = 0
 if "paths_travel_mode" not in st.session_state:
     st.session_state.paths_travel_mode = "solid"
+if "paths_is_playing" not in st.session_state:
+    st.session_state.paths_is_playing = False
+if "paths_play_step" not in st.session_state:
+    st.session_state.paths_play_step = 50
+if "paths_play_ms" not in st.session_state:
+    st.session_state.paths_play_ms = 80
 
 if "ui_banner" not in st.session_state:
     st.session_state.ui_banner = None
@@ -1918,6 +1924,28 @@ with right_col:
         target = int(clamp(target, 0, total_segments))
         st.session_state.paths_scrub = target
 
+        cplay1, cplay2, cplay3 = st.columns(3)
+        with cplay1:
+            if st.button("▶ 재생", use_container_width=True):
+                st.session_state.paths_is_playing = True
+        with cplay2:
+            if st.button("⏸ 일시정지", use_container_width=True):
+                st.session_state.paths_is_playing = False
+        with cplay3:
+            if st.button("■ 정지", use_container_width=True):
+                st.session_state.paths_is_playing = False
+                st.session_state.paths_scrub = 0
+                if segments is not None:
+                    reset_anim_buffers()
+
+        cp1, cp2 = st.columns(2)
+        with cp1:
+            play_step = st.number_input("재생 step(세그먼트)", min_value=1, max_value=max(1, int(total_segments)), value=int(st.session_state.get("paths_play_step", 50)), step=1)
+            st.session_state.paths_play_step = int(play_step)
+        with cp2:
+            play_ms = st.number_input("재생 간격(ms)", min_value=10, max_value=2000, value=int(st.session_state.get("paths_play_ms", 80)), step=10)
+            st.session_state.paths_play_ms = int(play_ms)
+
         layer_z_values = _collect_layer_z_values(segments)
         max_layer_no = len(layer_z_values)
         view_selected_layers_only = st.checkbox("선택 레이어만 보기", value=st.session_state.get("view_selected_layers_only", False), help="선택한 레이어 범위만 3D 경로에 표시합니다.")
@@ -1950,6 +1978,13 @@ with right_col:
 
 # ---- 계산/버퍼 구성 ----
 if segments is not None and total_segments > 0:
+    if bool(st.session_state.get("paths_is_playing", False)):
+        cur_scrub = int(st.session_state.get("paths_scrub", 0))
+        play_step = int(max(1, st.session_state.get("paths_play_step", 50)))
+        if cur_scrub < int(total_segments):
+            st.session_state.paths_scrub = int(min(int(total_segments), cur_scrub + play_step))
+        else:
+            st.session_state.paths_is_playing = False
     target = int(clamp(st.session_state.paths_scrub, 0, total_segments))
     DRAW_LIMIT = 150000
     draw_stride = 1
@@ -2015,6 +2050,8 @@ with center_col:
             fig = st.session_state.paths_base_fig
             update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            if bool(st.session_state.get("paths_is_playing", False)):
+                st.markdown(f"<script>setTimeout(function(){{ window.parent.location.reload(); }}, {int(st.session_state.get("paths_play_ms", 80))});</script>", unsafe_allow_html=True)
 
             tm = st.session_state.paths_travel_mode
             if not e_on: travel_lbl = "비출력 이동: 실선 (E 값 삽입 OFF)"
