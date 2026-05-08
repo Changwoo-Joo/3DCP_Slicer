@@ -2160,7 +2160,7 @@ with center_col:
     .view-switch-wrap {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.6rem;
+        gap: 3rem;
         align-items: stretch;
         width: 100%;
         margin-bottom: 0.18rem;
