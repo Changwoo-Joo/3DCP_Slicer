@@ -1140,7 +1140,7 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool,
     fig.data[1].x = buf["dot"]["x"];   fig.data[1].y = buf["dot"]["y"];   fig.data[1].z = buf["dot"]["z"]
     fig.data[0].line.width = int(bead_px) if bead_mode else 4
     fig.data[1].line.width = max(2, int(bead_px * 0.5)) if bead_mode else 4
-    fig.data[0].line.color = "rgba(196,120,72,0.92)" if bead_mode else center_color
+    fig.data[0].line.color = "rgba(120,120,120,0.92)" if bead_mode else center_color
     fig.data[1].line.color = "rgba(140,140,140,0.65)" if bead_mode else center_color
 
     if show_offsets:
@@ -1894,10 +1894,8 @@ with right_col:
     apply_offsets = st.checkbox("레이어 폭 적용", value=bool(st.session_state.get("apply_offsets_flag", False)), help="레이어 폭을 적용해 좌우 폭과 3DCP 비드 느낌으로 표시합니다.", disabled=(segments is None))
     st.session_state.apply_offsets_flag = bool(apply_offsets)
 
-    bead_view = st.checkbox("3DCP 비드(소세지) 표현", value=bool(st.session_state.get("bead_view_flag", False)), help="레이어 중심 경로를 굵고 둥근 비드처럼 강조해 실제 적층 느낌으로 표시합니다.", disabled=(segments is None or not apply_offsets))
+    bead_view = st.checkbox("3DCP 비드 표현", value=bool(st.session_state.get("bead_view_flag", False)), help="레이어 중심 경로를 굵고 둥근 비드처럼 강조해 실제 적층 느낌으로 표시합니다. 비드 두께는 노즐 직경을 따릅니다.", disabled=(segments is None or not apply_offsets))
     st.session_state.bead_view_flag = bool(bead_view)
-    bead_px = st.slider("비드 표시 두께(px)", min_value=4, max_value=40, value=int(st.session_state.get("bead_px", 18)), step=1, disabled=(segments is None or not apply_offsets or not bead_view))
-    st.session_state.bead_px = int(bead_px)
 
     include_z_climb = st.checkbox("Z 상승 오프셋 포함", value=True, help="Z가 변하는 travel 구간에도 오프셋을 표시합니다.", disabled=(segments is None or not apply_offsets))
     emphasize_caps = st.checkbox("캡 강조", value=False, help="시작/끝 반원 캡을 빨강/굵은 선으로 강조합니다.", disabled=(segments is None or not apply_offsets))
@@ -2022,7 +2020,9 @@ with center_col:
             if "paths_base_fig" not in st.session_state:
                 st.session_state.paths_base_fig = make_base_fig(height=820)
             fig = st.session_state.paths_base_fig
-            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), bead_mode=bool(st.session_state.get("bead_view_flag", False)), bead_px=int(st.session_state.get("bead_px", 18)))
+            nozzle_d_mm = float(st.session_state.get("nozzle_diameter_mm", 0.0))
+            bead_px_auto = max(4, min(40, int(round(nozzle_d_mm * 0.35))))
+            update_fig_with_buffers(fig, show_offsets=bool(st.session_state.get("apply_offsets_flag", False)), show_caps=bool(emphasize_caps), bead_mode=bool(st.session_state.get("bead_view_flag", False)), bead_px=bead_px_auto)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
             tm = st.session_state.paths_travel_mode
