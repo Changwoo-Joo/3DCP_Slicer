@@ -1629,11 +1629,15 @@ def _fmt_pos(v: float) -> str:
 
 def _fmt_ang(v: float) -> str:
     if abs(v) < 5e-5: v = 0.0
-    s = f"{v:+.2f}"
+    s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
     intpart = intpart.zfill(3)
-    return f"{sign}{intpart}.{dec}"
+    return f"{sign}{intpart}.{dec}" 
+
+def _fmt_ext(v: float) -> str:
+    if abs(v) < 5e-5: v = 0.0
+    return f"{abs(v):.1f}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
     if abs(a1 - a0) < 1e-12: return float(b0)
