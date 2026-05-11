@@ -1708,7 +1708,7 @@ if can_download_log and LOG_FILE.exists():
         st.sidebar.download_button(
             "접속기록 CSV 다운로드",
             data=csv_text,
-            filename="access_log.csv",
+            file_name="access_log.csv",
             mime="text/csv",
             use_container_width=True,
             key="download_access_log_csv",
