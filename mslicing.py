@@ -732,7 +732,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         z_values = make_slice_z_values(submesh, z_int)
 
         for zidx, z in enumerate(z_values):
-                print_z = z + 0.5 * float(z_int)
+            print_z = z + 0.5 * float(z_int)
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
             try:
