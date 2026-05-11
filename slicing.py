@@ -10,87 +10,217 @@ import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
+
 import csv
-import requests
+from datetime import datetime, timedelta, timezone
 
-# =========================
-# App basics
-# =========================
-st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
+try:
+    LOG_DIR = Path("/var/data")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    LOG_DIR = Path("./data")
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-LOG_DIR = Path("/var/data")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = LOG_DIR / "access_log.csv"
+LOG_DOWNLOAD_KEYS = {"wnckddn!@"}
+KST = timezone(timedelta(hours=9))
 
-def lookup_ip_location(ip: str) -> dict:
-    if not ip:
-        return {
-            "geo_status": "no_ip",
-            "country": "",
-            "region": "",
-            "city": "",
-            "lat": "",
-            "lon": "",
-            "isp": "",
+
+def apply_compact_responsive_css():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 100%;
+            padding-left: 1.15rem;
+            padding-right: 1.15rem;
         }
-
-    try:
-        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,lat,lon,isp,query"
-        r = requests.get(url, timeout=3)
-        data = r.json()
-
-        if data.get("status") != "success":
-            return {
-                "geo_status": f"fail:{data.get('message', '')}",
-                "country": "",
-                "region": "",
-                "city": "",
-                "lat": "",
-                "lon": "",
-                "isp": "",
+        [data-testid="stSidebar"] .block-container {
+            padding-left: 0.80rem;
+            padding-right: 0.80rem;
+        }
+        .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+            font-size: 0.98rem;
+        }
+        div[data-testid="stButton"] > button,
+        div[data-testid="stDownloadButton"] > button,
+        div[data-testid="stFileUploader"] button,
+        div[data-testid="stFormSubmitButton"] > button {
+            font-size: 0.95rem;
+            min-height: 2.55rem;
+            padding: 0.42rem 0.85rem;
+            border-radius: 0.65rem;
+        }
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stNumberInput"] input,
+        div[data-testid="stTextArea"] textarea,
+        div[data-testid="stDateInput"] input,
+        div[data-testid="stTimeInput"] input,
+        div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+            font-size: 0.95rem !important;
+            min-height: 2.45rem;
+        }
+        [data-testid="stHorizontalBlock"] {
+            gap: 0.85rem;
+        }
+        @media (max-width: 1600px) {
+            .block-container {
+                padding-left: 1.00rem;
+                padding-right: 1.00rem;
             }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.95rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.93rem;
+                min-height: 2.45rem;
+                padding: 0.40rem 0.80rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.93rem !important;
+                min-height: 2.35rem;
+            }
+        }
+        @media (max-width: 1400px) {
+            .block-container {
+                padding-left: 0.92rem;
+                padding-right: 0.92rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.93rem;
+            }
+        }
+        @media (max-width: 1200px) {
+            .block-container {
+                padding-left: 0.80rem;
+                padding-right: 0.80rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.91rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.90rem;
+                min-height: 2.35rem;
+                padding: 0.36rem 0.74rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.90rem !important;
+                min-height: 2.28rem;
+            }
+            [data-testid="stHorizontalBlock"] {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            [data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }
+        }
+        @media (max-width: 992px) {
+            .block-container {
+                padding-left: 0.72rem;
+                padding-right: 0.72rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.88rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.86rem;
+                min-height: 2.20rem;
+                padding: 0.32rem 0.66rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.86rem !important;
+                min-height: 2.18rem;
+            }
+        }
+        @media (max-width: 768px) {
+            .block-container {
+                padding-left: 0.62rem;
+                padding-right: 0.62rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.84rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.82rem;
+                min-height: 2.06rem;
+                padding: 0.28rem 0.58rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.82rem !important;
+                min-height: 2.04rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        return {
-            "geo_status": "success",
-            "country": str(data.get("country", "") or ""),
-            "region": str(data.get("regionName", "") or ""),
-            "city": str(data.get("city", "") or ""),
-            "lat": str(data.get("lat", "") or ""),
-            "lon": str(data.get("lon", "") or ""),
-            "isp": str(data.get("isp", "") or ""),
-        }
-    except Exception as e:
-        return {
-            "geo_status": f"error:{e}",
-            "country": "",
-            "region": "",
-            "city": "",
-            "lat": "",
-            "lon": "",
-            "isp": "",
-        }
+
+def _request_headers_lower():
+    try:
+        ctx = getattr(st, "context", None)
+        headers = getattr(ctx, "headers", None)
+        if headers is None:
+            return {}
+        return {str(k).lower(): str(v) for k, v in dict(headers).items()}
+    except Exception:
+        return {}
+
 
 def save_access_log():
-    headers = getattr(st.context, "headers", {})
-    ip = str(getattr(st.context, "ip_address", "") or "")
-    geo = lookup_ip_location(ip)
-
+    headers = _request_headers_lower()
     row = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "ip": ip,
-        "timezone": str(getattr(st.context, "timezone", "") or ""),
-        "locale": str(getattr(st.context, "locale", "") or ""),
-        "url": str(getattr(st.context, "url", "") or ""),
-        "user_agent": str(headers.get("user-agent", "")),
-        "geo_status": geo["geo_status"],
-        "country": geo["country"],
-        "region": geo["region"],
-        "city": geo["city"],
-        "lat": geo["lat"],
-        "lon": geo["lon"],
-        "isp": geo["isp"],
+        "timestamp_kst": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": "render",
+        "host": headers.get("host", ""),
+        "x_forwarded_for": headers.get("x-forwarded-for", ""),
+        "x_real_ip": headers.get("x-real-ip", ""),
+        "remote_addr": headers.get("remote-addr", ""),
+        "user_agent": headers.get("user-agent", ""),
+        "referer": headers.get("referer", ""),
+        "origin": headers.get("origin", ""),
+        "accept_language": headers.get("accept-language", ""),
     }
-
     file_exists = LOG_FILE.exists()
     with open(LOG_FILE, "a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=row.keys())
@@ -98,9 +228,46 @@ def save_access_log():
             writer.writeheader()
         writer.writerow(row)
 
-if "access_logged" not in st.session_state:
-    save_access_log()
-    st.session_state.access_logged = True
+
+def render_admin_access_panel():
+    with st.sidebar.expander("관리자", expanded=False):
+        admin_key = st.text_input("관리자 키", type="password", key="log_admin_key")
+        if not admin_key:
+            st.caption("관리자만 접속기록 CSV를 다운로드할 수 있습니다.")
+            return
+        if admin_key in LOG_DOWNLOAD_KEYS:
+            st.success("관리자 인증 완료")
+            if LOG_FILE.exists():
+                st.download_button(
+                    "접속기록 CSV 다운로드",
+                    data=LOG_FILE.read_bytes(),
+                    file_name=LOG_FILE.name,
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            else:
+                st.info("아직 저장된 접속기록이 없습니다.")
+        else:
+            st.error("관리자 권한이 없습니다.")
+
+
+def init_render_access_features():
+    apply_compact_responsive_css()
+    if "access_logged" not in st.session_state:
+        try:
+            save_access_log()
+        except Exception:
+            pass
+        st.session_state.access_logged = True
+    render_admin_access_panel()
+
+# =========================
+# App basics
+# =========================
+st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
+
+init_render_access_features()
+
 
 # ── 전역 CSS ──
 st.markdown(
@@ -771,7 +938,7 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
     return zvalues
 
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
-                   e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
+                   e_on=False, start_e_on=False, start_e_val=0.1,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
                    seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
                    skip_invalid_offset=True):
@@ -818,6 +985,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         z_values = make_slice_z_values(submesh, z_int)
 
         for zidx, z in enumerate(z_values):
+            print_z = z + 0.5 * float(z_int)
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
             try:
@@ -828,10 +996,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for seg in slice_2D.discrete:
                 seg = np.array(seg)
                 seg3d = (to_3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                seg3d[:, 2] = print_z
                 segments.append(seg3d)
             if not segments: continue
 
-            g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
+            g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
 
             for iseg, seg3d in enumerate(segments):
@@ -842,8 +1011,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -861,13 +1030,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
 
                 g.append(f"G01 F{feed}")
                 if start_e_on:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
 
                 for p1, p2 in zip(simplified[:-1], simplified[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
@@ -876,7 +1045,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     else:
                         g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
 
-                if e0_on: g.append("G01 E0")
+                
                 if iseg == 0: prev_start_xy = start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
@@ -965,8 +1134,8 @@ def compute_slice_paths_with_travel(
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -1276,7 +1445,7 @@ def make_base_fig(height=820) -> go.Figure:
                                line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
+                               line=dict(width=4, dash="dot", color="#FF0000"),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
@@ -1301,7 +1470,7 @@ def ensure_traces(fig: go.Figure, want=5):
                                    showlegend=False))
     def add_dot():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
+                                   line=dict(width=4, dash="dot", color="#FF0000"),
                                    showlegend=False))
     def add_off():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
@@ -1325,7 +1494,7 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool,
     apply_on = bool(st.session_state.get("apply_offsets_flag", False))
     center_color = PATH_COLOR_LIGHT if apply_on else PATH_COLOR_DEFAULT
     fig.data[0].line.color = center_color
-    fig.data[1].line.color = center_color
+    fig.data[1].line.color = "#FF0000"
 
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 4
     fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 4
@@ -1523,7 +1692,6 @@ ensure_anim_buffers()
 # 접근 권한
 # =========================
 ALLOWED_WITH_EXPIRY = {"wnckddn!@": None, "kaist_aramco3D": "2026-12-31", "kmou*": "2026-12-31", "DY25-01D4-E5F6-G7H8-I9J0-K1L2": "2030-12-30"}
-LOG_DOWNLOAD_KEYS = {"wnckddn!@"}
 def check_key_valid(k: str):
     if not k or k not in ALLOWED_WITH_EXPIRY:
         return False, None, None, "유효하지 않은 키입니다."
@@ -1572,7 +1740,8 @@ with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
 # =========================
 st.sidebar.header("기본 파라미터")
 z_int = st.sidebar.number_input("레이어(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
-feed = st.sidebar.number_input("이송속도 (F)", 1, 100000, 2000)
+feed_mm_s = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
+feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 
@@ -1585,7 +1754,7 @@ st.sidebar.subheader("압출 옵션")
 e_on = st.sidebar.checkbox("재료토출(E) 삽입")
 start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
 start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
-e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
+
 
 st.sidebar.subheader("경로처리")
 seq_print = st.sidebar.checkbox("순차 출력 (1개씩)", value=False)
@@ -1611,7 +1780,6 @@ m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
 slice_clicked = st.sidebar.button("모델 슬라이싱", use_container_width=True)
 access_key = st.sidebar.text_input("라이선스키", type="password", key="access_key", help="라이선스키를 입력하면 코드생성 및 부가기능이 활성화됩니다.")
-
 if st.session_state.get("access_key", ""):
     if KEY_OK:
         if EXP_DATE is None:
@@ -1623,26 +1791,6 @@ if st.session_state.get("access_key", ""):
         st.sidebar.error(STATUS_TXT)
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
-
-can_download_log = KEY_OK and (st.session_state.get("access_key", "") in LOG_DOWNLOAD_KEYS)
-
-if can_download_log and LOG_FILE.exists():
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
-            csv_text = f.read()
-        st.sidebar.download_button(
-            "접속 로그 CSV 다운로드",
-            data=csv_text,
-            file_name="access_log.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key="download_access_log_csv",
-        )
-    except Exception as e:
-        st.sidebar.error(f"CSV 파일 읽기 오류: {e}")
-elif can_download_log:
-    st.sidebar.info("아직 저장된 접속 로그가 없습니다.")
-
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
@@ -1711,7 +1859,7 @@ if slice_clicked and st.session_state.mesh is not None:
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
-        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
+        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start, m30_on=m30_on,
         seq_print=seq_print  
     )
@@ -1736,11 +1884,17 @@ def _fmt_pos(v: float) -> str:
 
 def _fmt_ang(v: float) -> str:
     if abs(v) < 5e-5: v = 0.0
-    s = f"{v:+.2f}"
+    s = f"{v:+.1f}"
     sign = s[0]
     intpart, dec = s[1:].split(".")
     intpart = intpart.zfill(3)
-    return f"{sign}{intpart}.{dec}"
+    return f"{sign}{intpart}.{dec}" 
+
+def _fmt_ext(v: float, z: int) -> str:
+    if abs(v) < 5e-5: v = 0.0
+    s = f"{abs(v):.1f}"
+    intpart, dec = s.split(".")
+    return f"{intpart.zfill(z)}.{dec}"
 
 def _linmap(val: float, a0: float, a1: float, b0: float, b1: float) -> float:
     if abs(a1 - a0) < 1e-12: return float(b0)
@@ -1772,7 +1926,7 @@ def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.00,+000.00,+000.00,+0000.0,+0000.0,+0000.0,+0000.0'
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.0,+000.0,+000.0,0000.0,000.0,000.0,0000.0,000,200'
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
@@ -1926,8 +2080,8 @@ def convert_gcode_to_rapid(
         if not has_any: continue
 
         is_extruding = False
-        if ce is not None and prev_e is not None:
-            if (ce - prev_e) > 1e-12: is_extruding = True
+        if ce is not None and ce > 1e-12:
+            is_extruding = True
         if ce is not None: prev_e = ce
 
         a4_nominal = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
@@ -1985,14 +2139,16 @@ def convert_gcode_to_rapid(
         if len(lines_out) >= MAX_LINES: break
         x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
-        a1s, a2s, a3s, a4s = _fmt_pos(nd["a1"]), _fmt_pos(nd["a2"]), _fmt_pos(a3_v), _fmt_pos(a4_v)
-        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s}")
+        a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
+        mat_val = "001" if nd["extr"] else "000"
+        spd_val = f"{int(speed_mm_s):03d}"
+        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
 
     while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
     ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
     header = ("MODULE Converted\n!*** Generated {0} by Gcode→RAPID converter.\n"
-              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4\n").format(ts)
+              "!*** data3dp: X(mm), Y(mm), Z(mm), Rx(deg), Ry(deg), Rz(deg), A1,A2,A3,A4,Pump,Speed\n").format(ts)
     open_decl = f'VAR string sFileCount:="{MAX_LINES}";\nVAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n'
     body = ",\n".join(f'"{ln}"' for ln in lines_out) + "\n"
     return header + open_decl + body + "];\nENDMODULE\n"
@@ -2120,7 +2276,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
                         a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
                         y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
                         a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                        speed_mm_s=float(feed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
                         apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
                         singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
                         singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
@@ -2138,7 +2294,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, right_col = st.columns([14, 3], gap="large")
+center_col, right_col = st.columns([12, 3], gap="large")
 
 segments = None
 total_segments = 0
@@ -2172,9 +2328,13 @@ with right_col:
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
-        default_val = int(clamp(st.session_state.get("paths_scrub", total_segments), 0, total_segments))
-        st.session_state.paths_scrub_slider = int(clamp(st.session_state.get("paths_scrub_slider", total_segments), 0, total_segments))
-        st.session_state.paths_scrub_input = int(clamp(st.session_state.get("paths_scrub_input", total_segments), 0, total_segments))
+        default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+        if "paths_scrub_slider_initialized" not in st.session_state:
+            st.session_state.paths_scrub_slider = default_val
+            st.session_state.paths_scrub_slider_initialized = True
+        if "paths_scrub_input_initialized" not in st.session_state:
+            st.session_state.paths_scrub_input = default_val
+            st.session_state.paths_scrub_input_initialized = True
 
         st.slider("진행(세그먼트)", 0, int(total_segments), key="paths_scrub_slider", step=1, help="해당 세그먼트까지 누적 표시", on_change=_sync_scrub_from_slider)
         st.number_input("행 번호", min_value=0, max_value=int(total_segments), key="paths_scrub_input", step=1, help="표시할 최종 세그먼트(행) 번호", on_change=_sync_scrub_from_input, args=(int(total_segments),))
