@@ -685,7 +685,7 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
     return zvalues
 
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
-                   e_on=False, start_e_on=False, start_e_val=0.1, e0_on=False,
+                   e_on=False, start_e_on=False, start_e_val=0.1,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
                    seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
                    skip_invalid_offset=True):
@@ -790,7 +790,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     else:
                         g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
 
-                if e0_on: g.append("G01 E0")
+                
                 if iseg == 0: prev_start_xy = start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
@@ -1190,7 +1190,7 @@ def make_base_fig(height=820) -> go.Figure:
                                line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                               line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
+                               line=dict(width=4, dash="dot", color="#FF0000"),
                                showlegend=False))
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=4, dash="solid", color=OFFSET_DARK_GRAY),
@@ -1215,7 +1215,7 @@ def ensure_traces(fig: go.Figure, want=5):
                                    showlegend=False))
     def add_dot():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
-                                   line=dict(width=4, dash="dot", color=PATH_COLOR_DEFAULT),
+                                   line=dict(width=4, dash="dot", color="#FF0000"),
                                    showlegend=False))
     def add_off():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
@@ -1239,7 +1239,7 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool,
     apply_on = bool(st.session_state.get("apply_offsets_flag", False))
     center_color = PATH_COLOR_LIGHT if apply_on else PATH_COLOR_DEFAULT
     fig.data[0].line.color = center_color
-    fig.data[1].line.color = center_color
+    fig.data[1].line.color = "#FF0000"
 
     fig.data[2].line.color = OFFSET_DARK_GRAY; fig.data[2].line.width = 4
     fig.data[3].line.color = OFFSET_DARK_GRAY; fig.data[3].line.width = 4
@@ -1499,7 +1499,7 @@ st.sidebar.subheader("압출 옵션")
 e_on = st.sidebar.checkbox("재료토출(E) 삽입")
 start_e_on = st.sidebar.checkbox("연속 레이어 출력", value=False, disabled=not e_on)
 start_e_val = st.sidebar.number_input("시작 E 값", value=0.1, disabled=not (e_on and start_e_on))
-e0_on = st.sidebar.checkbox("루프 끝에 E0 추가", value=False, disabled=not e_on)
+
 
 st.sidebar.subheader("경로처리")
 seq_print = st.sidebar.checkbox("순차 출력 (1개씩)", value=False)
@@ -1604,7 +1604,7 @@ if slice_clicked and st.session_state.mesh is not None:
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
-        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val, e0_on=e0_on,
+        e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start, m30_on=m30_on,
         seq_print=seq_print  
     )
