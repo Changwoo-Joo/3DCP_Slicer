@@ -12,6 +12,12 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
+import csv
+import requests
+from datetime import datetime, date
+import socket
+import urllib.parse
+
 # =========================
 # App basics
 # =========================
@@ -175,6 +181,106 @@ def clamp(v, lo, hi):
 # =========================
 # Helpers (연산 로직)
 # =========================
+
+def get_request_headers() -> dict:
+    try:
+        return dict(st.context.headers)
+    except Exception:
+        return {}
+
+
+def lookup_ip_geo(ip: str) -> dict:
+    if not ip:
+        return {}
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,timezone,isp,query", timeout=3)
+        if r.ok:
+            data = r.json()
+            if data.get("status") == "success":
+                return {
+                    "country": data.get("country", ""),
+                    "region": data.get("regionName", ""),
+                    "city": data.get("city", ""),
+                    "timezone": data.get("timezone", ""),
+                    "isp": data.get("isp", ""),
+                    "query": data.get("query", ip),
+                }
+    except Exception:
+        pass
+    return {}
+
+
+def save_access_log():
+    if st.session_state.get("access_logged", False):
+        return
+
+    try:
+        import os
+
+        log_dir = "/var/data"
+        if not os.path.exists(log_dir):
+            log_dir = "./data"
+            os.makedirs(log_dir, exist_ok=True)
+
+        log_path = os.path.join(log_dir, "access_log.csv")
+        file_exists = os.path.exists(log_path)
+
+        headers = get_request_headers()
+        forwarded_for = headers.get("X-Forwarded-For", "") or headers.get("x-forwarded-for", "")
+        real_ip = headers.get("X-Real-Ip", "") or headers.get("x-real-ip", "")
+        remote_ip = forwarded_for.split(",")[0].strip() if forwarded_for else real_ip
+        ua = headers.get("User-Agent", "") or headers.get("user-agent", "")
+        ref = headers.get("Referer", "") or headers.get("referer", "")
+        origin = headers.get("Origin", "") or headers.get("origin", "")
+        lang = headers.get("Accept-Language", "") or headers.get("accept-language", "")
+        host = headers.get("Host", "") or headers.get("host", "")
+
+        geo = lookup_ip_geo(remote_ip)
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+
+        with open(log_path, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow([
+                    "Timestamp",
+                    "IP",
+                    "Country",
+                    "Region",
+                    "City",
+                    "Timezone",
+                    "ISP",
+                    "X-Forwarded-For",
+                    "X-Real-Ip",
+                    "Host",
+                    "User-Agent",
+                    "Referer",
+                    "Origin",
+                    "Accept-Language",
+                ])
+            writer.writerow([
+                now.strftime("%Y-%m-%d %H:%M"),
+                geo.get("query", remote_ip),
+                geo.get("country", ""),
+                geo.get("region", ""),
+                geo.get("city", ""),
+                geo.get("timezone", ""),
+                geo.get("isp", ""),
+                forwarded_for,
+                real_ip,
+                host,
+                ua,
+                ref,
+                origin,
+                lang,
+            ])
+
+        st.session_state.access_logged = True
+    except Exception:
+        pass
+
+
+save_access_log()
+
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -1539,6 +1645,33 @@ if st.session_state.get("access_key", ""):
         st.sidebar.error(STATUS_TXT)
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
+
+current_key = st.session_state.get("access_key", "")
+can_download_log = (current_key == "wnckddn!@")
+if can_download_log:
+    log_paths = ["/var/data/access_log.csv", "./data/access_log.csv"]
+    found_log = next((lp for lp in log_paths if Path(lp).exists()), None)
+    if found_log is None:
+        found_log = log_paths[0]
+        try:
+            Path(found_log).parent.mkdir(parents=True, exist_ok=True)
+            if not Path(found_log).exists():
+                Path(found_log).write_text("Timestamp,IP,Country,Region,City,Timezone,ISP,X-Forwarded-For,X-Real-Ip,Host,User-Agent,Referer,Origin,Accept-Language\n", encoding="utf-8")
+        except Exception:
+            pass
+    try:
+        log_bytes = Path(found_log).read_bytes()
+        st.sidebar.download_button(
+            label="CSV 다운로드",
+            data=log_bytes,
+            file_name="access_log.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="download_access_log_csv_direct",
+        )
+    except Exception as e:
+        st.sidebar.error(f"CSV 읽기 실패: {e}")
+
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
