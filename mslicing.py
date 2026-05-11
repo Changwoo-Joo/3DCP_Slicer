@@ -11,10 +11,182 @@ from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from pathlib import Path
 
+def apply_compact_responsive_css():
+    st.markdown(
+        """
+        <style>
+        .block-container {
+            max-width: 100%;
+            padding-left: 1.15rem;
+            padding-right: 1.15rem;
+        }
+        [data-testid="stSidebar"] .block-container {
+            padding-left: 0.80rem;
+            padding-right: 0.80rem;
+        }
+        .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+            font-size: 0.98rem;
+        }
+        div[data-testid="stButton"] > button,
+        div[data-testid="stDownloadButton"] > button,
+        div[data-testid="stFileUploader"] button,
+        div[data-testid="stFormSubmitButton"] > button {
+            font-size: 0.95rem;
+            min-height: 2.55rem;
+            padding: 0.42rem 0.85rem;
+            border-radius: 0.65rem;
+        }
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stNumberInput"] input,
+        div[data-testid="stTextArea"] textarea,
+        div[data-testid="stDateInput"] input,
+        div[data-testid="stTimeInput"] input,
+        div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+            font-size: 0.95rem !important;
+            min-height: 2.45rem;
+        }
+        [data-testid="stHorizontalBlock"] {
+            gap: 0.85rem;
+        }
+        @media (max-width: 1600px) {
+            .block-container {
+                padding-left: 1.00rem;
+                padding-right: 1.00rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.95rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.93rem;
+                min-height: 2.45rem;
+                padding: 0.40rem 0.80rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.93rem !important;
+                min-height: 2.35rem;
+            }
+        }
+        @media (max-width: 1400px) {
+            .block-container {
+                padding-left: 0.92rem;
+                padding-right: 0.92rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.93rem;
+            }
+        }
+        @media (max-width: 1200px) {
+            .block-container {
+                padding-left: 0.80rem;
+                padding-right: 0.80rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.91rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.90rem;
+                min-height: 2.35rem;
+                padding: 0.36rem 0.74rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.90rem !important;
+                min-height: 2.28rem;
+            }
+            [data-testid="stHorizontalBlock"] {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            [data-testid="column"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }
+        }
+        @media (max-width: 992px) {
+            .block-container {
+                padding-left: 0.72rem;
+                padding-right: 0.72rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.88rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.86rem;
+                min-height: 2.20rem;
+                padding: 0.32rem 0.66rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.86rem !important;
+                min-height: 2.18rem;
+            }
+        }
+        @media (max-width: 768px) {
+            .block-container {
+                padding-left: 0.62rem;
+                padding-right: 0.62rem;
+            }
+            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
+                font-size: 0.84rem;
+            }
+            div[data-testid="stButton"] > button,
+            div[data-testid="stDownloadButton"] > button,
+            div[data-testid="stFileUploader"] button,
+            div[data-testid="stFormSubmitButton"] > button {
+                font-size: 0.82rem;
+                min-height: 2.06rem;
+                padding: 0.28rem 0.58rem;
+            }
+            div[data-testid="stTextInput"] input,
+            div[data-testid="stNumberInput"] input,
+            div[data-testid="stTextArea"] textarea,
+            div[data-testid="stDateInput"] input,
+            div[data-testid="stTimeInput"] input,
+            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+                font-size: 0.82rem !important;
+                min-height: 2.04rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 # =========================
 # App basics
 # =========================
 st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
+
+apply_compact_responsive_css()
+
 
 # ── 전역 CSS ──
 st.markdown(
@@ -2041,7 +2213,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, right_col = st.columns([14, 3], gap="large")
+center_col, right_col = st.columns([12, 3], gap="large")
 
 segments = None
 total_segments = 0
