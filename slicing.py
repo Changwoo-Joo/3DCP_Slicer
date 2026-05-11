@@ -1736,7 +1736,10 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val,
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start, m30_on=m30_on,
-        seq_print=seq_print  
+        seq_print=seq_print, seq_group_inner=seq_group_inner,
+        nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
+        enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
