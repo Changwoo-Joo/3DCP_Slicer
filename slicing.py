@@ -15,8 +15,6 @@ import csv
 from datetime import datetime, date
 import socket
 import urllib.parse
-from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
-from streamlit.web.server.server import Server
 
 # =========================
 # App basics
@@ -182,43 +180,20 @@ def clamp(v, lo, hi):
 # Helpers (연산 로직)
 # =========================
 
-def get_remote_ip() -> str:
-    try:
-        ctx = get_script_run_ctx()
-        if ctx is None: return ""
-        session_info = Server.get_current()._get_session_info(ctx.session_id)
-        if session_info is None: return ""
-        if hasattr(session_info.ws, "request"):
-            req = session_info.ws.request
-            if hasattr(req, "headers"):
-                if "X-Forwarded-For" in req.headers:
-                    return req.headers["X-Forwarded-For"].split(",")[0].strip()
-                if "X-Real-Ip" in req.headers:
-                    return req.headers["X-Real-Ip"].strip()
-            if hasattr(req, "remote_ip"):
-                return str(req.remote_ip)
-    except Exception:
-        pass
-    return ""
-
 def get_request_headers() -> dict:
     try:
-        ctx = get_script_run_ctx()
-        if ctx is None: return {}
-        session_info = Server.get_current()._get_session_info(ctx.session_id)
-        if session_info is None: return {}
-        if hasattr(session_info.ws, "request") and hasattr(session_info.ws.request, "headers"):
-            return dict(session_info.ws.request.headers)
+        return dict(st.context.headers)
     except Exception:
-        pass
-    return {}
+        return {}
+
 
 def save_access_log():
-    if "access_logged" in st.session_state and st.session_state.access_logged:
+    if st.session_state.get("access_logged", False):
         return
 
     try:
         import os
+
         log_dir = "/var/data"
         if not os.path.exists(log_dir):
             log_dir = "./data"
@@ -227,8 +202,10 @@ def save_access_log():
         log_path = os.path.join(log_dir, "access_log.csv")
         file_exists = os.path.exists(log_path)
 
-        ip = get_remote_ip()
         headers = get_request_headers()
+        forwarded_for = headers.get("X-Forwarded-For", "")
+        real_ip = headers.get("X-Real-Ip", "")
+        remote_ip = forwarded_for.split(",")[0].strip() if forwarded_for else real_ip
         ua = headers.get("User-Agent", "")
         ref = headers.get("Referer", "")
         origin = headers.get("Origin", "")
@@ -237,17 +214,37 @@ def save_access_log():
 
         now = datetime.now()
 
-        with open(log_path, mode='a', newline='', encoding='utf-8') as f:
+        with open(log_path, mode="a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(["Timestamp", "IP", "Host", "User-Agent", "Referer", "Origin", "Accept-Language"])
-            writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), ip, host, ua, ref, origin, lang])
+                writer.writerow([
+                    "Timestamp",
+                    "IP",
+                    "X-Forwarded-For",
+                    "X-Real-Ip",
+                    "Host",
+                    "User-Agent",
+                    "Referer",
+                    "Origin",
+                    "Accept-Language",
+                ])
+            writer.writerow([
+                now.strftime("%Y-%m-%d %H:%M:%S"),
+                remote_ip,
+                forwarded_for,
+                real_ip,
+                host,
+                ua,
+                ref,
+                origin,
+                lang,
+            ])
 
         st.session_state.access_logged = True
-    except Exception as e:
-        print(f"Log error: {e}")
+    except Exception:
+        pass
 
-# 실행
+
 save_access_log()
 
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
