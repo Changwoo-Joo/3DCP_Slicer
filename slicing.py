@@ -12,185 +12,16 @@ from datetime import date, datetime
 from pathlib import Path
 
 import csv
-import requests
-from datetime import timezone, timedelta
-
-def apply_compact_responsive_css():
-    st.markdown(
-        """
-        <style>
-        .block-container {
-            max-width: 100%;
-            padding-left: 1.15rem;
-            padding-right: 1.15rem;
-        }
-        [data-testid="stSidebar"] .block-container {
-            padding-left: 0.80rem;
-            padding-right: 0.80rem;
-        }
-        .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-            font-size: 0.98rem;
-        }
-        div[data-testid="stButton"] > button,
-        div[data-testid="stDownloadButton"] > button,
-        div[data-testid="stFileUploader"] button,
-        div[data-testid="stFormSubmitButton"] > button {
-            font-size: 0.95rem;
-            min-height: 2.55rem;
-            padding: 0.42rem 0.85rem;
-            border-radius: 0.65rem;
-        }
-        div[data-testid="stTextInput"] input,
-        div[data-testid="stNumberInput"] input,
-        div[data-testid="stTextArea"] textarea,
-        div[data-testid="stDateInput"] input,
-        div[data-testid="stTimeInput"] input,
-        div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-        div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-            font-size: 0.95rem !important;
-            min-height: 2.45rem;
-        }
-        [data-testid="stHorizontalBlock"] {
-            gap: 0.85rem;
-        }
-        @media (max-width: 1600px) {
-            .block-container {
-                padding-left: 1.00rem;
-                padding-right: 1.00rem;
-            }
-            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-                font-size: 0.95rem;
-            }
-            div[data-testid="stButton"] > button,
-            div[data-testid="stDownloadButton"] > button,
-            div[data-testid="stFileUploader"] button,
-            div[data-testid="stFormSubmitButton"] > button {
-                font-size: 0.93rem;
-                min-height: 2.45rem;
-                padding: 0.40rem 0.80rem;
-            }
-            div[data-testid="stTextInput"] input,
-            div[data-testid="stNumberInput"] input,
-            div[data-testid="stTextArea"] textarea,
-            div[data-testid="stDateInput"] input,
-            div[data-testid="stTimeInput"] input,
-            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-                font-size: 0.93rem !important;
-                min-height: 2.35rem;
-            }
-        }
-        @media (max-width: 1400px) {
-            .block-container {
-                padding-left: 0.92rem;
-                padding-right: 0.92rem;
-            }
-            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-                font-size: 0.93rem;
-            }
-        }
-        @media (max-width: 1200px) {
-            .block-container {
-                padding-left: 0.80rem;
-                padding-right: 0.80rem;
-            }
-            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-                font-size: 0.91rem;
-            }
-            div[data-testid="stButton"] > button,
-            div[data-testid="stDownloadButton"] > button,
-            div[data-testid="stFileUploader"] button,
-            div[data-testid="stFormSubmitButton"] > button {
-                font-size: 0.90rem;
-                min-height: 2.35rem;
-                padding: 0.36rem 0.74rem;
-            }
-            div[data-testid="stTextInput"] input,
-            div[data-testid="stNumberInput"] input,
-            div[data-testid="stTextArea"] textarea,
-            div[data-testid="stDateInput"] input,
-            div[data-testid="stTimeInput"] input,
-            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-                font-size: 0.90rem !important;
-                min-height: 2.28rem;
-            }
-            [data-testid="stHorizontalBlock"] {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            [data-testid="column"] {
-                width: 100% !important;
-                flex: 1 1 100% !important;
-                min-width: 100% !important;
-            }
-        }
-        @media (max-width: 992px) {
-            .block-container {
-                padding-left: 0.72rem;
-                padding-right: 0.72rem;
-            }
-            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-                font-size: 0.88rem;
-            }
-            div[data-testid="stButton"] > button,
-            div[data-testid="stDownloadButton"] > button,
-            div[data-testid="stFileUploader"] button,
-            div[data-testid="stFormSubmitButton"] > button {
-                font-size: 0.86rem;
-                min-height: 2.20rem;
-                padding: 0.32rem 0.66rem;
-            }
-            div[data-testid="stTextInput"] input,
-            div[data-testid="stNumberInput"] input,
-            div[data-testid="stTextArea"] textarea,
-            div[data-testid="stDateInput"] input,
-            div[data-testid="stTimeInput"] input,
-            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-                font-size: 0.86rem !important;
-                min-height: 2.18rem;
-            }
-        }
-        @media (max-width: 768px) {
-            .block-container {
-                padding-left: 0.62rem;
-                padding-right: 0.62rem;
-            }
-            .stMarkdown p, .stMarkdown li, .stMarkdown span, label, .stCaption {
-                font-size: 0.84rem;
-            }
-            div[data-testid="stButton"] > button,
-            div[data-testid="stDownloadButton"] > button,
-            div[data-testid="stFileUploader"] button,
-            div[data-testid="stFormSubmitButton"] > button {
-                font-size: 0.82rem;
-                min-height: 2.06rem;
-                padding: 0.28rem 0.58rem;
-            }
-            div[data-testid="stTextInput"] input,
-            div[data-testid="stNumberInput"] input,
-            div[data-testid="stTextArea"] textarea,
-            div[data-testid="stDateInput"] input,
-            div[data-testid="stTimeInput"] input,
-            div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-            div[data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-                font-size: 0.82rem !important;
-                min-height: 2.04rem;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+from datetime import datetime, date
+import socket
+import urllib.parse
+from streamlit.runtime.scriptrunner.script_run_context import get_script_run_ctx
+from streamlit.web.server.server import Server
 
 # =========================
 # App basics
 # =========================
 st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
-
-apply_compact_responsive_css()
-
 
 # ── 전역 CSS ──
 st.markdown(
@@ -350,6 +181,75 @@ def clamp(v, lo, hi):
 # =========================
 # Helpers (연산 로직)
 # =========================
+
+def get_remote_ip() -> str:
+    try:
+        ctx = get_script_run_ctx()
+        if ctx is None: return ""
+        session_info = Server.get_current()._get_session_info(ctx.session_id)
+        if session_info is None: return ""
+        if hasattr(session_info.ws, "request"):
+            req = session_info.ws.request
+            if hasattr(req, "headers"):
+                if "X-Forwarded-For" in req.headers:
+                    return req.headers["X-Forwarded-For"].split(",")[0].strip()
+                if "X-Real-Ip" in req.headers:
+                    return req.headers["X-Real-Ip"].strip()
+            if hasattr(req, "remote_ip"):
+                return str(req.remote_ip)
+    except Exception:
+        pass
+    return ""
+
+def get_request_headers() -> dict:
+    try:
+        ctx = get_script_run_ctx()
+        if ctx is None: return {}
+        session_info = Server.get_current()._get_session_info(ctx.session_id)
+        if session_info is None: return {}
+        if hasattr(session_info.ws, "request") and hasattr(session_info.ws.request, "headers"):
+            return dict(session_info.ws.request.headers)
+    except Exception:
+        pass
+    return {}
+
+def save_access_log():
+    if "access_logged" in st.session_state and st.session_state.access_logged:
+        return
+
+    try:
+        import os
+        log_dir = "/var/data"
+        if not os.path.exists(log_dir):
+            log_dir = "./data"
+            os.makedirs(log_dir, exist_ok=True)
+
+        log_path = os.path.join(log_dir, "access_log.csv")
+        file_exists = os.path.exists(log_path)
+
+        ip = get_remote_ip()
+        headers = get_request_headers()
+        ua = headers.get("User-Agent", "")
+        ref = headers.get("Referer", "")
+        origin = headers.get("Origin", "")
+        lang = headers.get("Accept-Language", "")
+        host = headers.get("Host", "")
+
+        now = datetime.now()
+
+        with open(log_path, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Timestamp", "IP", "Host", "User-Agent", "Referer", "Origin", "Accept-Language"])
+            writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), ip, host, ua, ref, origin, lang])
+
+        st.session_state.access_logged = True
+    except Exception as e:
+        print(f"Log error: {e}")
+
+# 실행
+save_access_log()
+
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -934,8 +834,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -1057,8 +955,6 @@ def compute_slice_paths_with_travel(
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -2217,7 +2113,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
 # =========================
 # Layout (Center + Right)
 # =========================
-center_col, right_col = st.columns([12, 3], gap="large")
+center_col, right_col = st.columns([14, 3], gap="large")
 
 segments = None
 total_segments = 0
