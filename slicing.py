@@ -1714,25 +1714,6 @@ if st.session_state.get("access_key", ""):
         st.sidebar.error(STATUS_TXT)
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
-
-can_download_log = bool(KEY_OK and st.session_state.get("access_key", "") in LOG_DOWNLOAD_KEYS)
-if can_download_log and LOG_FILE.exists():
-    try:
-        with open(LOG_FILE, "r", encoding="utf-8-sig") as f:
-            csv_text = f.read()
-        st.sidebar.download_button(
-            "접속기록 CSV 다운로드",
-            data=csv_text,
-            file_name="access_log.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key="download_access_log_csv",
-        )
-    except Exception as e:
-        st.sidebar.error(f"CSV 로드 실패: {e}")
-elif can_download_log:
-    st.sidebar.info("아직 저장된 접속기록이 없습니다.")
-
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
