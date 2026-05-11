@@ -732,6 +732,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         z_values = make_slice_z_values(submesh, z_int)
 
         for zidx, z in enumerate(z_values):
+                print_z = z + 0.5 * float(z_int)
             sec = submesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None: continue
             try:
@@ -742,10 +743,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for seg in slice_2D.discrete:
                 seg = np.array(seg)
                 seg3d = (to_3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                seg3d[:, 2] = print_z
                 segments.append(seg3d)
             if not segments: continue
 
-            g.append(f"\n; ---------- Z = {z:.2f} mm ----------")
+            g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
 
             for iseg, seg3d in enumerate(segments):
@@ -756,8 +758,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -775,13 +777,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
 
                 g.append(f"G01 F{feed}")
                 if start_e_on:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f} E{start_e_val:.5f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{z:.3f}")
+                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
 
                 for p1, p2 in zip(simplified[:-1], simplified[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
@@ -879,8 +881,8 @@ def compute_slice_paths_with_travel(
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{z:.3f}")
+                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
+                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
