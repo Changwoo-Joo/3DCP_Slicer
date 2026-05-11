@@ -1669,7 +1669,7 @@ def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.0,+000.0,+000.0,0.0,0.0,0.0,0.0,000,200'
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.0,+000.0,+000.0,0000.0,000.0,000.0,0000.0,000,200'
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
@@ -1882,7 +1882,7 @@ def convert_gcode_to_rapid(
         if len(lines_out) >= MAX_LINES: break
         x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
-        a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"]), _fmt_ext(nd["a2"]), _fmt_ext(a3_v), _fmt_ext(a4_v)
+        a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
         mat_val = "001" if nd["extr"] else "000"
         spd_val = f"{int(speed_mm_s):03d}"
         lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
