@@ -1640,6 +1640,28 @@ if st.session_state.get("access_key", ""):
         st.sidebar.error(STATUS_TXT)
 else:
     st.sidebar.info("CODE를 생성하시려면 라이선스키를 입력하세요.")
+
+current_key = st.session_state.get("access_key", "")
+can_download_log = (current_key == "wnckddn!@")
+if can_download_log:
+    log_paths = ["/var/data/access_log.csv", "./data/access_log.csv"]
+    found_log = next((lp for lp in log_paths if Path(lp).exists()), None)
+    if found_log is not None:
+        try:
+            log_bytes = Path(found_log).read_bytes()
+            st.sidebar.download_button(
+                label="CSV 다운로드",
+                data=log_bytes,
+                file_name="access_log.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_access_log_csv_direct",
+            )
+        except Exception as e:
+            st.sidebar.error(f"CSV 읽기 실패: {e}")
+    else:
+        st.sidebar.warning("/var/data/access_log.csv 파일이 아직 없습니다.")
+
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
