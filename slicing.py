@@ -13,68 +13,7 @@ from pathlib import Path
 
 import csv
 import requests
-from datetime import datetime, timedelta, timezone
-
-
-try:
-    LOG_DIR = Path("/var/data")
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-except Exception:
-    LOG_DIR = Path("./data")
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-
-LOG_FILE = LOG_DIR / "access_log.csv"
-LOG_DOWNLOAD_KEYS = {"wnckddn!@"}
-
-
-def lookup_ip_location(ip: str) -> dict:
-    if not ip:
-        return {
-            "geo_status": "no_ip",
-            "country": "",
-            "region": "",
-            "city": "",
-            "lat": "",
-            "lon": "",
-            "isp": "",
-        }
-
-    try:
-        url = f"http://ip-api.com/json/{ip}?fields=status,message,country,regionName,city,lat,lon,isp,query"
-        r = requests.get(url, timeout=3)
-        data = r.json()
-
-        if data.get("status") != "success":
-            return {
-                "geo_status": f"fail:{data.get('message', '')}",
-                "country": "",
-                "region": "",
-                "city": "",
-                "lat": "",
-                "lon": "",
-                "isp": "",
-            }
-
-        return {
-            "geo_status": "success",
-            "country": str(data.get("country", "") or ""),
-            "region": str(data.get("regionName", "") or ""),
-            "city": str(data.get("city", "") or ""),
-            "lat": str(data.get("lat", "") or ""),
-            "lon": str(data.get("lon", "") or ""),
-            "isp": str(data.get("isp", "") or ""),
-        }
-    except Exception as e:
-        return {
-            "geo_status": f"error:{e}",
-            "country": "",
-            "region": "",
-            "city": "",
-            "lat": "",
-            "lon": "",
-            "isp": "",
-        }
-
+from datetime import timezone, timedelta
 
 def apply_compact_responsive_css():
     st.markdown(
@@ -245,86 +184,162 @@ def apply_compact_responsive_css():
         unsafe_allow_html=True,
     )
 
+# =========================
+# App basics
+# =========================
+st.set_page_config(page_title="3DCP 슬라이서", layout="wide")
 
-def _request_headers_lower():
-    try:
-        ctx = getattr(st, "context", None)
-        headers = getattr(ctx, "headers", None)
-        if headers is None:
-            return {}
-        return {str(k).lower(): str(v) for k, v in dict(headers).items()}
-    except Exception:
-        return {}
+apply_compact_responsive_css()
 
 
-def _best_client_ip() -> str:
-    ctx = getattr(st, "context", None)
-    direct_ip = str(getattr(ctx, "ip_address", "") or "").strip()
-    if direct_ip:
-        return direct_ip
+# ── 전역 CSS ──
+st.markdown(
+    '''
+    <style>
+    footer {visibility: hidden;}
+    [data-testid="stFooter"] {visibility: hidden;}
+    [data-testid="stDecoration"] {visibility: hidden;}
 
-    headers = _request_headers_lower()
-    candidates = [
-        headers.get("x-forwarded-for", ""),
-        headers.get("x-real-ip", ""),
-        headers.get("cf-connecting-ip", ""),
-        headers.get("fly-client-ip", ""),
-        headers.get("x-client-ip", ""),
-    ]
-    for raw in candidates:
-        if not raw:
-            continue
-        ip = raw.split(",")[0].strip()
-        if ip:
-            return ip
-    return ""
-
-
-def save_access_log():
-    headers = _request_headers_lower()
-    ip = _best_client_ip()
-    geo = lookup_ip_location(ip)
-
-    row = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "ip": ip,
-        "timezone": str(getattr(st.context, "timezone", "") or ""),
-        "locale": str(getattr(st.context, "locale", "") or ""),
-        "url": str(getattr(st.context, "url", "") or ""),
-        "user_agent": str(headers.get("user-agent", "")),
-        "host": str(headers.get("host", "")),
-        "x_forwarded_for": str(headers.get("x-forwarded-for", "")),
-        "x_real_ip": str(headers.get("x-real-ip", "")),
-        "cf_connecting_ip": str(headers.get("cf-connecting-ip", "")),
-        "geo_status": geo["geo_status"],
-        "country": geo["country"],
-        "region": geo["region"],
-        "city": geo["city"],
-        "lat": geo["lat"],
-        "lon": geo["lon"],
-        "isp": geo["isp"],
+    .block-container { padding-top: 2.0rem; }
+    .stTabs { margin-top: 1.0rem !important; padding-top: 0.2rem !important; }
+    .stTabs { overflow: hidden !important; }
+    .stTabs [data-baseweb="tab-list"] {
+      margin-top: 0.6rem !important;
+      display: grid !important;
+      grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+      gap: 0.35rem !important;
+      width: 100% !important;
+      align-items: stretch !important;
+      overflow: hidden !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      height: auto !important;
+      min-height: 48px !important;
+      white-space: normal !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
+      text-align: center !important;
+      line-height: 1.2 !important;
+      padding: 0.5rem 0.55rem !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      overflow: hidden !important;
+      box-sizing: border-box !important;
+    }
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span,
+    .stTabs [data-baseweb="tab"] div {
+      white-space: normal !important;
+      word-break: break-word !important;
+      overflow-wrap: normal !important;
+      margin: 0 !important;
+      line-height: 1.2 !important;
+      text-align: center !important;
+      max-width: 100% !important;
+    }
+    @media (max-width: 1200px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+      }
+    }
+    @media (max-width: 760px) {
+      .stTabs [data-baseweb="tab-list"] {
+        grid-template-columns: minmax(0, 1fr) !important;
+      }
     }
 
-    file_exists = LOG_FILE.exists()
-    with open(LOG_FILE, "a", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=row.keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row)
+    .left-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding-right: 8px;
+      scrollbar-gutter: stable;
+      min-height: 0;
+    }
+    .left-panel-scroll::-webkit-scrollbar,
+    .right-panel::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .left-panel-scroll::-webkit-scrollbar-thumb,
+    .right-panel::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .left-panel-scroll::-webkit-scrollbar-track,
+    .right-panel::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
+    .center-panel-scroll {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      overflow-x: hidden;
+      min-height: 0;
+      scrollbar-gutter: stable;
+      padding-right: 4px;
+    }
+    .center-panel-scroll::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    .center-panel-scroll::-webkit-scrollbar-thumb {
+      background: #c8c8c8;
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    .center-panel-scroll::-webkit-scrollbar-track {
+      background: #f3f3f3;
+      border-radius: 999px;
+    }
+    .right-panel {
+      position: sticky;
+      top: 2.0rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      border-left: 1px solid #e6e6e6;
+      padding-left: 12px;
+      background: white;
+      scrollbar-gutter: stable;
+    }
 
+    .sidebar-title {
+      margin: 0.25rem 0 0.6rem 0;
+      font-size: 1.5rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }
 
-def render_admin_access_panel():
-    return
+    .dims-block {
+      white-space: pre-line;
+      line-height: 1.3;
+      font-variant-numeric: tabular-nums;
+    }
+    </style>
+    ''',
+    unsafe_allow_html=True
+)
 
+st.sidebar.markdown("<div class='sidebar-title'>3DCP 슬라이서</div>", unsafe_allow_html=True)
 
-def init_render_access_features():
-    apply_compact_responsive_css()
-    if "access_logged" not in st.session_state:
-        try:
-            save_access_log()
-        except Exception:
-            pass
-        st.session_state.access_logged = True
+EXTRUSION_K = 0.05
+
+# 색상 팔레트
+PATH_COLOR_DEFAULT = "#222222"
+PATH_COLOR_LIGHT   = "#D0D0D0"
+OFFSET_DARK_GRAY   = "#444444"
+CAP_COLOR          = "rgba(220,0,0,0.95)"
 
 def clamp(v, lo, hi):
     try:
@@ -1714,9 +1729,9 @@ if can_download_log and LOG_FILE.exists():
             key="download_access_log_csv",
         )
     except Exception as e:
-        st.sidebar.error(f"CSV 읽기 실패: {e}")
+        st.sidebar.error(f"CSV 로드 실패: {e}")
 elif can_download_log:
-    st.sidebar.info("접속기록 파일이 아직 없습니다.")
+    st.sidebar.info("아직 저장된 접속기록이 없습니다.")
 
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
