@@ -1485,7 +1485,8 @@ with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
 # =========================
 st.sidebar.header("기본 파라미터")
 z_int = st.sidebar.number_input("레이어(Z) 간격 (mm)", 1.0, 1000.0, 15.0)
-feed = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
+feed_mm_s = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
+feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 
