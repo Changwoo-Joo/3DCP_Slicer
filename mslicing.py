@@ -758,8 +758,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -881,8 +879,6 @@ def compute_slice_paths_with_travel(
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
-                        g.append(f"; Offset collapsed/inverted at Z={print_z:.2f}, print skipped")
-                        g.append(f"G00 X{start_pt[0]:.3f} Y{start_pt[1]:.3f} Z{print_z:.3f}")
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
