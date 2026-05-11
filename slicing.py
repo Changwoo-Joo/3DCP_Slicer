@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import csv
+import requests
 from datetime import datetime, date
 import socket
 import urllib.parse
@@ -187,6 +188,27 @@ def get_request_headers() -> dict:
         return {}
 
 
+def lookup_ip_geo(ip: str) -> dict:
+    if not ip:
+        return {}
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,regionName,city,timezone,isp,query", timeout=3)
+        if r.ok:
+            data = r.json()
+            if data.get("status") == "success":
+                return {
+                    "country": data.get("country", ""),
+                    "region": data.get("regionName", ""),
+                    "city": data.get("city", ""),
+                    "timezone": data.get("timezone", ""),
+                    "isp": data.get("isp", ""),
+                    "query": data.get("query", ip),
+                }
+    except Exception:
+        pass
+    return {}
+
+
 def save_access_log():
     if st.session_state.get("access_logged", False):
         return
@@ -203,15 +225,16 @@ def save_access_log():
         file_exists = os.path.exists(log_path)
 
         headers = get_request_headers()
-        forwarded_for = headers.get("X-Forwarded-For", "")
-        real_ip = headers.get("X-Real-Ip", "")
+        forwarded_for = headers.get("X-Forwarded-For", "") or headers.get("x-forwarded-for", "")
+        real_ip = headers.get("X-Real-Ip", "") or headers.get("x-real-ip", "")
         remote_ip = forwarded_for.split(",")[0].strip() if forwarded_for else real_ip
-        ua = headers.get("User-Agent", "")
-        ref = headers.get("Referer", "")
-        origin = headers.get("Origin", "")
-        lang = headers.get("Accept-Language", "")
-        host = headers.get("Host", "")
+        ua = headers.get("User-Agent", "") or headers.get("user-agent", "")
+        ref = headers.get("Referer", "") or headers.get("referer", "")
+        origin = headers.get("Origin", "") or headers.get("origin", "")
+        lang = headers.get("Accept-Language", "") or headers.get("accept-language", "")
+        host = headers.get("Host", "") or headers.get("host", "")
 
+        geo = lookup_ip_geo(remote_ip)
         now = datetime.now()
 
         with open(log_path, mode="a", newline="", encoding="utf-8") as f:
@@ -220,6 +243,11 @@ def save_access_log():
                 writer.writerow([
                     "Timestamp",
                     "IP",
+                    "Country",
+                    "Region",
+                    "City",
+                    "Timezone",
+                    "ISP",
                     "X-Forwarded-For",
                     "X-Real-Ip",
                     "Host",
@@ -230,7 +258,12 @@ def save_access_log():
                 ])
             writer.writerow([
                 now.strftime("%Y-%m-%d %H:%M:%S"),
-                remote_ip,
+                geo.get("query", remote_ip),
+                geo.get("country", ""),
+                geo.get("region", ""),
+                geo.get("city", ""),
+                geo.get("timezone", ""),
+                geo.get("isp", ""),
                 forwarded_for,
                 real_ip,
                 host,
