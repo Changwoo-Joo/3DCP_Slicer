@@ -2021,7 +2021,7 @@ if KEY_OK and st.session_state.show_rapid_panel:
                         a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
                         y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
                         a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                        speed_mm_s=float(st.session_state.ext_const_speed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                        speed_mm_s=float(feed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
                         apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
                         singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
                         singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
