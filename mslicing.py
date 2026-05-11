@@ -1825,8 +1825,8 @@ def convert_gcode_to_rapid(
         if not has_any: continue
 
         is_extruding = False
-        if ce is not None and prev_e is not None:
-            if (ce - prev_e) > 1e-12: is_extruding = True
+        if ce is not None and ce > 1e-12:
+            is_extruding = True
         if ce is not None: prev_e = ce
 
         a4_nominal = _linmap(cz, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
