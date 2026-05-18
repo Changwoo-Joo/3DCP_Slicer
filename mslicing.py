@@ -809,10 +809,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
-    skip_invalid_offset=True,
-    enable_infill=False,
-    infill_spacing=100.0,
-    solid_layers=2
+    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
+    enable_infill=False, infill_spacing=50.0, solid_layers=2
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -897,50 +895,6 @@ def compute_slice_paths_with_travel(
                     continue
 
                 layer_polys.append(simplified.copy())
-
-        is_solid_layer = False
-        if enable_infill:
-            if zidx_for_infill < solid_layers or zidx_for_infill >= len(z_values) - solid_layers:
-                is_solid_layer = True
-
-        if is_solid_layer and infill_spacing > 0:
-            try:
-                from shapely.geometry import Polygon, LineString
-                poly_shape = Polygon(simplified[:, :2])
-                if poly_shape.is_valid and not poly_shape.is_empty:
-                    minx, miny, maxx, maxy = poly_shape.bounds
-                    y_curr = miny + infill_spacing / 2.0
-                    infill_lines = []
-                    direction = 1
-                    while y_curr < maxy:
-                        h_line = LineString([(minx - 10, y_curr), (maxx + 10, y_curr)])
-                        intersection = poly_shape.intersection(h_line)
-                        if not intersection.is_empty:
-                            if intersection.geom_type == 'LineString':
-                                coords = list(intersection.coords)
-                                if direction == -1:
-                                    coords.reverse()
-                                infill_lines.append(coords)
-                                direction *= -1
-                            elif intersection.geom_type == 'MultiLineString':
-                                lines = list(intersection.geoms)
-                                if direction == -1:
-                                    lines.reverse()
-                                for line in lines:
-                                    coords = list(line.coords)
-                                    if direction == -1:
-                                        coords.reverse()
-                                    infill_lines.append(coords)
-                                direction *= -1
-                        y_curr += infill_spacing
-
-                    z_val = simplified[0, 2]
-                    for iline in infill_lines:
-                        if len(iline) >= 2:
-                            iline_3d = np.column_stack((np.array(iline), np.full(len(iline), z_val)))
-                            layer_polys.append(iline_3d)
-            except Exception as e:
-                pass
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
@@ -1569,6 +1523,15 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
+    enable_infill = st.checkbox("외부 수평면(Top/Bottom) 채우기 활성화", value=bool(st.session_state.get("enable_infill", False)))
+    st.session_state["enable_infill"] = bool(enable_infill)
+
+    solid_layers = st.number_input("Top/Bottom 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
+    st.session_state["solid_layers"] = int(solid_layers)
+
+    infill_spacing = st.number_input("채움 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
+    st.session_state["infill_spacing"] = float(infill_spacing)
+
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
@@ -1636,7 +1599,10 @@ if slice_clicked and st.session_state.mesh is not None:
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
+        enable_infill=bool(st.session_state.get("enable_infill", False)),
+        infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
+        solid_layers=int(st.session_state.get("solid_layers", 2))
     )
     st.session_state.paths_items = items
     st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -1658,7 +1624,10 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
+        enable_infill=bool(st.session_state.get("enable_infill", False)),
+        infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
+        solid_layers=int(st.session_state.get("solid_layers", 2))
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
