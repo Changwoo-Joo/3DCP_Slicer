@@ -750,14 +750,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
 
+                        layer_polys = []
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                
                 closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                 if enable_inward_offset and float(nozzle_width) > 0:
                     closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                     if offset_inverted and skip_invalid_offset:
-                        start_pt = closed_mid[0]
                         continue
                 simplified = simplify_segment(closed_mid, min_spacing)
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -769,9 +768,79 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
                 if len(simplified) < 2:
                     continue
+                layer_polys.append(simplified.copy())
 
-                start = simplified[0]
+            if not layer_polys:
+                continue
 
+            # --- 지붕(Roof) 면 분석 및 채움 로직 ---
+            if enable_infill and infill_spacing > 0:
+                try:
+                    from shapely.geometry import Polygon, MultiPolygon
+                    from shapely.ops import unary_union
+
+                    current_polys = []
+                    for seg in slice2D.discrete:
+                        p = Polygon(np.array(seg)[:, :2])
+                        if p.is_valid: current_polys.append(p)
+                        else: current_polys.append(p.buffer(0))
+
+                    if current_polys:
+                        current_union = unary_union(current_polys)
+                        check_z = z + float(z_int) * solid_layers
+                        above_polys = []
+                        if check_z < z_values[-1] + 1e-3:
+                            sec_above = sub_mesh.section(plane_origin=[0, 0, check_z], plane_normal=[0, 0, 1])
+                            if sec_above is not None:
+                                try:
+                                    slice_above_2D, _ = sec_above.to_2D()
+                                    for seg_above in slice_above_2D.discrete:
+                                        p_above = Polygon(np.array(seg_above)[:, :2])
+                                        if p_above.is_valid: above_polys.append(p_above)
+                                        else: above_polys.append(p_above.buffer(0))
+                                except Exception: pass
+
+                        above_union = unary_union(above_polys) if above_polys else Polygon()
+                        diff = current_union.difference(above_union)
+
+                        roof_polys = []
+                        if not diff.is_empty:
+                            if diff.geom_type == 'Polygon': roof_polys.append(diff)
+                            else: roof_polys.extend([g for g in diff.geoms if g.geom_type == 'Polygon'])
+
+                        z_val = layer_polys[0][0][2]
+                        for rp in roof_polys:
+                            if rp.is_empty or rp.area < 1e-9: continue
+                            iteration = 1
+                            while True:
+                                offset_dist = infill_spacing * (iteration - 0.5)
+                                inward_poly = rp.buffer(-offset_dist, join_style=2)
+                                if inward_poly.is_empty: break
+                                inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
+                                added_any = False
+                                for g in inward_geoms:
+                                    if g.is_empty or g.area < 1e-9: continue
+                                    coords = list(g.exterior.coords)
+                                    if len(coords) >= 4:
+                                        seg_2d = np.array(coords)
+                                        seg_3d_raw = (to3D @ np.hstack([seg_2d, np.zeros((len(seg_2d), 1)), np.ones((len(seg_2d), 1))]).T).T[:, :3]
+                                        seg_3d_raw[:, 2] = z_val
+                                        layer_polys.append(seg_3d_raw)
+                                        added_any = True
+                                    for interior in g.interiors:
+                                        coords_in = list(interior.coords)
+                                        if len(coords_in) >= 4:
+                                            seg_2d_in = np.array(coords_in)
+                                            seg_3d_in = (to3D @ np.hstack([seg_2d_in, np.zeros((len(seg_2d_in), 1)), np.ones((len(seg_2d_in), 1))]).T).T[:, :3]
+                                            seg_3d_in[:, 2] = z_val
+                                            layer_polys.append(seg_3d_in)
+                                            added_any = True
+                                if not added_any: break
+                                iteration += 1
+                except Exception as e: pass
+
+            for iseg, poly in enumerate(layer_polys):
+                start = poly[0]
                 if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
                     g.append(f"; Moving to new object start at Safe Z")
                     g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
@@ -785,15 +854,15 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 else:
                     g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
 
-                for p1, p2 in zip(simplified[:-1], simplified[1:]):
+                for p1, p2 in zip(poly[:-1], poly[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
                     if e_on:
                         g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
                     else:
                         g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
 
-                
-                if iseg == 0: prev_start_xy = start[:2]
+                if iseg == 0:
+                    prev_start_xy = start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
@@ -1985,7 +2054,7 @@ def convert_gcode_to_rapid(
                                             float(st.session_state.get("extconsta2stepmm", 0.0)) if use_step else 0.0)
 
     lines_out = []
-    for nd in nodes:
+    for i, nd in enumerate(nodes):
         if len(lines_out) >= MAX_LINES: break
         x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
