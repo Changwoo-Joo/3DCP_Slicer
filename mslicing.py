@@ -909,10 +909,18 @@ def compute_slice_paths_with_travel(
                     from shapely.geometry import Polygon, MultiPolygon
                     from shapely.ops import unary_union
 
-                    # 현재 층의 꽉 찬 다면체 (구멍 포함된 올바른 Polygon)
-                    current_polys = slice2D.polygons_full
+                    # 현재 층의 윤곽선들을 모두 꽉 찬 다각형으로 간주하여 합침 (가장 안정적인 방식)
+                    current_polys = []
+                    for seg in slice2D.discrete:
+                        p = Polygon(np.array(seg)[:, :2])
+                        if p.is_valid:
+                            current_polys.append(p)
+                        else:
+                            current_polys.append(p.buffer(0))
 
                     if current_polys:
+                        current_union = unary_union(current_polys)
+
                         check_z = z + float(z_int) * solid_layers
                         above_polys = []
                         if check_z < z_values[-1] + 1e-3:
@@ -920,24 +928,27 @@ def compute_slice_paths_with_travel(
                             if sec_above is not None:
                                 try:
                                     slice_above_2D, _ = sec_above.to_2D()
-                                    above_polys = slice_above_2D.polygons_full
+                                    for seg_above in slice_above_2D.discrete:
+                                        p_above = Polygon(np.array(seg_above)[:, :2])
+                                        if p_above.is_valid:
+                                            above_polys.append(p_above)
+                                        else:
+                                            above_polys.append(p_above.buffer(0))
                                 except Exception:
                                     pass
 
                         above_union = unary_union(above_polys) if above_polys else Polygon()
 
-                        roof_polys = []
-                        for cp in current_polys:
-                            if not cp.is_valid:
-                                cp = cp.buffer(0)
-                            diff = cp.difference(above_union)
-                            if not diff.is_empty:
-                                if diff.geom_type == 'Polygon':
-                                    roof_polys.append(diff)
-                                else:
-                                    roof_polys.extend([g for g in diff.geoms if g.geom_type == 'Polygon'])
+                        # 현재 층 블록에서 윗층 블록을 빼면 순수한 '지붕' 영역만 남음
+                        diff = current_union.difference(above_union)
 
-                        # 지붕 다각형들을 내측으로 Concentric Offset 하여 layer_polys에 추가
+                        roof_polys = []
+                        if not diff.is_empty:
+                            if diff.geom_type == 'Polygon':
+                                roof_polys.append(diff)
+                            else:
+                                roof_polys.extend([g for g in diff.geoms if g.geom_type == 'Polygon'])
+
                         z_val = layer_polys[0][0][2]
                         for rp in roof_polys:
                             if rp.is_empty or rp.area < 1e-9:
@@ -945,7 +956,9 @@ def compute_slice_paths_with_travel(
 
                             iteration = 1
                             while True:
-                                inward_poly = rp.buffer(-(infill_spacing * iteration), join_style=2)
+                                # 간격을 0.5부터 시작하여 벽체 선과 자연스럽게 맞물리도록 조정
+                                offset_dist = infill_spacing * (iteration - 0.5)
+                                inward_poly = rp.buffer(-offset_dist, join_style=2)
                                 if inward_poly.is_empty:
                                     break
 
@@ -954,14 +967,25 @@ def compute_slice_paths_with_travel(
                                 for g in inward_geoms:
                                     if g.is_empty or g.area < 1e-9:
                                         continue
+
+                                    # Exterior (외부에서 내부로 감아 도는 선)
                                     coords = list(g.exterior.coords)
                                     if len(coords) >= 4:
-                                        # 원래 slice2D는 2D 평면이므로 to3D 행렬을 통해 3D로 변환해야 함!
                                         seg_2d = np.array(coords)
                                         seg_3d_raw = (to3D @ np.hstack([seg_2d, np.zeros((len(seg_2d), 1)), np.ones((len(seg_2d), 1))]).T).T[:, :3]
                                         seg_3d_raw[:, 2] = z_val
                                         layer_polys.append(seg_3d_raw)
                                         added_any = True
+
+                                    # Interiors (내부 구멍에서 외부로 감아 도는 선 - 단차 지붕 핵심)
+                                    for interior in g.interiors:
+                                        coords_in = list(interior.coords)
+                                        if len(coords_in) >= 4:
+                                            seg_2d_in = np.array(coords_in)
+                                            seg_3d_in = (to3D @ np.hstack([seg_2d_in, np.zeros((len(seg_2d_in), 1)), np.ones((len(seg_2d_in), 1))]).T).T[:, :3]
+                                            seg_3d_in[:, 2] = z_val
+                                            layer_polys.append(seg_3d_in)
+                                            added_any = True
 
                                 if not added_any:
                                     break
