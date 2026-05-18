@@ -895,6 +895,76 @@ def compute_slice_paths_with_travel(
                     continue
 
                 layer_polys.append(simplified.copy())
+
+                # --- Infill (수평면 내부 채움) 추가 ---
+                is_solid_layer = False
+                if enable_infill:
+                    # zidx_for_infill이 상/하단의 설정된 레이어 수 이내인 경우만 채움
+                    if zidx_for_infill < solid_layers or zidx_for_infill >= len(z_values) - solid_layers:
+                        is_solid_layer = True
+
+                if is_solid_layer and infill_spacing > 0:
+                    try:
+                        from shapely.geometry import Polygon, LineString
+                        poly_shape = Polygon(simplified[:, :2])
+                        if poly_shape.is_valid and not poly_shape.is_empty:
+                            minx, miny, maxx, maxy = poly_shape.bounds
+
+                            # infill 방향 결정: 지그재그를 위해 레이어마다 90도 교차
+                            use_y_axis = (zidx_for_infill % 2 == 0)
+
+                            infill_lines = []
+                            direction = 1
+
+                            if use_y_axis:
+                                y_curr = miny + infill_spacing / 2.0
+                                while y_curr < maxy:
+                                    h_line = LineString([(minx - 10, y_curr), (maxx + 10, y_curr)])
+                                    intersection = poly_shape.intersection(h_line)
+                                    if not intersection.is_empty:
+                                        if intersection.geom_type == 'LineString':
+                                            coords = list(intersection.coords)
+                                            if direction == -1: coords.reverse()
+                                            infill_lines.append(coords)
+                                            direction *= -1
+                                        elif intersection.geom_type == 'MultiLineString':
+                                            lines = list(intersection.geoms)
+                                            if direction == -1: lines.reverse()
+                                            for line in lines:
+                                                coords = list(line.coords)
+                                                if direction == -1: coords.reverse()
+                                                infill_lines.append(coords)
+                                            direction *= -1
+                                    y_curr += infill_spacing
+                            else:
+                                x_curr = minx + infill_spacing / 2.0
+                                while x_curr < maxx:
+                                    v_line = LineString([(x_curr, miny - 10), (x_curr, maxy + 10)])
+                                    intersection = poly_shape.intersection(v_line)
+                                    if not intersection.is_empty:
+                                        if intersection.geom_type == 'LineString':
+                                            coords = list(intersection.coords)
+                                            if direction == -1: coords.reverse()
+                                            infill_lines.append(coords)
+                                            direction *= -1
+                                        elif intersection.geom_type == 'MultiLineString':
+                                            lines = list(intersection.geoms)
+                                            if direction == -1: lines.reverse()
+                                            for line in lines:
+                                                coords = list(line.coords)
+                                                if direction == -1: coords.reverse()
+                                                infill_lines.append(coords)
+                                            direction *= -1
+                                    x_curr += infill_spacing
+
+                            z_val = simplified[0, 2]
+                            for iline in infill_lines:
+                                if len(iline) >= 2:
+                                    iline_3d = np.column_stack((np.array(iline), np.full(len(iline), z_val)))
+                                    layer_polys.append(iline_3d)
+                    except Exception as e:
+                        pass
+                # ------------------------------------
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
@@ -1523,13 +1593,15 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
-    enable_infill = st.checkbox("외부 수평면(Top/Bottom) 채우기 활성화", value=bool(st.session_state.get("enable_infill", False)))
+    st.markdown("---")
+    st.markdown("**수평면(Top/Bottom) 내부 채움 옵션**")
+    enable_infill = st.checkbox("외부 수평면(Top/Bottom) 출력 활성화", value=bool(st.session_state.get("enable_infill", False)), help="지붕과 바닥을 막는 Infill 라인을 생성합니다.")
     st.session_state["enable_infill"] = bool(enable_infill)
 
     solid_layers = st.number_input("Top/Bottom 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
     st.session_state["solid_layers"] = int(solid_layers)
 
-    infill_spacing = st.number_input("채움 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
+    infill_spacing = st.number_input("채움 선 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
     st.session_state["infill_spacing"] = float(infill_spacing)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
