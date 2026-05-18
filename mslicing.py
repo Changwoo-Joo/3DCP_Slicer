@@ -1971,6 +1971,7 @@ def convert_gcode_to_rapid(
     a3x_0, a3x_1 = (gi(P, ["X","A3_out",0], 0.0), gi(P, ["X","A3_out",1], 0.0)) if a3_on_x else (0.0, 0.0)
     a3y_0, a3y_1 = (gi(P, ["Y","A3_out",0], 0.0), gi(P, ["Y","A3_out",1], 0.0)) if a3_on_y else (0.0, 0.0)
 
+    import math
     frx, fry, frz = _fmt_ang(rx), _fmt_ang(ry), _fmt_ang(rz)
     have_prev = False; prev_x = prev_y = prev_z = 0.0; prev_e = None; cur_a3 = 0.0
     singularity_a4_offset = 0.0; singularity_applied = False
@@ -2042,6 +2043,31 @@ def convert_gcode_to_rapid(
         ts = datetime.now().strftime("%Y-%m-%d %p %I:%M:%S")
         return (f"MODULE Converted\n!*** Generated {ts}\nVAR string sFileCount:=\"{MAX_LINES}\";\n"
                 f"VAR string d3dpDynLoad{{{MAX_LINES}}}:=[\n" + ",\n".join(f'"{ln}"' for ln in lines_out) + "\n];\nENDMODULE\n")
+
+    dynamic_rz = [rz] * len(xs_out)
+    if auto_tangent and len(xs_out) > 1:
+        raw_angles = []
+        for i in range(len(xs_out)):
+            if i < len(xs_out) - 1:
+                dx = xs_out[i + 1] - xs_out[i]
+                dy = ys_out[i + 1] - ys_out[i]
+            else:
+                dx = xs_out[i] - xs_out[i - 1]
+                dy = ys_out[i] - ys_out[i - 1]
+            if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+                ang = raw_angles[-1] if raw_angles else rz
+            else:
+                ang = math.degrees(math.atan2(dy, dx)) + tangent_offset
+            raw_angles.append(ang)
+        ang_rad = np.unwrap(np.radians(np.array(raw_angles, dtype=float)))
+        w = max(1, int(smooth_window))
+        if w > 1:
+            kernel = np.ones(w, dtype=float) / float(w)
+            pad_left = w // 2
+            pad_right = w - 1 - pad_left
+            padded = np.pad(ang_rad, (pad_left, pad_right), mode='edge')
+            ang_rad = np.convolve(padded, kernel, mode='valid')
+        dynamic_rz = np.degrees(ang_rad).tolist()
 
     nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
               "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
