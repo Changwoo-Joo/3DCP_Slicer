@@ -897,39 +897,62 @@ def compute_slice_paths_with_travel(
                 layer_polys.append(simplified.copy())
 
                 # --- Infill (수평면 내부 채움) 추가 ---
-                is_solid_layer = False
-                if enable_infill:
-                    # 바닥면 제외(Bottom 출력 NO), 상단(Top) 레이어만 채움
-                    if zidx_for_infill >= len(z_values) - solid_layers:
-                        is_solid_layer = True
-
-                if is_solid_layer and infill_spacing > 0:
+                if enable_infill and infill_spacing > 0:
                     try:
                         from shapely.geometry import Polygon, MultiPolygon
                         poly_shape = Polygon(simplified[:, :2])
                         if poly_shape.is_valid and not poly_shape.is_empty:
-                            iteration = 1
-                            z_val = simplified[0, 2]
-                            while True:
-                                # 외곽선과 동일하게 회전하며 안쪽으로 들어가는 Concentric (내측 오프셋) 생성
-                                inward_poly = poly_shape.buffer(-(infill_spacing * iteration), join_style=2)
-                                if inward_poly.is_empty:
-                                    break
+                            # 현재 층(z)에서 바로 위 층(z + (z_int * solid_layers))의 단면을 빼서 '지붕(Roof)' 영역을 구합니다.
+                            # solid_layers 설정값만큼 위의 단면을 확인하여 지붕 여부 판단
+                            roof_poly = poly_shape
+                            check_z = z + float(z_int) * solid_layers
+                            if check_z < z_values[-1] + 1e-3:
+                                sec_above = sub_mesh.section(plane_origin=[0, 0, check_z], plane_normal=[0, 0, 1])
+                                if sec_above is not None:
+                                    try:
+                                        slice_above_2D, _ = sec_above.to_2D()
+                                        above_polys = []
+                                        for s_above in slice_above_2D.discrete:
+                                            p_above = Polygon(np.array(s_above)[:, :2])
+                                            if p_above.is_valid:
+                                                above_polys.append(p_above)
+                                        if above_polys:
+                                            # 위 층의 다각형들을 모두 합침
+                                            from shapely.ops import unary_union
+                                            above_union = unary_union(above_polys)
+                                            # 현재 다각형에서 위 층 다각형을 뺀 부분이 순수 지붕
+                                            roof_poly = poly_shape.difference(above_union)
+                                    except Exception:
+                                        pass
 
-                                geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
-                                added_any = False
-                                for g in geoms:
-                                    if g.is_empty or g.area < 1e-9:
+                            # 지붕 영역이 존재하면 내측 오프셋(Concentric) 인필 생성
+                            if not roof_poly.is_empty and roof_poly.area > 1e-6:
+                                geoms_to_fill = [roof_poly] if roof_poly.geom_type == 'Polygon' else list(roof_poly.geoms)
+                                z_val = simplified[0, 2]
+
+                                for geom in geoms_to_fill:
+                                    if geom.is_empty or geom.area < 1e-9:
                                         continue
-                                    coords = list(g.exterior.coords)
-                                    if len(coords) >= 4:
-                                        iline_3d = np.column_stack((np.array(coords), np.full(len(coords), z_val)))
-                                        layer_polys.append(iline_3d)
-                                        added_any = True
+                                    iteration = 1
+                                    while True:
+                                        inward_poly = geom.buffer(-(infill_spacing * iteration), join_style=2)
+                                        if inward_poly.is_empty:
+                                            break
 
-                                if not added_any:
-                                    break
-                                iteration += 1
+                                        inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
+                                        added_any = False
+                                        for g in inward_geoms:
+                                            if g.is_empty or g.area < 1e-9:
+                                                continue
+                                            coords = list(g.exterior.coords)
+                                            if len(coords) >= 4:
+                                                iline_3d = np.column_stack((np.array(coords), np.full(len(coords), z_val)))
+                                                layer_polys.append(iline_3d)
+                                                added_any = True
+
+                                        if not added_any:
+                                            break
+                                        iteration += 1
                     except Exception as e:
                         pass
                 # ------------------------------------
