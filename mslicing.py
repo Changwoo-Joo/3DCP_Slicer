@@ -2046,28 +2046,33 @@ def convert_gcode_to_rapid(
 
     dynamic_rz = [rz] * len(xs_out)
     if auto_tangent and len(xs_out) > 1:
-        raw_angles = []
-        for i in range(len(xs_out)):
-            if i < len(xs_out) - 1:
-                dx = xs_out[i + 1] - xs_out[i]
-                dy = ys_out[i + 1] - ys_out[i]
-            else:
-                dx = xs_out[i] - xs_out[i - 1]
-                dy = ys_out[i] - ys_out[i - 1]
-            if abs(dx) < 1e-9 and abs(dy) < 1e-9:
-                ang = raw_angles[-1] if raw_angles else rz
-            else:
-                ang = math.degrees(math.atan2(dy, dx)) + tangent_offset
-            raw_angles.append(ang)
-        ang_rad = np.unwrap(np.radians(np.array(raw_angles, dtype=float)))
+        dx_arr = np.diff(xs_out)
+        dy_arr = np.diff(ys_out)
+        dx_arr = np.append(dx_arr, dx_arr[-1] if len(dx_arr) > 0 else 0.0)
+        dy_arr = np.append(dy_arr, dy_arr[-1] if len(dy_arr) > 0 else 0.0)
+
         w = max(1, int(smooth_window))
         if w > 1:
             kernel = np.ones(w, dtype=float) / float(w)
-            pad_left = w // 2
-            pad_right = w - 1 - pad_left
-            padded = np.pad(ang_rad, (pad_left, pad_right), mode='edge')
-            ang_rad = np.convolve(padded, kernel, mode='valid')
-        dynamic_rz = np.degrees(ang_rad).tolist()
+            pad_l = w // 2
+            pad_r = w - 1 - pad_l
+            dx_p = np.pad(dx_arr, (pad_l, pad_r), mode='edge')
+            dy_p = np.pad(dy_arr, (pad_l, pad_r), mode='edge')
+            dx_s = np.convolve(dx_p, kernel, mode='valid')
+            dy_s = np.convolve(dy_p, kernel, mode='valid')
+        else:
+            dx_s, dy_s = dx_arr, dy_arr
+
+        angles = np.degrees(np.arctan2(dy_s, dx_s)) + tangent_offset
+        # -180 ~ +180 범위로 정규화하여 끝없이 숫자가 커지는 것 방지
+        angles = (angles + 180) % 360 - 180
+
+        # 정지 구간(dx=0, dy=0) 처리
+        for i in range(len(angles)):
+            if abs(dx_s[i]) < 1e-9 and abs(dy_s[i]) < 1e-9:
+                angles[i] = angles[i-1] if i > 0 else rz
+
+        dynamic_rz = angles.tolist()
 
     nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
               "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
