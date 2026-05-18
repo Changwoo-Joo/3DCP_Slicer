@@ -809,7 +809,10 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
-    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True
+    skip_invalid_offset=True,
+    enable_infill=False,
+    infill_spacing=100.0,
+    solid_layers=2
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -853,7 +856,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        for z in z_values:
+        for zidx_for_infill, z in enumerate(z_values):
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -894,6 +897,50 @@ def compute_slice_paths_with_travel(
                     continue
 
                 layer_polys.append(simplified.copy())
+
+        is_solid_layer = False
+        if enable_infill:
+            if zidx_for_infill < solid_layers or zidx_for_infill >= len(z_values) - solid_layers:
+                is_solid_layer = True
+
+        if is_solid_layer and infill_spacing > 0:
+            try:
+                from shapely.geometry import Polygon, LineString
+                poly_shape = Polygon(simplified[:, :2])
+                if poly_shape.is_valid and not poly_shape.is_empty:
+                    minx, miny, maxx, maxy = poly_shape.bounds
+                    y_curr = miny + infill_spacing / 2.0
+                    infill_lines = []
+                    direction = 1
+                    while y_curr < maxy:
+                        h_line = LineString([(minx - 10, y_curr), (maxx + 10, y_curr)])
+                        intersection = poly_shape.intersection(h_line)
+                        if not intersection.is_empty:
+                            if intersection.geom_type == 'LineString':
+                                coords = list(intersection.coords)
+                                if direction == -1:
+                                    coords.reverse()
+                                infill_lines.append(coords)
+                                direction *= -1
+                            elif intersection.geom_type == 'MultiLineString':
+                                lines = list(intersection.geoms)
+                                if direction == -1:
+                                    lines.reverse()
+                                for line in lines:
+                                    coords = list(line.coords)
+                                    if direction == -1:
+                                        coords.reverse()
+                                    infill_lines.append(coords)
+                                direction *= -1
+                        y_curr += infill_spacing
+
+                    z_val = simplified[0, 2]
+                    for iline in infill_lines:
+                        if len(iline) >= 2:
+                            iline_3d = np.column_stack((np.array(iline), np.full(len(iline), z_val)))
+                            layer_polys.append(iline_3d)
+            except Exception as e:
+                pass
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
