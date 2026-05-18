@@ -2265,6 +2265,16 @@ if KEY_OK and st.session_state.show_rapid_panel:
                 xyz_count = _extract_xyz_lines_count(gtxt)
                 over = (xyz_count > MAX_LINES)
 
+            st.markdown("---")
+            st.markdown("**[옵션] 노즐 자동 회전 (Smooth Tangential Tracking)**")
+            auto_tangent = st.checkbox("경로 접선 방향으로 Rz 자동 회전", value=True, help="체크 시 입력된 Rz 대신 모델의 진행 방향에 맞춰 Rz를 부드럽게 보간하여 출력합니다.")
+            tangent_offset = st.number_input("Rz 기준 오프셋 보정 (기본 180도)", min_value=-720.0, max_value=720.0, value=180.0, step=10.0, help="시작 각도가 원하시는 각도(예: 90도)가 되도록 이 값을 가감하여 맞추세요.")
+            smooth_window = st.number_input("회전 부드러움 (포인트 수)", min_value=1, max_value=500, value=30, step=10, help="코너에서 각도가 얼마나 천천히 변할지 결정합니다.")
+            st.session_state["auto_tangent"] = auto_tangent
+            st.session_state["tangent_offset"] = float(tangent_offset)
+            st.session_state["smooth_window"] = int(smooth_window)
+            st.markdown("---")
+
             save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
             if gtxt is None:
                 st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
