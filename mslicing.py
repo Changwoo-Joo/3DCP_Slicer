@@ -810,7 +810,7 @@ def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
     nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
-    enable_infill=False, infill_spacing=50.0, solid_layers=2
+    enable_infill=False, infill_spacing=50.0, solid_layers=3
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -854,7 +854,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        for zidx_for_infill, z in enumerate(z_values):
+        for z in z_values:
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -895,8 +895,6 @@ def compute_slice_paths_with_travel(
                     continue
 
                 layer_polys.append(simplified.copy())
-
-                
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
@@ -909,7 +907,6 @@ def compute_slice_paths_with_travel(
                     from shapely.geometry import Polygon, MultiPolygon
                     from shapely.ops import unary_union
 
-                    # 현재 층의 윤곽선들을 모두 꽉 찬 다각형으로 간주하여 합침 (가장 안정적인 방식)
                     current_polys = []
                     for seg in slice2D.discrete:
                         p = Polygon(np.array(seg)[:, :2])
@@ -938,8 +935,6 @@ def compute_slice_paths_with_travel(
                                     pass
 
                         above_union = unary_union(above_polys) if above_polys else Polygon()
-
-                        # 현재 층 블록에서 윗층 블록을 빼면 순수한 '지붕' 영역만 남음
                         diff = current_union.difference(above_union)
 
                         roof_polys = []
@@ -951,24 +946,19 @@ def compute_slice_paths_with_travel(
 
                         z_val = layer_polys[0][0][2]
                         for rp in roof_polys:
-                            if rp.is_empty or rp.area < 1e-9:
-                                continue
+                            if rp.is_empty or rp.area < 1e-9: continue
 
                             iteration = 1
                             while True:
-                                # 간격을 0.5부터 시작하여 벽체 선과 자연스럽게 맞물리도록 조정
                                 offset_dist = infill_spacing * (iteration - 0.5)
                                 inward_poly = rp.buffer(-offset_dist, join_style=2)
-                                if inward_poly.is_empty:
-                                    break
+                                if inward_poly.is_empty: break
 
                                 inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
                                 added_any = False
                                 for g in inward_geoms:
-                                    if g.is_empty or g.area < 1e-9:
-                                        continue
+                                    if g.is_empty or g.area < 1e-9: continue
 
-                                    # Exterior (외부에서 내부로 감아 도는 선)
                                     coords = list(g.exterior.coords)
                                     if len(coords) >= 4:
                                         seg_2d = np.array(coords)
@@ -977,7 +967,6 @@ def compute_slice_paths_with_travel(
                                         layer_polys.append(seg_3d_raw)
                                         added_any = True
 
-                                    # Interiors (내부 구멍에서 외부로 감아 도는 선 - 단차 지붕 핵심)
                                     for interior in g.interiors:
                                         coords_in = list(interior.coords)
                                         if len(coords_in) >= 4:
@@ -987,11 +976,9 @@ def compute_slice_paths_with_travel(
                                             layer_polys.append(seg_3d_in)
                                             added_any = True
 
-                                if not added_any:
-                                    break
+                                if not added_any: break
                                 iteration += 1
                 except Exception as e:
-                    print("Infill Error:", e)
                     pass
             # ------------------------------------------------
 
@@ -1618,11 +1605,11 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
     st.markdown("---")
-    st.markdown("**수평면(Top/Bottom) 내부 채움 옵션**")
+    st.markdown("**수평면(Top) 내부 회전 채움 옵션**")
     enable_infill = st.checkbox("지붕(Top) 수평면 회전 채움 활성화", value=bool(st.session_state.get("enable_infill", False)), help="지붕(Top) 레이어의 내부를 외곽선과 동일하게 회전하는(Concentric) 방식으로 채웁니다.")
     st.session_state["enable_infill"] = bool(enable_infill)
 
-    solid_layers = st.number_input("상단(Top) 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
+    solid_layers = st.number_input("상단(Top) 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 3)), step=1)
     st.session_state["solid_layers"] = int(solid_layers)
 
     infill_spacing = st.number_input("채움 선 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
@@ -1892,6 +1879,7 @@ def convert_gcode_to_rapid(
     x_min: float = 0.0, x_max: float = 6000.0, a1_at_xmin: float = 4000.0, a1_at_xmax: float = 0.0,
     y_min: float = 0.0, y_max: float = 1000.0, a2_at_ymin: float = 0.0, a2_at_ymax: float = 4000.0,
     speed_mm_s: float = 200.0, boundary_eps_mm: float = 0.5, apply_print_only: bool = False,
+    auto_tangent: bool = False, tangent_offset: float = 180.0, smooth_window: int = 30,
     travel_interp: bool = True, singularity_avoid: bool = False, singularity_z_trigger: float = 0.0, singularity_lift_z: float = 300.0,
 ) -> str:
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
@@ -2004,7 +1992,8 @@ def convert_gcode_to_rapid(
         a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
         mat_val = "001" if nd["extr"] else "000"
         spd_val = f"{int(speed_mm_s):03d}"
-        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
+        dyn_frz = _fmt_ang(dynamic_rz[i])
+        lines_out.append(f"{x},{y},{z},{frx},{fry},{dyn_frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
 
     while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
@@ -2132,6 +2121,9 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     st.session_state.rapid_text = convert_gcode_to_rapid(
                         gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
                         preset=st.session_state.mapping_preset, swap_a3_a4=False,
+                        auto_tangent=bool(st.session_state.get("auto_tangent", True)),
+                        tangent_offset=float(st.session_state.get("tangent_offset", 180.0)),
+                        smooth_window=int(st.session_state.get("smooth_window", 30)),
                         enable_a1_const=bool(st.session_state.ext_const_enable_a1), enable_a2_const=bool(st.session_state.ext_const_enable_a2),
                         enable_a3=bool(st.session_state.get("ext_use_a3", False)), enable_a4=bool(st.session_state.get("ext_use_a4", False)),
                         x_min=float(st.session_state.ext_const_xmin), x_max=float(st.session_state.ext_const_xmax),
