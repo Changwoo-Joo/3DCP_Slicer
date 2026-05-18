@@ -899,69 +899,37 @@ def compute_slice_paths_with_travel(
                 # --- Infill (수평면 내부 채움) 추가 ---
                 is_solid_layer = False
                 if enable_infill:
-                    # zidx_for_infill이 상/하단의 설정된 레이어 수 이내인 경우만 채움
-                    if zidx_for_infill < solid_layers or zidx_for_infill >= len(z_values) - solid_layers:
+                    # 바닥면 제외(Bottom 출력 NO), 상단(Top) 레이어만 채움
+                    if zidx_for_infill >= len(z_values) - solid_layers:
                         is_solid_layer = True
 
                 if is_solid_layer and infill_spacing > 0:
                     try:
-                        from shapely.geometry import Polygon, LineString
+                        from shapely.geometry import Polygon, MultiPolygon
                         poly_shape = Polygon(simplified[:, :2])
                         if poly_shape.is_valid and not poly_shape.is_empty:
-                            minx, miny, maxx, maxy = poly_shape.bounds
-
-                            # infill 방향 결정: 지그재그를 위해 레이어마다 90도 교차
-                            use_y_axis = (zidx_for_infill % 2 == 0)
-
-                            infill_lines = []
-                            direction = 1
-
-                            if use_y_axis:
-                                y_curr = miny + infill_spacing / 2.0
-                                while y_curr < maxy:
-                                    h_line = LineString([(minx - 10, y_curr), (maxx + 10, y_curr)])
-                                    intersection = poly_shape.intersection(h_line)
-                                    if not intersection.is_empty:
-                                        if intersection.geom_type == 'LineString':
-                                            coords = list(intersection.coords)
-                                            if direction == -1: coords.reverse()
-                                            infill_lines.append(coords)
-                                            direction *= -1
-                                        elif intersection.geom_type == 'MultiLineString':
-                                            lines = list(intersection.geoms)
-                                            if direction == -1: lines.reverse()
-                                            for line in lines:
-                                                coords = list(line.coords)
-                                                if direction == -1: coords.reverse()
-                                                infill_lines.append(coords)
-                                            direction *= -1
-                                    y_curr += infill_spacing
-                            else:
-                                x_curr = minx + infill_spacing / 2.0
-                                while x_curr < maxx:
-                                    v_line = LineString([(x_curr, miny - 10), (x_curr, maxy + 10)])
-                                    intersection = poly_shape.intersection(v_line)
-                                    if not intersection.is_empty:
-                                        if intersection.geom_type == 'LineString':
-                                            coords = list(intersection.coords)
-                                            if direction == -1: coords.reverse()
-                                            infill_lines.append(coords)
-                                            direction *= -1
-                                        elif intersection.geom_type == 'MultiLineString':
-                                            lines = list(intersection.geoms)
-                                            if direction == -1: lines.reverse()
-                                            for line in lines:
-                                                coords = list(line.coords)
-                                                if direction == -1: coords.reverse()
-                                                infill_lines.append(coords)
-                                            direction *= -1
-                                    x_curr += infill_spacing
-
+                            iteration = 1
                             z_val = simplified[0, 2]
-                            for iline in infill_lines:
-                                if len(iline) >= 2:
-                                    iline_3d = np.column_stack((np.array(iline), np.full(len(iline), z_val)))
-                                    layer_polys.append(iline_3d)
+                            while True:
+                                # 외곽선과 동일하게 회전하며 안쪽으로 들어가는 Concentric (내측 오프셋) 생성
+                                inward_poly = poly_shape.buffer(-(infill_spacing * iteration), join_style=2)
+                                if inward_poly.is_empty:
+                                    break
+
+                                geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
+                                added_any = False
+                                for g in geoms:
+                                    if g.is_empty or g.area < 1e-9:
+                                        continue
+                                    coords = list(g.exterior.coords)
+                                    if len(coords) >= 4:
+                                        iline_3d = np.column_stack((np.array(coords), np.full(len(coords), z_val)))
+                                        layer_polys.append(iline_3d)
+                                        added_any = True
+
+                                if not added_any:
+                                    break
+                                iteration += 1
                     except Exception as e:
                         pass
                 # ------------------------------------
@@ -1595,10 +1563,10 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
 
     st.markdown("---")
     st.markdown("**수평면(Top/Bottom) 내부 채움 옵션**")
-    enable_infill = st.checkbox("외부 수평면(Top/Bottom) 출력 활성화", value=bool(st.session_state.get("enable_infill", False)), help="지붕과 바닥을 막는 Infill 라인을 생성합니다.")
+    enable_infill = st.checkbox("지붕(Top) 수평면 회전 채움 활성화", value=bool(st.session_state.get("enable_infill", False)), help="지붕(Top) 레이어의 내부를 외곽선과 동일하게 회전하는(Concentric) 방식으로 채웁니다.")
     st.session_state["enable_infill"] = bool(enable_infill)
 
-    solid_layers = st.number_input("Top/Bottom 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
+    solid_layers = st.number_input("상단(Top) 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
     st.session_state["solid_layers"] = int(solid_layers)
 
     infill_spacing = st.number_input("채움 선 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
@@ -1674,7 +1642,7 @@ if slice_clicked and st.session_state.mesh is not None:
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
         enable_infill=bool(st.session_state.get("enable_infill", False)),
         infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
-        solid_layers=int(st.session_state.get("solid_layers", 2))
+        solid_layers=int(st.session_state.get("solid_layers", 3))
     )
     st.session_state.paths_items = items
     st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -1699,7 +1667,7 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
         enable_infill=bool(st.session_state.get("enable_infill", False)),
         infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
-        solid_layers=int(st.session_state.get("solid_layers", 2))
+        solid_layers=int(st.session_state.get("solid_layers", 3))
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
