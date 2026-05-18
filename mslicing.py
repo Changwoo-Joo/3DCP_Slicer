@@ -809,7 +809,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
-    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True
+    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
+    enable_infill=False, infill_spacing=50.0, solid_layers=2
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -853,7 +854,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        for z in z_values:
+        for zidx_for_infill, z in enumerate(z_values):
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -894,11 +895,105 @@ def compute_slice_paths_with_travel(
                     continue
 
                 layer_polys.append(simplified.copy())
+
+                
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
             if not layer_polys:
                 continue
+
+            # --- 지붕(Roof) 면 분석 및 채움 로직 (Layer 단위) ---
+            if enable_infill and infill_spacing > 0:
+                try:
+                    from shapely.geometry import Polygon, MultiPolygon
+                    from shapely.ops import unary_union
+
+                    # 현재 층의 윤곽선들을 모두 꽉 찬 다각형으로 간주하여 합침 (가장 안정적인 방식)
+                    current_polys = []
+                    for seg in slice2D.discrete:
+                        p = Polygon(np.array(seg)[:, :2])
+                        if p.is_valid:
+                            current_polys.append(p)
+                        else:
+                            current_polys.append(p.buffer(0))
+
+                    if current_polys:
+                        current_union = unary_union(current_polys)
+
+                        check_z = z + float(z_int) * solid_layers
+                        above_polys = []
+                        if check_z < z_values[-1] + 1e-3:
+                            sec_above = sub_mesh.section(plane_origin=[0, 0, check_z], plane_normal=[0, 0, 1])
+                            if sec_above is not None:
+                                try:
+                                    slice_above_2D, _ = sec_above.to_2D()
+                                    for seg_above in slice_above_2D.discrete:
+                                        p_above = Polygon(np.array(seg_above)[:, :2])
+                                        if p_above.is_valid:
+                                            above_polys.append(p_above)
+                                        else:
+                                            above_polys.append(p_above.buffer(0))
+                                except Exception:
+                                    pass
+
+                        above_union = unary_union(above_polys) if above_polys else Polygon()
+
+                        # 현재 층 블록에서 윗층 블록을 빼면 순수한 '지붕' 영역만 남음
+                        diff = current_union.difference(above_union)
+
+                        roof_polys = []
+                        if not diff.is_empty:
+                            if diff.geom_type == 'Polygon':
+                                roof_polys.append(diff)
+                            else:
+                                roof_polys.extend([g for g in diff.geoms if g.geom_type == 'Polygon'])
+
+                        z_val = layer_polys[0][0][2]
+                        for rp in roof_polys:
+                            if rp.is_empty or rp.area < 1e-9:
+                                continue
+
+                            iteration = 1
+                            while True:
+                                # 간격을 0.5부터 시작하여 벽체 선과 자연스럽게 맞물리도록 조정
+                                offset_dist = infill_spacing * (iteration - 0.5)
+                                inward_poly = rp.buffer(-offset_dist, join_style=2)
+                                if inward_poly.is_empty:
+                                    break
+
+                                inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
+                                added_any = False
+                                for g in inward_geoms:
+                                    if g.is_empty or g.area < 1e-9:
+                                        continue
+
+                                    # Exterior (외부에서 내부로 감아 도는 선)
+                                    coords = list(g.exterior.coords)
+                                    if len(coords) >= 4:
+                                        seg_2d = np.array(coords)
+                                        seg_3d_raw = (to3D @ np.hstack([seg_2d, np.zeros((len(seg_2d), 1)), np.ones((len(seg_2d), 1))]).T).T[:, :3]
+                                        seg_3d_raw[:, 2] = z_val
+                                        layer_polys.append(seg_3d_raw)
+                                        added_any = True
+
+                                    # Interiors (내부 구멍에서 외부로 감아 도는 선 - 단차 지붕 핵심)
+                                    for interior in g.interiors:
+                                        coords_in = list(interior.coords)
+                                        if len(coords_in) >= 4:
+                                            seg_2d_in = np.array(coords_in)
+                                            seg_3d_in = (to3D @ np.hstack([seg_2d_in, np.zeros((len(seg_2d_in), 1)), np.ones((len(seg_2d_in), 1))]).T).T[:, :3]
+                                            seg_3d_in[:, 2] = z_val
+                                            layer_polys.append(seg_3d_in)
+                                            added_any = True
+
+                                if not added_any:
+                                    break
+                                iteration += 1
+                except Exception as e:
+                    print("Infill Error:", e)
+                    pass
+            # ------------------------------------------------
 
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
@@ -1522,6 +1617,17 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
+    st.markdown("---")
+    st.markdown("**수평면(Top/Bottom) 내부 채움 옵션**")
+    enable_infill = st.checkbox("지붕(Top) 수평면 회전 채움 활성화", value=bool(st.session_state.get("enable_infill", False)), help="지붕(Top) 레이어의 내부를 외곽선과 동일하게 회전하는(Concentric) 방식으로 채웁니다.")
+    st.session_state["enable_infill"] = bool(enable_infill)
+
+    solid_layers = st.number_input("상단(Top) 채울 레이어 수", min_value=1, max_value=100, value=int(st.session_state.get("solid_layers", 2)), step=1)
+    st.session_state["solid_layers"] = int(solid_layers)
+
+    infill_spacing = st.number_input("채움 선 간격 (mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("infill_spacing", 50.0)), step=5.0)
+    st.session_state["infill_spacing"] = float(infill_spacing)
+
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
 
@@ -1589,7 +1695,10 @@ if slice_clicked and st.session_state.mesh is not None:
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
+        enable_infill=bool(st.session_state.get("enable_infill", False)),
+        infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
+        solid_layers=int(st.session_state.get("solid_layers", 3))
     )
     st.session_state.paths_items = items
     st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -1611,7 +1720,10 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
+        enable_infill=bool(st.session_state.get("enable_infill", False)),
+        infill_spacing=float(st.session_state.get("infill_spacing", 50.0)),
+        solid_layers=int(st.session_state.get("solid_layers", 3))
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
