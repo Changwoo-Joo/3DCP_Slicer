@@ -896,71 +896,80 @@ def compute_slice_paths_with_travel(
 
                 layer_polys.append(simplified.copy())
 
-                # --- Infill (수평면 내부 채움) 추가 ---
-                if enable_infill and infill_spacing > 0:
-                    try:
-                        from shapely.geometry import Polygon, MultiPolygon
-                        poly_shape = Polygon(simplified[:, :2])
-                        if poly_shape.is_valid and not poly_shape.is_empty:
-                            # 현재 층(z)에서 바로 위 층(z + (z_int * solid_layers))의 단면을 빼서 '지붕(Roof)' 영역을 구합니다.
-                            # solid_layers 설정값만큼 위의 단면을 확인하여 지붕 여부 판단
-                            roof_poly = poly_shape
-                            check_z = z + float(z_int) * solid_layers
-                            if check_z < z_values[-1] + 1e-3:
-                                sec_above = sub_mesh.section(plane_origin=[0, 0, check_z], plane_normal=[0, 0, 1])
-                                if sec_above is not None:
-                                    try:
-                                        slice_above_2D, _ = sec_above.to_2D()
-                                        above_polys = []
-                                        for s_above in slice_above_2D.discrete:
-                                            p_above = Polygon(np.array(s_above)[:, :2])
-                                            if p_above.is_valid:
-                                                above_polys.append(p_above)
-                                        if above_polys:
-                                            # 위 층의 다각형들을 모두 합침
-                                            from shapely.ops import unary_union
-                                            above_union = unary_union(above_polys)
-                                            # 현재 다각형에서 위 층 다각형을 뺀 부분이 순수 지붕
-                                            roof_poly = poly_shape.difference(above_union)
-                                    except Exception:
-                                        pass
-
-                            # 지붕 영역이 존재하면 내측 오프셋(Concentric) 인필 생성
-                            if not roof_poly.is_empty and roof_poly.area > 1e-6:
-                                geoms_to_fill = [roof_poly] if roof_poly.geom_type == 'Polygon' else list(roof_poly.geoms)
-                                z_val = simplified[0, 2]
-
-                                for geom in geoms_to_fill:
-                                    if geom.is_empty or geom.area < 1e-9:
-                                        continue
-                                    iteration = 1
-                                    while True:
-                                        inward_poly = geom.buffer(-(infill_spacing * iteration), join_style=2)
-                                        if inward_poly.is_empty:
-                                            break
-
-                                        inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
-                                        added_any = False
-                                        for g in inward_geoms:
-                                            if g.is_empty or g.area < 1e-9:
-                                                continue
-                                            coords = list(g.exterior.coords)
-                                            if len(coords) >= 4:
-                                                iline_3d = np.column_stack((np.array(coords), np.full(len(coords), z_val)))
-                                                layer_polys.append(iline_3d)
-                                                added_any = True
-
-                                        if not added_any:
-                                            break
-                                        iteration += 1
-                    except Exception as e:
-                        pass
-                # ------------------------------------
+                
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
             if not layer_polys:
                 continue
+
+            # --- 지붕(Roof) 면 분석 및 채움 로직 (Layer 단위) ---
+            if enable_infill and infill_spacing > 0:
+                try:
+                    from shapely.geometry import Polygon, MultiPolygon
+                    from shapely.ops import unary_union
+
+                    # 현재 층의 꽉 찬 다면체 (구멍 포함된 올바른 Polygon)
+                    current_polys = slice2D.polygons_full
+
+                    if current_polys:
+                        check_z = z + float(z_int) * solid_layers
+                        above_polys = []
+                        if check_z < z_values[-1] + 1e-3:
+                            sec_above = sub_mesh.section(plane_origin=[0, 0, check_z], plane_normal=[0, 0, 1])
+                            if sec_above is not None:
+                                try:
+                                    slice_above_2D, _ = sec_above.to_2D()
+                                    above_polys = slice_above_2D.polygons_full
+                                except Exception:
+                                    pass
+
+                        above_union = unary_union(above_polys) if above_polys else Polygon()
+
+                        roof_polys = []
+                        for cp in current_polys:
+                            if not cp.is_valid:
+                                cp = cp.buffer(0)
+                            diff = cp.difference(above_union)
+                            if not diff.is_empty:
+                                if diff.geom_type == 'Polygon':
+                                    roof_polys.append(diff)
+                                else:
+                                    roof_polys.extend([g for g in diff.geoms if g.geom_type == 'Polygon'])
+
+                        # 지붕 다각형들을 내측으로 Concentric Offset 하여 layer_polys에 추가
+                        z_val = layer_polys[0][0][2]
+                        for rp in roof_polys:
+                            if rp.is_empty or rp.area < 1e-9:
+                                continue
+
+                            iteration = 1
+                            while True:
+                                inward_poly = rp.buffer(-(infill_spacing * iteration), join_style=2)
+                                if inward_poly.is_empty:
+                                    break
+
+                                inward_geoms = [inward_poly] if inward_poly.geom_type == 'Polygon' else inward_poly.geoms
+                                added_any = False
+                                for g in inward_geoms:
+                                    if g.is_empty or g.area < 1e-9:
+                                        continue
+                                    coords = list(g.exterior.coords)
+                                    if len(coords) >= 4:
+                                        # 원래 slice2D는 2D 평면이므로 to3D 행렬을 통해 3D로 변환해야 함!
+                                        seg_2d = np.array(coords)
+                                        seg_3d_raw = (to3D @ np.hstack([seg_2d, np.zeros((len(seg_2d), 1)), np.ones((len(seg_2d), 1))]).T).T[:, :3]
+                                        seg_3d_raw[:, 2] = z_val
+                                        layer_polys.append(seg_3d_raw)
+                                        added_any = True
+
+                                if not added_any:
+                                    break
+                                iteration += 1
+                except Exception as e:
+                    print("Infill Error:", e)
+                    pass
+            # ------------------------------------------------
 
             first_poly_start = layer_polys[0][0]
             if prev_layer_last_end is not None:
