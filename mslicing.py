@@ -2046,14 +2046,11 @@ def convert_gcode_to_rapid(
 
     dynamic_rz = [rz] * len(xs_out)
     if auto_tangent and len(xs_out) > 1:
-        # Step 1: Calculate raw normalized vectors
         dx_raw = np.diff(xs_out)
         dy_raw = np.diff(ys_out)
         dx_raw = np.append(dx_raw, dx_raw[-1] if len(dx_raw)>0 else 0)
         dy_raw = np.append(dy_raw, dy_raw[-1] if len(dy_raw)>0 else 0)
 
-        # Step 2: Extract Print Segments to smooth them independently (no travel move leakage)
-        # We use is_extruding_list to separate paths
         segs = []
         cur_seg = []
         for i in range(len(xs_out)):
@@ -2067,15 +2064,15 @@ def convert_gcode_to_rapid(
             segs.append(cur_seg)
 
         w = max(1, int(smooth_window))
-        kernel = np.ones(w, dtype=float) / float(w)
         pad_l = w // 2
         pad_r = w - 1 - pad_l
+
+        import math
 
         for seg in segs:
             if len(seg) < 2:
                 continue
 
-            # Get segment vectors and normalize to weight 1
             sdx = dx_raw[seg]
             sdy = dy_raw[seg]
             norms = np.hypot(sdx, sdy)
@@ -2083,16 +2080,28 @@ def convert_gcode_to_rapid(
             sdx /= norms
             sdy /= norms
 
-            # Smooth vectors
+            # Check if closed loop
+            is_closed = False
+            if len(seg) > 5:
+                sx, sy = xs_out[seg[0]], ys_out[seg[0]]
+                ex, ey = xs_out[seg[-1]], ys_out[seg[-1]]
+                if math.hypot(ex - sx, ey - sy) < 20.0:
+                    is_closed = True
+
             if w > 1:
-                dx_p = np.pad(sdx, (pad_l, pad_r), mode='edge')
-                dy_p = np.pad(sdy, (pad_l, pad_r), mode='edge')
+                kernel = np.ones(w, dtype=float) / float(w)
+                if is_closed:
+                    dx_p = np.pad(sdx, (pad_l, pad_r), mode='wrap')
+                    dy_p = np.pad(sdy, (pad_l, pad_r), mode='wrap')
+                else:
+                    dx_p = np.pad(sdx, (pad_l, pad_r), mode='edge')
+                    dy_p = np.pad(sdy, (pad_l, pad_r), mode='edge')
+
                 dx_sm = np.convolve(dx_p, kernel, mode='valid')
                 dy_sm = np.convolve(dy_p, kernel, mode='valid')
             else:
                 dx_sm, dy_sm = sdx, sdy
 
-            # Angles
             ang = np.degrees(np.arctan2(dy_sm, dx_sm)) + tangent_offset
             ang = np.unwrap(np.radians(ang))
             ang = np.degrees(ang)
@@ -2100,10 +2109,24 @@ def convert_gcode_to_rapid(
             for k, idx in enumerate(seg):
                 dynamic_rz[idx] = ang[k]
 
-        # Fill travel moves with previous angle
-        for i in range(1, len(dynamic_rz)):
-            if not is_extruding_list[i]:
-                dynamic_rz[i] = dynamic_rz[i-1]
+        # Handle travel moves: smooth interpolation between print segments
+        # Instead of just backward/forward fill, we interpolate the angles!
+        # First, extract known angles (where is_extruding is True)
+        known_idx = [i for i in range(len(xs_out)) if is_extruding_list[i]]
+        if known_idx:
+            known_angles = [dynamic_rz[i] for i in known_idx]
+            # Unwrap known angles so interpolation doesn't spin 360 degrees
+            known_angles = np.unwrap(np.radians(known_angles))
+            all_idx = np.arange(len(xs_out))
+            interp_angles = np.interp(all_idx, known_idx, known_angles)
+            interp_angles = np.degrees(interp_angles)
+
+            for i in range(len(xs_out)):
+                dynamic_rz[i] = interp_angles[i]
+
+        # Finally, normalize all to -180 ~ 180 to avoid large numbers
+        for i in range(len(dynamic_rz)):
+            dynamic_rz[i] = (dynamic_rz[i] + 180) % 360 - 180
 
     nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
               "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
