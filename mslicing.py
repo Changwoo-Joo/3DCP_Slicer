@@ -2046,33 +2046,64 @@ def convert_gcode_to_rapid(
 
     dynamic_rz = [rz] * len(xs_out)
     if auto_tangent and len(xs_out) > 1:
-        dx_arr = np.diff(xs_out)
-        dy_arr = np.diff(ys_out)
-        dx_arr = np.append(dx_arr, dx_arr[-1] if len(dx_arr) > 0 else 0.0)
-        dy_arr = np.append(dy_arr, dy_arr[-1] if len(dy_arr) > 0 else 0.0)
+        # Step 1: Calculate raw normalized vectors
+        dx_raw = np.diff(xs_out)
+        dy_raw = np.diff(ys_out)
+        dx_raw = np.append(dx_raw, dx_raw[-1] if len(dx_raw)>0 else 0)
+        dy_raw = np.append(dy_raw, dy_raw[-1] if len(dy_raw)>0 else 0)
+
+        # Step 2: Extract Print Segments to smooth them independently (no travel move leakage)
+        # We use is_extruding_list to separate paths
+        segs = []
+        cur_seg = []
+        for i in range(len(xs_out)):
+            if is_extruding_list[i]:
+                cur_seg.append(i)
+            else:
+                if cur_seg:
+                    segs.append(cur_seg)
+                    cur_seg = []
+        if cur_seg:
+            segs.append(cur_seg)
 
         w = max(1, int(smooth_window))
-        if w > 1:
-            kernel = np.ones(w, dtype=float) / float(w)
-            pad_l = w // 2
-            pad_r = w - 1 - pad_l
-            dx_p = np.pad(dx_arr, (pad_l, pad_r), mode='edge')
-            dy_p = np.pad(dy_arr, (pad_l, pad_r), mode='edge')
-            dx_s = np.convolve(dx_p, kernel, mode='valid')
-            dy_s = np.convolve(dy_p, kernel, mode='valid')
-        else:
-            dx_s, dy_s = dx_arr, dy_arr
+        kernel = np.ones(w, dtype=float) / float(w)
+        pad_l = w // 2
+        pad_r = w - 1 - pad_l
 
-        angles = np.degrees(np.arctan2(dy_s, dx_s)) + tangent_offset
-        # -180 ~ +180 범위로 정규화하여 끝없이 숫자가 커지는 것 방지
-        angles = (angles + 180) % 360 - 180
+        for seg in segs:
+            if len(seg) < 2:
+                continue
 
-        # 정지 구간(dx=0, dy=0) 처리
-        for i in range(len(angles)):
-            if abs(dx_s[i]) < 1e-9 and abs(dy_s[i]) < 1e-9:
-                angles[i] = angles[i-1] if i > 0 else rz
+            # Get segment vectors and normalize to weight 1
+            sdx = dx_raw[seg]
+            sdy = dy_raw[seg]
+            norms = np.hypot(sdx, sdy)
+            norms[norms < 1e-9] = 1.0
+            sdx /= norms
+            sdy /= norms
 
-        dynamic_rz = angles.tolist()
+            # Smooth vectors
+            if w > 1:
+                dx_p = np.pad(sdx, (pad_l, pad_r), mode='edge')
+                dy_p = np.pad(sdy, (pad_l, pad_r), mode='edge')
+                dx_sm = np.convolve(dx_p, kernel, mode='valid')
+                dy_sm = np.convolve(dy_p, kernel, mode='valid')
+            else:
+                dx_sm, dy_sm = sdx, sdy
+
+            # Angles
+            ang = np.degrees(np.arctan2(dy_sm, dx_sm)) + tangent_offset
+            ang = np.unwrap(np.radians(ang))
+            ang = np.degrees(ang)
+
+            for k, idx in enumerate(seg):
+                dynamic_rz[idx] = ang[k]
+
+        # Fill travel moves with previous angle
+        for i in range(1, len(dynamic_rz)):
+            if not is_extruding_list[i]:
+                dynamic_rz[i] = dynamic_rz[i-1]
 
     nodes = [{"x": xs_out[i], "y": ys_out[i], "z": zs_out[i], "raw_x": raw_xs[i], "raw_y": raw_ys[i],
               "a1": a1_list[i], "a2": a2_list[i], "a3": a3_list[i], "a4": a4_list[i], "extr": is_extruding_list[i]} for i in range(len(xs_out))]
