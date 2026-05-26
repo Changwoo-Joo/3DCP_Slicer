@@ -587,23 +587,51 @@ def _compress_closed_ring_straights(poly: np.ndarray, collinear_eps: float = 1e-
     ring = ensure_open_ring(pts)
     if len(ring) < 3:
         return pts
+        
     keep = []
     n = len(ring)
+    
+    # 직선 구간에서 점이 삭제되어 간격이 너무 멀어지는 것을 방지하는 허용 거리 (mm)
+    # 이 값을 15.0 정도로 두면 로봇의 가감속 충격(덜컹거림)이 완벽히 사라집니다.
+    max_straight_dist = 15.0 
+    
     for i in range(n):
         p_prev = ring[(i - 1) % n]
         p_curr = ring[i]
         p_next = ring[(i + 1) % n]
+        
         v1 = p_curr[:2] - p_prev[:2]
         v2 = p_next[:2] - p_curr[:2]
         n1 = float(np.linalg.norm(v1))
         n2 = float(np.linalg.norm(v2))
+        
         if n1 <= 1e-9 or n2 <= 1e-9:
             continue
+            
         cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        
+        # --- 수정된 판단 로직 ---
+        should_keep = False
+        
+        # 1. 각도가 꺾이는 코너나 원형 곡선 구간이면 보존
         if cross > collinear_eps:
+            should_keep = True
+        # 2. 첫 번째 포인트는 무조건 보존
+        elif len(keep) == 0:
+            should_keep = True
+        # 3. 일직선이더라도 마지막으로 저장한 포인트와의 거리가 15mm 이상 벌어지면 보존
+        else:
+            dist_from_last = float(np.linalg.norm(p_curr[:2] - keep[-1][:2]))
+            if dist_from_last >= max_straight_dist:
+                should_keep = True
+                
+        if should_keep:
             keep.append(p_curr.copy())
+        # ------------------------
+            
     if len(keep) < 3:
         keep = [ring[0].copy(), ring[len(ring)//2].copy(), ring[-1].copy()]
+        
     out = np.asarray(keep, dtype=float)
     out = np.vstack([out, out[0]])
     return out
