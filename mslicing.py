@@ -320,6 +320,34 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     out.append(cut)
     return np.asarray(out, dtype=float)
 
+
+def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if pts.ndim != 2 or len(pts) < 3 or spacing <= 0:
+        return pts
+
+    if pts.shape[1] < 3:
+        pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
+
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) > 1e-9:
+        pts = np.vstack([pts, pts[0]])
+
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total <= 1e-9:
+        return pts
+
+    step = max(float(spacing), 1e-6)
+    count = max(8, int(np.ceil(total / step)))
+    s_targets = np.linspace(0.0, total, count + 1)
+
+    out = _resample_polyline_by_s(pts, s_targets)
+
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+
+    return out
+
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
     전체를 등간격(min_dist)으로 쪼갠 뒤, 
@@ -667,7 +695,7 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     out = np.column_stack([dense[:, 0], dense[:, 1], np.full(len(dense), z_val, dtype=float)])
     if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
         out = np.vstack([out, out[0]])
-    return _compress_closed_ring_straights(out)
+    return out
 
 def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
@@ -894,7 +922,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = simplify_segment(closed_mid, min_spacing)
+                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
@@ -1017,7 +1045,7 @@ def compute_slice_paths_with_travel(
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = simplify_segment(closed_mid, min_spacing)
+                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
