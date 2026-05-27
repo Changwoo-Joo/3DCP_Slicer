@@ -320,6 +320,34 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     out.append(cut)
     return np.asarray(out, dtype=float)
 
+
+def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if pts.ndim != 2 or len(pts) < 3 or spacing <= 0:
+        return pts
+
+    if pts.shape[1] < 3:
+        pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
+
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) > 1e-9:
+        pts = np.vstack([pts, pts[0]])
+
+    s = _poly_arclen_s_xy(pts)
+    total = float(s[-1])
+    if total <= 1e-9:
+        return pts
+
+    step = max(float(spacing), 1e-6)
+    count = max(8, int(np.ceil(total / step)))
+    s_targets = np.linspace(0.0, total, count + 1)
+
+    out = _resample_polyline_by_s(pts, s_targets)
+
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+
+    return out
+
 def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
     """
     전체를 등간격(min_dist)으로 쪼갠 뒤, 
@@ -587,23 +615,51 @@ def _compress_closed_ring_straights(poly: np.ndarray, collinear_eps: float = 1e-
     ring = ensure_open_ring(pts)
     if len(ring) < 3:
         return pts
+        
     keep = []
     n = len(ring)
+    
+    # 직선 구간에서 점이 삭제되어 간격이 너무 멀어지는 것을 방지하는 허용 거리 (mm)
+    # 이 값을 15.0 정도로 두면 로봇의 가감속 충격(덜컹거림)이 완벽히 사라집니다.
+    max_straight_dist = 15.0 
+    
     for i in range(n):
         p_prev = ring[(i - 1) % n]
         p_curr = ring[i]
         p_next = ring[(i + 1) % n]
+        
         v1 = p_curr[:2] - p_prev[:2]
         v2 = p_next[:2] - p_curr[:2]
         n1 = float(np.linalg.norm(v1))
         n2 = float(np.linalg.norm(v2))
+        
         if n1 <= 1e-9 or n2 <= 1e-9:
             continue
+            
         cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
+        
+        # --- 수정된 판단 로직 ---
+        should_keep = False
+        
+        # 1. 각도가 꺾이는 코너나 원형 곡선 구간이면 보존
         if cross > collinear_eps:
+            should_keep = True
+        # 2. 첫 번째 포인트는 무조건 보존
+        elif len(keep) == 0:
+            should_keep = True
+        # 3. 일직선이더라도 마지막으로 저장한 포인트와의 거리가 15mm 이상 벌어지면 보존
+        else:
+            dist_from_last = float(np.linalg.norm(p_curr[:2] - keep[-1][:2]))
+            if dist_from_last >= max_straight_dist:
+                should_keep = True
+                
+        if should_keep:
             keep.append(p_curr.copy())
+        # ------------------------
+            
     if len(keep) < 3:
         keep = [ring[0].copy(), ring[len(ring)//2].copy(), ring[-1].copy()]
+        
     out = np.asarray(keep, dtype=float)
     out = np.vstack([out, out[0]])
     return out
@@ -639,7 +695,7 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     out = np.column_stack([dense[:, 0], dense[:, 1], np.full(len(dense), z_val, dtype=float)])
     if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
         out = np.vstack([out, out[0]])
-    return _compress_closed_ring_straights(out)
+    return out
 
 def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
@@ -866,7 +922,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = simplify_segment(closed_mid, min_spacing)
+                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
@@ -989,7 +1045,7 @@ def compute_slice_paths_with_travel(
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = simplify_segment(closed_mid, min_spacing)
+                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
