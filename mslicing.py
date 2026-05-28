@@ -4,7 +4,8 @@ import numpy as np
 import math
 import json
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon, LineString
+from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection
+from shapely.ops import linemerge
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -359,95 +360,74 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
 
     ring = ensure_open_ring(pts)
-    xy = np.asarray(ring[:, :2], dtype=float)
+    poly = Polygon(ring[:, :2])
+    if (not poly.is_valid) or poly.area <= 1e-9:
+        return None
+
     z_val = float(np.median(ring[:, 2]))
+    half_t = 0.5 * float(thickness_mm)
+    trials = [half_t, half_t - 1e-6, half_t + 1e-6, max(0.0, half_t - 0.25), half_t + 0.25]
 
-    # Lightweight centerline extraction specialized for constant-thickness L/U/C-like paths.
-    segs = xy[1:] - xy[:-1]
-    lens = np.linalg.norm(segs, axis=1)
-    keep = lens > 1e-9
-    if not np.any(keep):
-        return None
-    segs = segs[keep]
-    lens = lens[keep]
-    p0s = xy[:-1][keep]
-    p1s = xy[1:][keep]
+    def _collect_lines(g):
+        if g is None or g.is_empty:
+            return []
+        if isinstance(g, LineString):
+            return [g]
+        if isinstance(g, MultiLineString):
+            return [ln for ln in g.geoms if (ln is not None and not ln.is_empty and len(ln.coords) >= 2)]
+        if isinstance(g, GeometryCollection):
+            out = []
+            for sub in g.geoms:
+                out.extend(_collect_lines(sub))
+            return out
+        return []
 
-    # Axis-aligned test with tolerance.
-    axis_tol = 1e-6
-    horiz = np.abs(segs[:, 1]) <= axis_tol
-    vert = np.abs(segs[:, 0]) <= axis_tol
-    if not np.all(horiz | vert):
-        return None
-
-    t = float(thickness_mm)
-    long_threshold = max(1.5 * t, 1.0)
-    mids = []
-    for i in range(len(segs)):
-        if lens[i] < long_threshold:
+    best_line = None
+    best_len = -1.0
+    for d in trials:
+        if d < 0.0:
             continue
-        a = p0s[i]
-        b = p1s[i]
-        if horiz[i]:
-            y = 0.5 * (a[1] + b[1])
-            x0 = min(a[0], b[0]) + 0.5 * t
-            x1 = max(a[0], b[0]) - 0.5 * t
-            if x1 - x0 > 1e-6:
-                mids.append(np.array([[x0, y, z_val], [x1, y, z_val]], dtype=float))
-        elif vert[i]:
-            x = 0.5 * (a[0] + b[0])
-            y0 = min(a[1], b[1]) + 0.5 * t
-            y1 = max(a[1], b[1]) - 0.5 * t
-            if y1 - y0 > 1e-6:
-                mids.append(np.array([[x, y0, z_val], [x, y1, z_val]], dtype=float))
-
-    if len(mids) < 2:
-        return None
-
-    # Connect segments by nearest endpoints to form an open path.
-    unused = list(range(len(mids)))
-    path = mids[unused.pop(0)].copy()
-
-    def endpoint_dist(pa, pb):
-        return float(np.linalg.norm(pa[:2] - pb[:2]))
-
-    while unused:
-        best = None
-        for k in unused:
-            cand = mids[k]
-            d00 = endpoint_dist(path[0], cand[0])
-            d01 = endpoint_dist(path[0], cand[-1])
-            d10 = endpoint_dist(path[-1], cand[0])
-            d11 = endpoint_dist(path[-1], cand[-1])
-            local = min((d00, 'prepend_fwd'), (d01, 'prepend_rev'), (d10, 'append_fwd'), (d11, 'append_rev'), key=lambda x: x[0])
-            if best is None or local[0] < best[0]:
-                best = (local[0], local[1], k)
-
-        if best is None:
-            break
-        _, mode, k = best
-        cand = mids[k]
-        unused.remove(k)
-
-        if mode == 'prepend_fwd':
-            path = np.vstack([cand[::-1], path])
-        elif mode == 'prepend_rev':
-            path = np.vstack([cand, path])
-        elif mode == 'append_fwd':
-            path = np.vstack([path, cand])
+        try:
+            inward = poly.buffer(-float(d), join_style=2, cap_style=2)
+        except Exception:
+            continue
+        lines = _collect_lines(inward)
+        if not lines:
+            try:
+                merged = linemerge(inward)
+                lines = _collect_lines(merged)
+            except Exception:
+                lines = []
         else:
-            path = np.vstack([path, cand[::-1]])
+            try:
+                merged = linemerge(MultiLineString(lines)) if len(lines) > 1 else lines[0]
+                merged_lines = _collect_lines(merged)
+                if merged_lines:
+                    lines = merged_lines
+            except Exception:
+                pass
 
-        # collapse duplicated/near junction points
-        compact = [path[0]]
-        for p in path[1:]:
-            if np.linalg.norm(p[:2] - compact[-1][:2]) > max(1.0, 0.25 * t):
-                compact.append(p)
-        path = np.asarray(compact, dtype=float)
+        for ln in lines:
+            L = float(ln.length)
+            if L > best_len and len(ln.coords) >= 2:
+                best_line = ln
+                best_len = L
 
-    if len(path) < 2:
+    if best_line is None:
         return None
-    return path
+
+    coords = np.asarray(best_line.coords, dtype=float)
+    if len(coords) < 2:
+        return None
+
+    out = np.c_[coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)]
+    compact = [out[0]]
+    for p in out[1:]:
+        if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
+            compact.append(p)
+    out = np.asarray(compact, dtype=float)
+
+    return out if len(out) >= 2 else None
 
 def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
