@@ -4,8 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection, Point
-from shapely.ops import linemerge
+from shapely.geometry import Polygon, MultiPolygon, LineString
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -321,153 +320,6 @@ def trim_closed_ring_tail(segment: np.ndarray, trim_distance: float) -> np.ndarr
     out.append(cut)
     return np.asarray(out, dtype=float)
 
-
-
-
-def trim_open_path_tail(path: np.ndarray, trim_distance: float) -> np.ndarray:
-    pts = np.asarray(path, dtype=float)
-    if len(pts) < 2 or trim_distance <= 0:
-        return pts
-
-    seglen = np.linalg.norm(np.diff(pts[:, :2], axis=0), axis=1)
-    total = float(np.sum(seglen))
-    if total <= trim_distance:
-        return np.vstack([pts[0], pts[-1]])
-
-    target = total - float(trim_distance)
-    out = [pts[0]]
-    acc = 0.0
-    for i, d in enumerate(seglen):
-        if acc + d < target - 1e-9:
-            out.append(pts[i + 1])
-            acc += d
-            continue
-        remain = target - acc
-        if d > 1e-12:
-            t = remain / d
-            p = pts[i] + t * (pts[i + 1] - pts[i])
-            out.append(p)
-        break
-    return np.asarray(out, dtype=float)
-
-
-
-
-def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness_mm: float) -> Optional[np.ndarray]:
-    pts = np.asarray(segment, dtype=float)
-    if pts.ndim != 2 or len(pts) < 4 or float(thickness_mm) <= 0:
-        return None
-
-    if pts.shape[1] < 3:
-        pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
-
-    ring = ensure_open_ring(pts)
-    poly = Polygon(ring[:, :2])
-    if (not poly.is_valid) or poly.area <= 1e-9:
-        return None
-
-    z_val = float(np.median(ring[:, 2]))
-    t = float(thickness_mm)
-    tol = max(1.0, 0.10 * t)
-
-    closed_ring = np.vstack([ring[:, :2], ring[0, :2]])
-    dxy = np.diff(closed_ring, axis=0)
-    if not np.all((np.abs(dxy[:, 0]) <= 1e-6) | (np.abs(dxy[:, 1]) <= 1e-6)):
-        return None
-
-    xs = sorted(set(float(v) for v in closed_ring[:-1, 0]))
-    ys = sorted(set(float(v) for v in closed_ring[:-1, 1]))
-    if len(xs) < 2 or len(ys) < 2:
-        return None
-
-    poly_cov = poly.buffer(1e-9)
-    members = []
-    joints = []
-
-    for i in range(len(xs) - 1):
-        for j in range(len(ys) - 1):
-            x0, x1 = xs[i], xs[i + 1]
-            y0, y1 = ys[j], ys[j + 1]
-            dx = x1 - x0
-            dy = y1 - y0
-            if dx <= 1e-9 or dy <= 1e-9:
-                continue
-            cx = 0.5 * (x0 + x1)
-            cy = 0.5 * (y0 + y1)
-            if not poly_cov.covers(Point(cx, cy)):
-                continue
-            if abs(dy - t) <= tol and dx > t + tol:
-                members.append({
-                    'kind': 'H',
-                    'span0': x0,
-                    'span1': x1,
-                    'fixed': cy,
-                    'center': np.array([0.5 * (x0 + x1), cy], dtype=float)
-                })
-            elif abs(dx - t) <= tol and dy > t + tol:
-                members.append({
-                    'kind': 'V',
-                    'span0': y0,
-                    'span1': y1,
-                    'fixed': cx,
-                    'center': np.array([cx, 0.5 * (y0 + y1)], dtype=float)
-                })
-            elif abs(dx - t) <= tol and abs(dy - t) <= tol:
-                joints.append(np.array([cx, cy], dtype=float))
-
-    if not members:
-        return None
-
-    # Pick the dominant skeleton members: longest horizontal and longest vertical.
-    horiz = [m for m in members if m['kind'] == 'H']
-    vert = [m for m in members if m['kind'] == 'V']
-    if not horiz or not vert:
-        return None
-
-    h = max(horiz, key=lambda m: (m['span1'] - m['span0']))
-    v = max(vert, key=lambda m: (m['span1'] - m['span0']))
-
-    joint = None
-    if joints:
-        target = np.array([v['fixed'], h['fixed']], dtype=float)
-        joint = min(joints, key=lambda p: float(np.linalg.norm(p - target)))
-        if np.linalg.norm(joint - target) > max(tol, 0.35 * t):
-            joint = target
-    else:
-        joint = np.array([v['fixed'], h['fixed']], dtype=float)
-
-    # Build an open L polyline: endpoint of one member -> joint -> endpoint of the other member.
-    h_ends = [np.array([h['span0'], h['fixed']], dtype=float), np.array([h['span1'], h['fixed']], dtype=float)]
-    v_ends = [np.array([v['fixed'], v['span0']], dtype=float), np.array([v['fixed'], v['span1']], dtype=float)]
-
-    h_far = max(h_ends, key=lambda p: float(np.linalg.norm(p - joint)))
-    v_far = max(v_ends, key=lambda p: float(np.linalg.norm(p - joint)))
-
-    cand1 = np.array([
-        [h_far[0], h_far[1], z_val],
-        [joint[0], joint[1], z_val],
-        [v_far[0], v_far[1], z_val]
-    ], dtype=float)
-    cand2 = np.array([
-        [v_far[0], v_far[1], z_val],
-        [joint[0], joint[1], z_val],
-        [h_far[0], h_far[1], z_val]
-    ], dtype=float)
-
-    def _path_len(arr):
-        return float(np.sum(np.linalg.norm(np.diff(arr[:, :2], axis=0), axis=1)))
-
-    out = cand1 if _path_len(cand1) >= _path_len(cand2) else cand2
-
-    compact = [out[0]]
-    for p in out[1:]:
-        if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
-            compact.append(p)
-    out = np.asarray(compact, dtype=float)
-
-    if len(out) < 2:
-        return None
-    return out
 
 def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
@@ -999,7 +851,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
                    seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
-                   skip_invalid_offset=True, use_centerline_path=False, centerline_thickness_mm=50.0):
+                   skip_invalid_offset=True):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
@@ -1070,27 +922,14 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                path_source = closed_mid
-                centerline_mode = bool(use_centerline_path)
-                if centerline_mode:
-                    centerline = _centerline_path_from_constant_thickness_ring(closed_mid, float(centerline_thickness_mm))
-                    if centerline is not None and len(centerline) >= 2:
-                        path_source = centerline
-                    else:
-                        centerline_mode = False
-                        st.session_state["centerline_fallback_count"] = int(st.session_state.get("centerline_fallback_count", 0)) + 1
-
-                simplified = simplify_segment(path_source, float(min_spacing))
+                simplified = simplify_segment(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
-                    if centerline_mode:
-                        rounded = _apply_fillet_to_path(shifted, r_mm=r_val, spacing_mm=min_spacing)
-                    else:
-                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_open_path_tail(shifted, trim_dist) if centerline_mode else trim_closed_ring_tail(shifted, trim_dist)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
                 if len(simplified) < 2:
                     continue
 
@@ -1133,8 +972,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
-    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
-    use_centerline_path=False, centerline_thickness_mm=50.0
+    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -1207,27 +1045,14 @@ def compute_slice_paths_with_travel(
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                path_source = closed_mid
-                centerline_mode = bool(use_centerline_path)
-                if centerline_mode:
-                    centerline = _centerline_path_from_constant_thickness_ring(closed_mid, float(centerline_thickness_mm))
-                    if centerline is not None and len(centerline) >= 2:
-                        path_source = centerline
-                    else:
-                        centerline_mode = False
-                        st.session_state["centerline_fallback_count"] = int(st.session_state.get("centerline_fallback_count", 0)) + 1
-
-                simplified = simplify_segment(path_source, float(min_spacing))
+                simplified = simplify_segment(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
-                    if centerline_mode:
-                        rounded = _apply_fillet_to_path(shifted, r_mm=r_val, spacing_mm=min_spacing)
-                    else:
-                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_open_path_tail(shifted, trim_dist) if centerline_mode else trim_closed_ring_tail(shifted, trim_dist)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
                 if len(simplified) < 2:
                     continue
 
@@ -1859,10 +1684,6 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
-    use_centerline_path = st.checkbox("중심선 경로 사용(L/U/C형 등 일정 두께 형상)", value=bool(st.session_state.get("use_centerline_path", False)), help="두께가 일정한 형상에서 외곽 폐구간 대신 중심선을 따라 Open path를 생성합니다.")
-    st.session_state["use_centerline_path"] = bool(use_centerline_path)
-    centerline_thickness_mm = st.number_input("중심선 기준 형상 두께(mm)", min_value=1.0, max_value=1000.0, value=float(st.session_state.get("centerline_thickness_mm", 50.0)), step=1.0, disabled=not use_centerline_path)
-    st.session_state["centerline_thickness_mm"] = float(centerline_thickness_mm)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
@@ -1952,16 +1773,13 @@ if uploaded is not None:
         st.session_state.main_view = "STL 미리보기"
 
 if slice_clicked and st.session_state.mesh is not None:
-    st.session_state["centerline_fallback_count"] = 0
     items = compute_slice_paths_with_travel(
         st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
         e_on=e_on, seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
-        use_centerline_path=bool(st.session_state.get("use_centerline_path", False)),
-        centerline_thickness_mm=float(st.session_state.get("centerline_thickness_mm", 50.0))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
     st.session_state.paths_items = items
     st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -1974,11 +1792,8 @@ if slice_clicked and st.session_state.mesh is not None:
         st.session_state.ui_banner = "슬라이싱 결과가 없습니다. STL 단위, Z 간격, 트림/레이어 폭, 최소 점 간격을 확인하세요."
     else:
         st.session_state.ui_banner = f"슬라이싱 완료: 세그먼트 {max_seg:,}개"
-        if bool(st.session_state.get("use_centerline_path", False)) and int(st.session_state.get("centerline_fallback_count", 0)) > 0:
-            st.session_state.ui_banner += f" / 중심선 추출 실패 {int(st.session_state.get('centerline_fallback_count', 0))}개 구간은 외곽 경로로 대체"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
-    st.session_state["centerline_fallback_count"] = 0
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val,
@@ -1986,13 +1801,9 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         seq_print=seq_print, seq_group_inner=seq_group_inner,
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
-        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
-        use_centerline_path=bool(st.session_state.get("use_centerline_path", False)),
-        centerline_thickness_mm=float(st.session_state.get("centerline_thickness_mm", 50.0))
+        skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True))
     )
     st.session_state.gcode_text = gcode_text
-    if bool(st.session_state.get("use_centerline_path", False)) and int(st.session_state.get("centerline_fallback_count", 0)) > 0:
-        st.sidebar.warning(f"중심선 추출 실패 {int(st.session_state.get('centerline_fallback_count', 0))}개 구간은 외곽 경로로 대체되었습니다.")
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
