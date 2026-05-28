@@ -4,7 +4,7 @@ import numpy as np
 import math
 import json
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection
+from shapely.geometry import Polygon, MultiPolygon, LineString, MultiLineString, GeometryCollection, Point
 from shapely.ops import linemerge
 import tempfile
 import plotly.graph_objects as go
@@ -365,8 +365,9 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         return None
 
     z_val = float(np.median(ring[:, 2]))
-    half_t = 0.5 * float(thickness_mm)
-    tol = max(1.0, 0.15 * float(thickness_mm))
+    t = float(thickness_mm)
+    half_t = 0.5 * t
+    tol = max(1.0, 0.10 * t)
 
     def _collect_lines(g):
         if g is None or g.is_empty:
@@ -382,63 +383,14 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
             return out
         return []
 
-    def _probe_segments_axis_aligned(poly2: Polygon, ht: float):
-        minx, miny, maxx, maxy = poly2.bounds
-        ext = np.asarray(poly2.exterior.coords[:-1], dtype=float)
-        xs = sorted(set(float(v) for v in ext[:, 0]))
-        ys = sorted(set(float(v) for v in ext[:, 1]))
-        probes_y = sorted({round(v + ht, 6) for v in ys if miny + 1e-6 < v + ht < maxy - 1e-6} |
-                          {round(v - ht, 6) for v in ys if miny + 1e-6 < v - ht < maxy - 1e-6})
-        probes_x = sorted({round(v + ht, 6) for v in xs if minx + 1e-6 < v + ht < maxx - 1e-6} |
-                          {round(v - ht, 6) for v in xs if minx + 1e-6 < v - ht < maxx - 1e-6})
-        segs = []
-
-        for y in probes_y:
-            cutter = LineString([(minx - 10.0 * ht - 10.0, y), (maxx + 10.0 * ht + 10.0, y)])
-            for ln in _collect_lines(poly2.intersection(cutter)):
-                c = np.asarray(ln.coords, dtype=float)
-                if len(c) < 2:
-                    continue
-                p0, p1 = c[0], c[-1]
-                if abs(p0[1] - p1[1]) <= 1e-6 and abs(p1[0] - p0[0]) > max(2.0 * ht, 1.0):
-                    if p1[0] < p0[0]:
-                        p0, p1 = p1, p0
-                    segs.append(np.array([[p0[0], p0[1], z_val], [p1[0], p1[1], z_val]], dtype=float))
-
-        for x in probes_x:
-            cutter = LineString([(x, miny - 10.0 * ht - 10.0), (x, maxy + 10.0 * ht + 10.0)])
-            for ln in _collect_lines(poly2.intersection(cutter)):
-                c = np.asarray(ln.coords, dtype=float)
-                if len(c) < 2:
-                    continue
-                p0, p1 = c[0], c[-1]
-                if abs(p0[0] - p1[0]) <= 1e-6 and abs(p1[1] - p0[1]) > max(2.0 * ht, 1.0):
-                    if p1[1] < p0[1]:
-                        p0, p1 = p1, p0
-                    segs.append(np.array([[p0[0], p0[1], z_val], [p1[0], p1[1], z_val]], dtype=float))
-        return segs
-
-    def _dedup_segments(segs):
-        out = []
-        for s in segs:
-            keep = True
-            for t in out:
-                same = (np.linalg.norm(s[0, :2] - t[0, :2]) <= tol and np.linalg.norm(s[1, :2] - t[1, :2]) <= tol) or                        (np.linalg.norm(s[0, :2] - t[1, :2]) <= tol and np.linalg.norm(s[1, :2] - t[0, :2]) <= tol)
-                if same:
-                    keep = False
-                    break
-            if keep:
-                out.append(s)
-        return out
-
-    def _build_path_from_segments(segs):
+    def _build_path_from_segments(segs, snap_tol):
         if not segs:
             return None
         nodes = []
         def snap(pt):
             p = np.asarray(pt[:2], dtype=float)
             for i, n in enumerate(nodes):
-                if np.linalg.norm(p - n) <= tol:
+                if np.linalg.norm(p - n) <= snap_tol:
                     return i
             nodes.append(p)
             return len(nodes) - 1
@@ -463,7 +415,7 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         starts = endpoints if len(endpoints) >= 2 else list(adj.keys())
         best = None
 
-        def dfs(node, used, path_nodes, total):
+        def dfs(node, used, seq, total):
             nonlocal best
             advanced = False
             for ei in adj.get(node, []):
@@ -472,10 +424,10 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
                 advanced = True
                 a, b, coords, length = edges[ei]
                 nxt = b if a == node else a
-                dfs(nxt, used | {ei}, path_nodes + [(ei, node, nxt)], total + length)
-            if (not advanced) and path_nodes:
+                dfs(nxt, used | {ei}, seq + [(ei, node, nxt)], total + length)
+            if (not advanced) and seq:
                 if best is None or total > best[0]:
-                    best = (total, path_nodes)
+                    best = (total, seq)
 
         for s in starts:
             dfs(s, set(), [], 0.0)
@@ -489,7 +441,7 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
             if not polyline:
                 polyline.extend(seg_coords.tolist())
             else:
-                if np.linalg.norm(np.asarray(polyline[-1][:2]) - seg_coords[0, :2]) > tol:
+                if np.linalg.norm(np.asarray(polyline[-1][:2]) - seg_coords[0, :2]) > snap_tol:
                     polyline.append(seg_coords[0].tolist())
                 polyline.append(seg_coords[1].tolist())
 
@@ -501,17 +453,64 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         out = np.asarray(compact, dtype=float)
         return out if len(out) >= 2 else None
 
-    axis_segs = _dedup_segments(_probe_segments_axis_aligned(poly, half_t))
-    axis_path = _build_path_from_segments(axis_segs)
-    if axis_path is not None and len(axis_path) >= 2:
-        return axis_path
+    # Primary path: rectilinear constant-thickness decomposition.
+    closed_ring = np.vstack([ring[:, :2], ring[0, :2]])
+    dxy = np.diff(closed_ring, axis=0)
+    if np.all((np.abs(dxy[:, 0]) <= 1e-6) | (np.abs(dxy[:, 1]) <= 1e-6)):
+        xs = sorted(set(float(v) for v in closed_ring[:-1, 0]))
+        ys = sorted(set(float(v) for v in closed_ring[:-1, 1]))
+        segs = []
+        junctions = []
+        poly_cov = poly.buffer(1e-9)
 
-    trials = [half_t, half_t - 1e-6, half_t + 1e-6, max(0.0, half_t - 0.25), half_t + 0.25]
+        for i in range(len(xs) - 1):
+            for j in range(len(ys) - 1):
+                x0, x1 = xs[i], xs[i + 1]
+                y0, y1 = ys[j], ys[j + 1]
+                dx = x1 - x0
+                dy = y1 - y0
+                if dx <= 1e-9 or dy <= 1e-9:
+                    continue
+                cx = 0.5 * (x0 + x1)
+                cy = 0.5 * (y0 + y1)
+                if not poly_cov.covers(Point(cx, cy)):
+                    continue
+                if abs(dy - t) <= tol and dx > t + tol:
+                    segs.append(np.array([[x0, cy, z_val], [x1, cy, z_val]], dtype=float))
+                elif abs(dx - t) <= tol and dy > t + tol:
+                    segs.append(np.array([[cx, y0, z_val], [cx, y1, z_val]], dtype=float))
+                elif abs(dx - t) <= tol and abs(dy - t) <= tol:
+                    junctions.append(np.array([cx, cy, z_val], dtype=float))
+
+        if segs:
+            extended = []
+            for s in segs:
+                p0 = s[0].copy()
+                p1 = s[1].copy()
+                is_h = abs(p0[1] - p1[1]) <= 1e-6
+                for jp in junctions:
+                    if is_h and abs(jp[1] - p0[1]) <= tol:
+                        if abs(jp[0] - p0[0]) <= half_t + tol:
+                            p0 = jp.copy()
+                        if abs(jp[0] - p1[0]) <= half_t + tol:
+                            p1 = jp.copy()
+                    if (not is_h) and abs(jp[0] - p0[0]) <= tol:
+                        if abs(jp[1] - p0[1]) <= half_t + tol:
+                            p0 = jp.copy()
+                        if abs(jp[1] - p1[1]) <= half_t + tol:
+                            p1 = jp.copy()
+                if np.linalg.norm(p1[:2] - p0[:2]) > 1e-6:
+                    extended.append(np.vstack([p0, p1]))
+
+            path = _build_path_from_segments(extended, snap_tol=max(tol, half_t + tol))
+            if path is not None and len(path) >= 2:
+                return path
+
+    # Secondary fallback: geometry collapse by half thickness.
+    trials = [half_t, max(0.0, half_t - 0.25), half_t + 0.25, half_t - 1e-6, half_t + 1e-6]
     best_line = None
     best_len = -1.0
     for d in trials:
-        if d < 0.0:
-            continue
         try:
             inward = poly.buffer(-float(d), join_style=2, cap_style=2)
         except Exception:
