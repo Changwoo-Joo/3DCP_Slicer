@@ -366,7 +366,7 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
 
     z_val = float(np.median(ring[:, 2]))
     half_t = 0.5 * float(thickness_mm)
-    trials = [half_t, half_t - 1e-6, half_t + 1e-6, max(0.0, half_t - 0.25), half_t + 0.25]
+    tol = max(1.0, 0.15 * float(thickness_mm))
 
     def _collect_lines(g):
         if g is None or g.is_empty:
@@ -382,6 +382,131 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
             return out
         return []
 
+    def _probe_segments_axis_aligned(poly2: Polygon, ht: float):
+        minx, miny, maxx, maxy = poly2.bounds
+        ext = np.asarray(poly2.exterior.coords[:-1], dtype=float)
+        xs = sorted(set(float(v) for v in ext[:, 0]))
+        ys = sorted(set(float(v) for v in ext[:, 1]))
+        probes_y = sorted({round(v + ht, 6) for v in ys if miny + 1e-6 < v + ht < maxy - 1e-6} |
+                          {round(v - ht, 6) for v in ys if miny + 1e-6 < v - ht < maxy - 1e-6})
+        probes_x = sorted({round(v + ht, 6) for v in xs if minx + 1e-6 < v + ht < maxx - 1e-6} |
+                          {round(v - ht, 6) for v in xs if minx + 1e-6 < v - ht < maxx - 1e-6})
+        segs = []
+
+        for y in probes_y:
+            cutter = LineString([(minx - 10.0 * ht - 10.0, y), (maxx + 10.0 * ht + 10.0, y)])
+            for ln in _collect_lines(poly2.intersection(cutter)):
+                c = np.asarray(ln.coords, dtype=float)
+                if len(c) < 2:
+                    continue
+                p0, p1 = c[0], c[-1]
+                if abs(p0[1] - p1[1]) <= 1e-6 and abs(p1[0] - p0[0]) > max(2.0 * ht, 1.0):
+                    if p1[0] < p0[0]:
+                        p0, p1 = p1, p0
+                    segs.append(np.array([[p0[0], p0[1], z_val], [p1[0], p1[1], z_val]], dtype=float))
+
+        for x in probes_x:
+            cutter = LineString([(x, miny - 10.0 * ht - 10.0), (x, maxy + 10.0 * ht + 10.0)])
+            for ln in _collect_lines(poly2.intersection(cutter)):
+                c = np.asarray(ln.coords, dtype=float)
+                if len(c) < 2:
+                    continue
+                p0, p1 = c[0], c[-1]
+                if abs(p0[0] - p1[0]) <= 1e-6 and abs(p1[1] - p0[1]) > max(2.0 * ht, 1.0):
+                    if p1[1] < p0[1]:
+                        p0, p1 = p1, p0
+                    segs.append(np.array([[p0[0], p0[1], z_val], [p1[0], p1[1], z_val]], dtype=float))
+        return segs
+
+    def _dedup_segments(segs):
+        out = []
+        for s in segs:
+            keep = True
+            for t in out:
+                same = (np.linalg.norm(s[0, :2] - t[0, :2]) <= tol and np.linalg.norm(s[1, :2] - t[1, :2]) <= tol) or                        (np.linalg.norm(s[0, :2] - t[1, :2]) <= tol and np.linalg.norm(s[1, :2] - t[0, :2]) <= tol)
+                if same:
+                    keep = False
+                    break
+            if keep:
+                out.append(s)
+        return out
+
+    def _build_path_from_segments(segs):
+        if not segs:
+            return None
+        nodes = []
+        def snap(pt):
+            p = np.asarray(pt[:2], dtype=float)
+            for i, n in enumerate(nodes):
+                if np.linalg.norm(p - n) <= tol:
+                    return i
+            nodes.append(p)
+            return len(nodes) - 1
+
+        edges = []
+        adj = {}
+        for s in segs:
+            a = snap(s[0])
+            b = snap(s[1])
+            if a == b:
+                continue
+            coords = s.copy()
+            length = float(np.linalg.norm(coords[1, :2] - coords[0, :2]))
+            idx = len(edges)
+            edges.append((a, b, coords, length))
+            adj.setdefault(a, []).append(idx)
+            adj.setdefault(b, []).append(idx)
+
+        if not edges:
+            return None
+        endpoints = [n for n in adj if len(adj[n]) == 1]
+        starts = endpoints if len(endpoints) >= 2 else list(adj.keys())
+        best = None
+
+        def dfs(node, used, path_nodes, total):
+            nonlocal best
+            advanced = False
+            for ei in adj.get(node, []):
+                if ei in used:
+                    continue
+                advanced = True
+                a, b, coords, length = edges[ei]
+                nxt = b if a == node else a
+                dfs(nxt, used | {ei}, path_nodes + [(ei, node, nxt)], total + length)
+            if (not advanced) and path_nodes:
+                if best is None or total > best[0]:
+                    best = (total, path_nodes)
+
+        for s in starts:
+            dfs(s, set(), [], 0.0)
+        if best is None:
+            return None
+
+        polyline = []
+        for ei, frm, to in best[1]:
+            a, b, coords, _ = edges[ei]
+            seg_coords = coords if (a == frm and b == to) else coords[::-1]
+            if not polyline:
+                polyline.extend(seg_coords.tolist())
+            else:
+                if np.linalg.norm(np.asarray(polyline[-1][:2]) - seg_coords[0, :2]) > tol:
+                    polyline.append(seg_coords[0].tolist())
+                polyline.append(seg_coords[1].tolist())
+
+        out = np.asarray(polyline, dtype=float)
+        compact = [out[0]]
+        for p in out[1:]:
+            if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
+                compact.append(p)
+        out = np.asarray(compact, dtype=float)
+        return out if len(out) >= 2 else None
+
+    axis_segs = _dedup_segments(_probe_segments_axis_aligned(poly, half_t))
+    axis_path = _build_path_from_segments(axis_segs)
+    if axis_path is not None and len(axis_path) >= 2:
+        return axis_path
+
+    trials = [half_t, half_t - 1e-6, half_t + 1e-6, max(0.0, half_t - 0.25), half_t + 0.25]
     best_line = None
     best_len = -1.0
     for d in trials:
@@ -406,7 +531,6 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
                     lines = merged_lines
             except Exception:
                 pass
-
         for ln in lines:
             L = float(ln.length)
             if L > best_len and len(ln.coords) >= 2:
@@ -426,7 +550,6 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
             compact.append(p)
     out = np.asarray(compact, dtype=float)
-
     return out if len(out) >= 2 else None
 
 def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
@@ -1038,6 +1161,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         path_source = centerline
                     else:
                         centerline_mode = False
+                        st.session_state["centerline_fallback_count"] = int(st.session_state.get("centerline_fallback_count", 0)) + 1
 
                 simplified = simplify_segment(path_source, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -1174,6 +1298,7 @@ def compute_slice_paths_with_travel(
                         path_source = centerline
                     else:
                         centerline_mode = False
+                        st.session_state["centerline_fallback_count"] = int(st.session_state.get("centerline_fallback_count", 0)) + 1
 
                 simplified = simplify_segment(path_source, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
@@ -1910,6 +2035,7 @@ if uploaded is not None:
         st.session_state.main_view = "STL 미리보기"
 
 if slice_clicked and st.session_state.mesh is not None:
+    st.session_state["centerline_fallback_count"] = 0
     items = compute_slice_paths_with_travel(
         st.session_state.mesh, z_int=z_int, ref_pt_user=(ref_x, ref_y),
         trim_dist=trim_dist, min_spacing=min_spacing, auto_start=actual_auto_start,
@@ -1931,8 +2057,11 @@ if slice_clicked and st.session_state.mesh is not None:
         st.session_state.ui_banner = "슬라이싱 결과가 없습니다. STL 단위, Z 간격, 트림/레이어 폭, 최소 점 간격을 확인하세요."
     else:
         st.session_state.ui_banner = f"슬라이싱 완료: 세그먼트 {max_seg:,}개"
+        if bool(st.session_state.get("use_centerline_path", False)) and int(st.session_state.get("centerline_fallback_count", 0)) > 0:
+            st.session_state.ui_banner += f" / 중심선 추출 실패 {int(st.session_state.get('centerline_fallback_count', 0))}개 구간은 외곽 경로로 대체"
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
+    st.session_state["centerline_fallback_count"] = 0
     gcode_text = generate_gcode(
         st.session_state.mesh, z_int=z_int, feed=feed, ref_pt_user=(ref_x, ref_y),
         e_on=e_on, start_e_on=start_e_on, start_e_val=start_e_val,
@@ -1945,6 +2074,8 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         centerline_thickness_mm=float(st.session_state.get("centerline_thickness_mm", 50.0))
     )
     st.session_state.gcode_text = gcode_text
+    if bool(st.session_state.get("use_centerline_path", False)) and int(st.session_state.get("centerline_fallback_count", 0)) > 0:
+        st.sidebar.warning(f"중심선 추출 실패 {int(st.session_state.get('centerline_fallback_count', 0))}개 구간은 외곽 경로로 대체되었습니다.")
     st.session_state.ui_banner = "G-code ready"
 
 if st.session_state.get("gcode_text"):
