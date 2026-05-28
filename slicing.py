@@ -922,7 +922,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
+                simplified = simplify_segment(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
@@ -1045,7 +1045,7 @@ def compute_slice_paths_with_travel(
                     if offset_inverted and skip_invalid_offset:
                         start_pt = closed_mid[0]
                         continue
-                simplified = resample_closed_segment_uniform(closed_mid, float(min_spacing))
+                simplified = simplify_segment(closed_mid, float(min_spacing))
                 shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
                 if st.session_state.get('enable_fillet', False):
                     r_val = float(st.session_state.get('fillet_r', 20.0))
