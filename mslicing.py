@@ -351,6 +351,8 @@ def trim_open_path_tail(path: np.ndarray, trim_distance: float) -> np.ndarray:
     return np.asarray(out, dtype=float)
 
 
+
+
 def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness_mm: float) -> Optional[np.ndarray]:
     pts = np.asarray(segment, dtype=float)
     if pts.ndim != 2 or len(pts) < 4 or float(thickness_mm) <= 0:
@@ -366,190 +368,106 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
 
     z_val = float(np.median(ring[:, 2]))
     t = float(thickness_mm)
-    half_t = 0.5 * t
     tol = max(1.0, 0.10 * t)
 
-    def _collect_lines(g):
-        if g is None or g.is_empty:
-            return []
-        if isinstance(g, LineString):
-            return [g]
-        if isinstance(g, MultiLineString):
-            return [ln for ln in g.geoms if (ln is not None and not ln.is_empty and len(ln.coords) >= 2)]
-        if isinstance(g, GeometryCollection):
-            out = []
-            for sub in g.geoms:
-                out.extend(_collect_lines(sub))
-            return out
-        return []
-
-    def _build_path_from_segments(segs, snap_tol):
-        if not segs:
-            return None
-        nodes = []
-        def snap(pt):
-            p = np.asarray(pt[:2], dtype=float)
-            for i, n in enumerate(nodes):
-                if np.linalg.norm(p - n) <= snap_tol:
-                    return i
-            nodes.append(p)
-            return len(nodes) - 1
-
-        edges = []
-        adj = {}
-        for s in segs:
-            a = snap(s[0])
-            b = snap(s[1])
-            if a == b:
-                continue
-            coords = s.copy()
-            length = float(np.linalg.norm(coords[1, :2] - coords[0, :2]))
-            idx = len(edges)
-            edges.append((a, b, coords, length))
-            adj.setdefault(a, []).append(idx)
-            adj.setdefault(b, []).append(idx)
-
-        if not edges:
-            return None
-        endpoints = [n for n in adj if len(adj[n]) == 1]
-        starts = endpoints if len(endpoints) >= 2 else list(adj.keys())
-        best = None
-
-        def dfs(node, used, seq, total):
-            nonlocal best
-            advanced = False
-            for ei in adj.get(node, []):
-                if ei in used:
-                    continue
-                advanced = True
-                a, b, coords, length = edges[ei]
-                nxt = b if a == node else a
-                dfs(nxt, used | {ei}, seq + [(ei, node, nxt)], total + length)
-            if (not advanced) and seq:
-                if best is None or total > best[0]:
-                    best = (total, seq)
-
-        for s in starts:
-            dfs(s, set(), [], 0.0)
-        if best is None:
-            return None
-
-        polyline = []
-        for ei, frm, to in best[1]:
-            a, b, coords, _ = edges[ei]
-            seg_coords = coords if (a == frm and b == to) else coords[::-1]
-            if not polyline:
-                polyline.extend(seg_coords.tolist())
-            else:
-                if np.linalg.norm(np.asarray(polyline[-1][:2]) - seg_coords[0, :2]) > snap_tol:
-                    polyline.append(seg_coords[0].tolist())
-                polyline.append(seg_coords[1].tolist())
-
-        out = np.asarray(polyline, dtype=float)
-        compact = [out[0]]
-        for p in out[1:]:
-            if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
-                compact.append(p)
-        out = np.asarray(compact, dtype=float)
-        return out if len(out) >= 2 else None
-
-    # Primary path: rectilinear constant-thickness decomposition.
     closed_ring = np.vstack([ring[:, :2], ring[0, :2]])
     dxy = np.diff(closed_ring, axis=0)
-    if np.all((np.abs(dxy[:, 0]) <= 1e-6) | (np.abs(dxy[:, 1]) <= 1e-6)):
-        xs = sorted(set(float(v) for v in closed_ring[:-1, 0]))
-        ys = sorted(set(float(v) for v in closed_ring[:-1, 1]))
-        segs = []
-        junctions = []
-        poly_cov = poly.buffer(1e-9)
-
-        for i in range(len(xs) - 1):
-            for j in range(len(ys) - 1):
-                x0, x1 = xs[i], xs[i + 1]
-                y0, y1 = ys[j], ys[j + 1]
-                dx = x1 - x0
-                dy = y1 - y0
-                if dx <= 1e-9 or dy <= 1e-9:
-                    continue
-                cx = 0.5 * (x0 + x1)
-                cy = 0.5 * (y0 + y1)
-                if not poly_cov.covers(Point(cx, cy)):
-                    continue
-                if abs(dy - t) <= tol and dx > t + tol:
-                    segs.append(np.array([[x0, cy, z_val], [x1, cy, z_val]], dtype=float))
-                elif abs(dx - t) <= tol and dy > t + tol:
-                    segs.append(np.array([[cx, y0, z_val], [cx, y1, z_val]], dtype=float))
-                elif abs(dx - t) <= tol and abs(dy - t) <= tol:
-                    junctions.append(np.array([cx, cy, z_val], dtype=float))
-
-        if segs:
-            extended = []
-            for s in segs:
-                p0 = s[0].copy()
-                p1 = s[1].copy()
-                is_h = abs(p0[1] - p1[1]) <= 1e-6
-                for jp in junctions:
-                    if is_h and abs(jp[1] - p0[1]) <= tol:
-                        if abs(jp[0] - p0[0]) <= half_t + tol:
-                            p0 = jp.copy()
-                        if abs(jp[0] - p1[0]) <= half_t + tol:
-                            p1 = jp.copy()
-                    if (not is_h) and abs(jp[0] - p0[0]) <= tol:
-                        if abs(jp[1] - p0[1]) <= half_t + tol:
-                            p0 = jp.copy()
-                        if abs(jp[1] - p1[1]) <= half_t + tol:
-                            p1 = jp.copy()
-                if np.linalg.norm(p1[:2] - p0[:2]) > 1e-6:
-                    extended.append(np.vstack([p0, p1]))
-
-            path = _build_path_from_segments(extended, snap_tol=max(tol, half_t + tol))
-            if path is not None and len(path) >= 2:
-                return path
-
-    # Secondary fallback: geometry collapse by half thickness.
-    trials = [half_t, max(0.0, half_t - 0.25), half_t + 0.25, half_t - 1e-6, half_t + 1e-6]
-    best_line = None
-    best_len = -1.0
-    for d in trials:
-        try:
-            inward = poly.buffer(-float(d), join_style=2, cap_style=2)
-        except Exception:
-            continue
-        lines = _collect_lines(inward)
-        if not lines:
-            try:
-                merged = linemerge(inward)
-                lines = _collect_lines(merged)
-            except Exception:
-                lines = []
-        else:
-            try:
-                merged = linemerge(MultiLineString(lines)) if len(lines) > 1 else lines[0]
-                merged_lines = _collect_lines(merged)
-                if merged_lines:
-                    lines = merged_lines
-            except Exception:
-                pass
-        for ln in lines:
-            L = float(ln.length)
-            if L > best_len and len(ln.coords) >= 2:
-                best_line = ln
-                best_len = L
-
-    if best_line is None:
+    if not np.all((np.abs(dxy[:, 0]) <= 1e-6) | (np.abs(dxy[:, 1]) <= 1e-6)):
         return None
 
-    coords = np.asarray(best_line.coords, dtype=float)
-    if len(coords) < 2:
+    xs = sorted(set(float(v) for v in closed_ring[:-1, 0]))
+    ys = sorted(set(float(v) for v in closed_ring[:-1, 1]))
+    if len(xs) < 2 or len(ys) < 2:
         return None
 
-    out = np.c_[coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)]
+    poly_cov = poly.buffer(1e-9)
+    members = []
+    joints = []
+
+    for i in range(len(xs) - 1):
+        for j in range(len(ys) - 1):
+            x0, x1 = xs[i], xs[i + 1]
+            y0, y1 = ys[j], ys[j + 1]
+            dx = x1 - x0
+            dy = y1 - y0
+            if dx <= 1e-9 or dy <= 1e-9:
+                continue
+            cx = 0.5 * (x0 + x1)
+            cy = 0.5 * (y0 + y1)
+            if not poly_cov.covers(Point(cx, cy)):
+                continue
+            if abs(dy - t) <= tol and dx > t + tol:
+                members.append({
+                    'kind': 'H',
+                    'span0': x0,
+                    'span1': x1,
+                    'fixed': cy,
+                    'center': np.array([0.5 * (x0 + x1), cy], dtype=float)
+                })
+            elif abs(dx - t) <= tol and dy > t + tol:
+                members.append({
+                    'kind': 'V',
+                    'span0': y0,
+                    'span1': y1,
+                    'fixed': cx,
+                    'center': np.array([cx, 0.5 * (y0 + y1)], dtype=float)
+                })
+            elif abs(dx - t) <= tol and abs(dy - t) <= tol:
+                joints.append(np.array([cx, cy], dtype=float))
+
+    if not members:
+        return None
+
+    # Pick the dominant skeleton members: longest horizontal and longest vertical.
+    horiz = [m for m in members if m['kind'] == 'H']
+    vert = [m for m in members if m['kind'] == 'V']
+    if not horiz or not vert:
+        return None
+
+    h = max(horiz, key=lambda m: (m['span1'] - m['span0']))
+    v = max(vert, key=lambda m: (m['span1'] - m['span0']))
+
+    joint = None
+    if joints:
+        target = np.array([v['fixed'], h['fixed']], dtype=float)
+        joint = min(joints, key=lambda p: float(np.linalg.norm(p - target)))
+        if np.linalg.norm(joint - target) > max(tol, 0.35 * t):
+            joint = target
+    else:
+        joint = np.array([v['fixed'], h['fixed']], dtype=float)
+
+    # Build an open L polyline: endpoint of one member -> joint -> endpoint of the other member.
+    h_ends = [np.array([h['span0'], h['fixed']], dtype=float), np.array([h['span1'], h['fixed']], dtype=float)]
+    v_ends = [np.array([v['fixed'], v['span0']], dtype=float), np.array([v['fixed'], v['span1']], dtype=float)]
+
+    h_far = max(h_ends, key=lambda p: float(np.linalg.norm(p - joint)))
+    v_far = max(v_ends, key=lambda p: float(np.linalg.norm(p - joint)))
+
+    cand1 = np.array([
+        [h_far[0], h_far[1], z_val],
+        [joint[0], joint[1], z_val],
+        [v_far[0], v_far[1], z_val]
+    ], dtype=float)
+    cand2 = np.array([
+        [v_far[0], v_far[1], z_val],
+        [joint[0], joint[1], z_val],
+        [h_far[0], h_far[1], z_val]
+    ], dtype=float)
+
+    def _path_len(arr):
+        return float(np.sum(np.linalg.norm(np.diff(arr[:, :2], axis=0), axis=1)))
+
+    out = cand1 if _path_len(cand1) >= _path_len(cand2) else cand2
+
     compact = [out[0]]
     for p in out[1:]:
         if np.linalg.norm(p[:2] - compact[-1][:2]) > 1e-6:
             compact.append(p)
     out = np.asarray(compact, dtype=float)
-    return out if len(out) >= 2 else None
+
+    if len(out) < 2:
+        return None
+    return out
 
 def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
