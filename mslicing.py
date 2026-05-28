@@ -4,11 +4,9 @@ import numpy as np
 import math
 import json
 import trimesh
-from shapely.geometry import Polygon, MultiPolygon, LineString, Point
+from shapely.geometry import Polygon, MultiPolygon, LineString
 import tempfile
 import plotly.graph_objects as go
-from scipy import ndimage as ndi
-from skimage.morphology import skeletonize
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -361,99 +359,95 @@ def _centerline_path_from_constant_thickness_ring(segment: np.ndarray, thickness
         pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
 
     ring = ensure_open_ring(pts)
-    poly = Polygon(ring[:, :2])
-    if (not poly.is_valid) or poly.area <= 1e-9:
-        return None
-
-    minx, miny, maxx, maxy = poly.bounds
-    span = max(maxx - minx, maxy - miny)
-    if span <= 1e-9:
-        return None
-
-    # Raster skeleton for L/U/C-like constant-thickness shapes.
-    pitch = max(min(float(thickness_mm) / 6.0, float(thickness_mm) / 2.0), 1.0)
-    nx = int(np.ceil((maxx - minx) / pitch)) + 5
-    ny = int(np.ceil((maxy - miny) / pitch)) + 5
-    xs = minx - 2.0 * pitch + np.arange(nx) * pitch
-    ys = miny - 2.0 * pitch + np.arange(ny) * pitch
-
-    mask = np.zeros((ny, nx), dtype=bool)
-    for iy, y in enumerate(ys):
-        for ix, x in enumerate(xs):
-            if poly.buffer(1e-9).contains(Point(float(x), float(y))):
-                mask[iy, ix] = True
-
-    if mask.sum() < 4:
-        return None
-
-    skel = skeletonize(mask)
-    if skel.sum() < 2:
-        return None
-
-    coords = np.argwhere(skel)
-    pixset = {tuple(c) for c in coords.tolist()}
-
-    def nbrs(rc):
-        r, c = rc
-        out = []
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                if dr == 0 and dc == 0:
-                    continue
-                nb = (r + dr, c + dc)
-                if nb in pixset:
-                    out.append(nb)
-        return out
-
-    endpoints = [rc for rc in pixset if len(nbrs(rc)) == 1]
-    if len(endpoints) < 2:
-        endpoints = list(pixset)
-
-    # BFS longest endpoint-to-endpoint path on skeleton graph.
-    from collections import deque
-
-    def bfs_far(start):
-        q = deque([start])
-        prev = {start: None}
-        dist = {start: 0}
-        while q:
-            cur = q.popleft()
-            for nb in nbrs(cur):
-                if nb not in prev:
-                    prev[nb] = cur
-                    dist[nb] = dist[cur] + 1
-                    q.append(nb)
-        far = max(dist, key=dist.get)
-        return far, prev, dist
-
-    seed = endpoints[0]
-    far1, _, _ = bfs_far(seed)
-    far2, prev, _ = bfs_far(far1)
-
-    path_pix = []
-    cur = far2
-    while cur is not None:
-        path_pix.append(cur)
-        cur = prev[cur]
-    path_pix = path_pix[::-1]
-    if len(path_pix) < 2:
-        return None
-
+    xy = np.asarray(ring[:, :2], dtype=float)
     z_val = float(np.median(ring[:, 2]))
-    out = []
-    for r, c in path_pix:
-        x = xs[c]
-        y = ys[r]
-        out.append([x, y, z_val])
-    out = np.asarray(out, dtype=float)
 
-    # Light smoothing / de-jitter before simplification.
-    if len(out) >= 3:
-        sm = out.copy()
-        sm[1:-1, :2] = (out[:-2, :2] + 2.0 * out[1:-1, :2] + out[2:, :2]) / 4.0
-        out = sm
+    # Lightweight centerline extraction specialized for constant-thickness L/U/C-like paths.
+    segs = xy[1:] - xy[:-1]
+    lens = np.linalg.norm(segs, axis=1)
+    keep = lens > 1e-9
+    if not np.any(keep):
+        return None
+    segs = segs[keep]
+    lens = lens[keep]
+    p0s = xy[:-1][keep]
+    p1s = xy[1:][keep]
 
-    return out if len(out) >= 2 else None
+    # Axis-aligned test with tolerance.
+    axis_tol = 1e-6
+    horiz = np.abs(segs[:, 1]) <= axis_tol
+    vert = np.abs(segs[:, 0]) <= axis_tol
+    if not np.all(horiz | vert):
+        return None
+
+    t = float(thickness_mm)
+    long_threshold = max(1.5 * t, 1.0)
+    mids = []
+    for i in range(len(segs)):
+        if lens[i] < long_threshold:
+            continue
+        a = p0s[i]
+        b = p1s[i]
+        if horiz[i]:
+            y = 0.5 * (a[1] + b[1])
+            x0 = min(a[0], b[0]) + 0.5 * t
+            x1 = max(a[0], b[0]) - 0.5 * t
+            if x1 - x0 > 1e-6:
+                mids.append(np.array([[x0, y, z_val], [x1, y, z_val]], dtype=float))
+        elif vert[i]:
+            x = 0.5 * (a[0] + b[0])
+            y0 = min(a[1], b[1]) + 0.5 * t
+            y1 = max(a[1], b[1]) - 0.5 * t
+            if y1 - y0 > 1e-6:
+                mids.append(np.array([[x, y0, z_val], [x, y1, z_val]], dtype=float))
+
+    if len(mids) < 2:
+        return None
+
+    # Connect segments by nearest endpoints to form an open path.
+    unused = list(range(len(mids)))
+    path = mids[unused.pop(0)].copy()
+
+    def endpoint_dist(pa, pb):
+        return float(np.linalg.norm(pa[:2] - pb[:2]))
+
+    while unused:
+        best = None
+        for k in unused:
+            cand = mids[k]
+            d00 = endpoint_dist(path[0], cand[0])
+            d01 = endpoint_dist(path[0], cand[-1])
+            d10 = endpoint_dist(path[-1], cand[0])
+            d11 = endpoint_dist(path[-1], cand[-1])
+            local = min((d00, 'prepend_fwd'), (d01, 'prepend_rev'), (d10, 'append_fwd'), (d11, 'append_rev'), key=lambda x: x[0])
+            if best is None or local[0] < best[0]:
+                best = (local[0], local[1], k)
+
+        if best is None:
+            break
+        _, mode, k = best
+        cand = mids[k]
+        unused.remove(k)
+
+        if mode == 'prepend_fwd':
+            path = np.vstack([cand[::-1], path])
+        elif mode == 'prepend_rev':
+            path = np.vstack([cand, path])
+        elif mode == 'append_fwd':
+            path = np.vstack([path, cand])
+        else:
+            path = np.vstack([path, cand[::-1]])
+
+        # collapse duplicated/near junction points
+        compact = [path[0]]
+        for p in path[1:]:
+            if np.linalg.norm(p[:2] - compact[-1][:2]) > max(1.0, 0.25 * t):
+                compact.append(p)
+        path = np.asarray(compact, dtype=float)
+
+    if len(path) < 2:
+        return None
+    return path
 
 def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
