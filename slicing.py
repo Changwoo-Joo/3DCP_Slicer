@@ -348,55 +348,66 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 
     return out
 
-def simplify_segment(segment: np.ndarray, min_dist: float) -> np.ndarray:
+def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     """
-    전체를 등간격(min_dist)으로 쪼갠 뒤, 
-    일직선상에 있는 중간 점들은 제거하여 
-    직선은 양 끝점만 남기고, 곡선은 지정된 간격을 유지하도록 변경.
+    직선 구간은 양 끝점만 남기고,
+    곡선 구간(모서리 포함)은 점 간격이 mindist 이상이 되도록 병합합니다.
+    마지막 점은 반드시 유지하며, 직전 점과의 거리가 mindist보다 짧으면 직전 점을 제거합니다.
     """
     pts = np.asarray(segment, dtype=float)
-    if len(pts) <= 2 or min_dist <= 0:
+    if len(pts) <= 2 or mindist <= 0:
         return pts
-    
-    # 1. 전체 경로의 누적 길이 배열 생성
-    s = _poly_arclen_s_xy(pts)
-    total_length = float(s[-1])
-    
-    if total_length <= min_dist:
-        return np.vstack([pts[0], pts[-1]])
-    
-    # 2. 등간격 배열 생성 및 리샘플링 (무조건 min_dist 간격으로 찍기)
-    num_segments = max(1, int(np.round(total_length / min_dist)))
-    s_targets = np.linspace(0.0, total_length, num_segments + 1)
-    resampled_pts = _resample_polyline_by_s(pts, s_targets)
-    
-    # 3. 일직선(Collinear) 검사하여 직선 구간의 중간 점 제거
-    if len(resampled_pts) <= 2:
-        return resampled_pts
-        
-    out = [resampled_pts[0]]
-    
-    for i in range(1, len(resampled_pts) - 1):
-        p_prev = out[-1]
-        p_curr = resampled_pts[i]
-        p_next = resampled_pts[i+1]
-        
+
+    # 1. 일직선(Collinear) 검사하여 직선 구간의 중간 점 제거
+    out_col = [pts[0]]
+    for i in range(1, len(pts) - 1):
+        p_prev = out_col[-1]
+        p_curr = pts[i]
+        p_next = pts[i+1]
+
         v1 = p_curr - p_prev
         v2 = p_next - p_curr
-        
+
         L1_L2 = float(np.linalg.norm(v1[:2]) * np.linalg.norm(v2[:2]))
         if L1_L2 < 1e-9:
             continue
-            
-        # 외적을 이용해 꺾인 각도의 사인(sin)값을 구함
+
         sin_angle = abs(v1[0]*v2[1] - v1[1]*v2[0]) / L1_L2
-        
-        # 꺾임이 거의 없는 직선(약 0.05도 이하)이면 점을 버리고, 곡선이면 살림
+
+        # 각도가 0에 가깝다면(일직선) 점을 건너뜀
         if sin_angle > 1e-3:
-            out.append(p_curr)
-            
-    out.append(resampled_pts[-1])
-    return np.asarray(out, dtype=float)
+            out_col.append(p_curr)
+
+    out_col.append(pts[-1])
+    pts_col = np.asarray(out_col, dtype=float)
+
+    # 2. 살아남은 점들(곡선의 특징점들) 중에서 간격이 mindist 미만인 점들 정리
+    if len(pts_col) <= 2:
+        return pts_col
+
+    out_dist = [pts_col[0]]
+    for i in range(1, len(pts_col) - 1):
+        # 직전에 추가된 점과의 거리를 계산
+        dist = np.linalg.norm(pts_col[i][:2] - out_dist[-1][:2])
+        if dist >= mindist:
+            out_dist.append(pts_col[i])
+
+    # 마지막 점은 형태를 닫거나 경로를 끝내는 데 중요하므로 무조건 추가.
+    # 단, 마지막 점을 추가했을 때 직전 점과의 거리가 mindist 미만이라면, 
+    # mindist 조건을 만족할 때까지 직전 점들을 거슬러 올라가며 제거.
+    last_pt = pts_col[-1]
+    while len(out_dist) > 1:
+        dist_to_last = np.linalg.norm(last_pt[:2] - out_dist[-1][:2])
+        if dist_to_last < mindist:
+            out_dist.pop()
+        else:
+            break
+
+    out_dist.append(last_pt)
+
+    return np.asarray(out_dist, dtype=float)
+
+
 def shift_to_nearest_start(segment, ref_point):
     """
     단순 점 검색이 아닌, 선분(Edge) 위에 수직 투영하여 가장 가까운 정확한 위치를 찾아
@@ -930,6 +941,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
+                # 최종적으로 다시 한번 최소 점 간격 강제
+                simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -937,30 +950,30 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
                 if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
                     g.append(f"; Moving to new object start at Safe Z")
-                    g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
+                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
 
                 g.append(f"G01 F{feed}")
                 if start_e_on:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f} E{start_e_val:.5f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
 
                 for p1, p2 in zip(simplified[:-1], simplified[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
                     if e_on:
-                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
+                        g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f} E{dist * EXTRUSION_K:.5f}")
                     else:
-                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
+                        g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f}")
 
                 
                 if iseg == 0: prev_start_xy = start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
-            g.append(f"G00 Z{safe_z_clearance:.3f}")
+            g.append(f"G00 Z{safe_z_clearance:.1f}")
 
     g.append(f"G01 F{feed}")
     if m30_on: g.append("M30")
@@ -1053,6 +1066,8 @@ def compute_slice_paths_with_travel(
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
+                # 최종적으로 다시 한번 최소 점 간격 강제
+                simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
