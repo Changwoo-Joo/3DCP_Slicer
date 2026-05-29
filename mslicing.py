@@ -937,30 +937,30 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
                 if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
                     g.append(f"; Moving to new object start at Safe Z")
-                    g.append(f"G00 X{start[0]:.3f} Y{start[1]:.3f} Z{safe_z_clearance:.3f}")
+                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
 
                 g.append(f"G01 F{feed}")
                 if start_e_on:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f} E{start_e_val:.5f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{start[0]:.3f} Y{start[1]:.3f} Z{print_z:.3f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
 
                 for p1, p2 in zip(simplified[:-1], simplified[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
                     if e_on:
-                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f} E{dist * EXTRUSION_K:.5f}")
+                        g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f} E{dist * EXTRUSION_K:.5f}")
                     else:
-                        g.append(f"G01 X{p2[0]:.3f} Y{p2[1]:.3f}")
+                        g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f}")
 
                 
                 if iseg == 0: prev_start_xy = start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
-            g.append(f"G00 Z{safe_z_clearance:.3f}")
+            g.append(f"G00 Z{safe_z_clearance:.1f}")
 
     g.append(f"G01 F{feed}")
     if m30_on: g.append("M30")
