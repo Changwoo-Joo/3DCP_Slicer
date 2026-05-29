@@ -940,8 +940,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한 번 최소 점 간격을 강제 (끝부분 꼬리 세그먼트 정리 목적)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                # 최종적으로 다시 한번 최소 점 간격 강제
                 simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
@@ -1065,8 +1065,8 @@ def compute_slice_paths_with_travel(
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한 번 최소 점 간격을 강제 (끝부분 꼬리 세그먼트 정리 목적)
+                simplified = trim_closed_ring_tail(shifted, trim_dist)
+                # 최종적으로 다시 한번 최소 점 간격 강제
                 simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
