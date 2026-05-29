@@ -930,8 +930,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
-                if len(simplified) >= 2 and np.array_equal(simplified[-1], simplified[-2]):
-                    simplified = simplified[:-1]
                 if len(simplified) < 2:
                     continue
 
@@ -1055,8 +1053,6 @@ def compute_slice_paths_with_travel(
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
                 simplified = trim_closed_ring_tail(shifted, trim_dist)
-                if len(simplified) >= 2 and np.array_equal(simplified[-1], simplified[-2]):
-                    simplified = simplified[:-1]
                 if len(simplified) < 2:
                     continue
 
