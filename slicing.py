@@ -688,7 +688,8 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     if poly.is_empty or not poly.is_valid or poly.area <= 1e-9:
         return seg3d_closed
     try:
-        rounded = poly.buffer(-r_mm, join_style=1).buffer(r_mm, join_style=1)
+        # 안쪽 모서리 라운딩(Positive -> Negative) 후 바깥쪽 모서리 라운딩(Negative -> Positive)
+        rounded = poly.buffer(r_mm, join_style=1).buffer(-r_mm, join_style=1).buffer(-r_mm, join_style=1).buffer(r_mm, join_style=1)
     except Exception:
         return seg3d_closed
     if rounded.is_empty:
