@@ -897,6 +897,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
     safe_z_clearance = float(mesh.bounds[1][2]) + 150.0
     prev_start_xy = None
+    prev_layer_end_xy = None
 
     for subidx, submesh in enumerate(submeshes):
         if seq_print:
@@ -952,6 +953,14 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 if seq_print and subidx > 0 and zidx == 0 and iseg == 0:
                     g.append(f"; Moving to new object start at Safe Z")
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
+                elif zidx > 0 and iseg == 0 and prev_layer_end_xy is not None:
+                    dist_xy = np.linalg.norm(start[:2] - prev_layer_end_xy)
+                    if dist_xy > 5.0:
+                        z_hop = print_z + 50.0
+                        g.append(f"; Retract and move to next layer (far)")
+                        g.append(f"G00 Z{z_hop:.1f}")
+                        g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}")
+                        g.append(f"G01 Z{print_z:.1f}")
 
                 if iseg > 0:
                     z_hop = print_z + 50.0
@@ -975,6 +984,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
                 
                 if iseg == 0: prev_start_xy = start[:2]
+                prev_layer_end_xy = simplified[-1][:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
@@ -1023,13 +1033,16 @@ def compute_slice_paths_with_travel(
     else:
         sub_meshes = [mesh]
 
-    safe_z_clearance = float(mesh.bounds[1][2]) + 50.0
+    safe_z_clearance = float(mesh.bounds[1][2]) + 150.0
     highest_sliced_z = None
     for _sub_mesh in sub_meshes:
         _z_values = make_slice_z_values(_sub_mesh, z_int)
         if _z_values:
             _top_z = float(max(_z_values))
             highest_sliced_z = _top_z if highest_sliced_z is None else max(highest_sliced_z, _top_z)
+
+    if highest_sliced_z is not None:
+        highest_sliced_z += 0.5 * float(z_int)
 
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
@@ -1099,8 +1112,16 @@ def compute_slice_paths_with_travel(
                     all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
                     all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
                 else:
-                    travel = np.vstack([prev_layer_last_end, first_poly_start])
-                    all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
+                    dist_xy = np.linalg.norm(prev_layer_last_end[:2] - first_poly_start[:2])
+                    if dist_xy > 5.0:
+                        up_pt = prev_layer_last_end.copy(); up_pt[2] = max(prev_layer_last_end[2], first_poly_start[2]) + 50.0
+                        down_pt = first_poly_start.copy(); down_pt[2] = up_pt[2]
+                        all_items.append((np.vstack([prev_layer_last_end, up_pt]), np.array([0.0, 0.0]) if e_on else None, True))
+                        all_items.append((np.vstack([up_pt, down_pt]), np.array([0.0, 0.0]) if e_on else None, True))
+                        all_items.append((np.vstack([down_pt, first_poly_start]), np.array([0.0, 0.0]) if e_on else None, True))
+                    else:
+                        travel = np.vstack([prev_layer_last_end, first_poly_start])
+                        all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
             for i_seg in range(len(layer_polys)):
                 poly = layer_polys[i_seg]
