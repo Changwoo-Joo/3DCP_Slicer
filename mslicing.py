@@ -954,8 +954,9 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"; Retract and move to next segment")
-                    g.append(f"G00 Z{safe_z_clearance:.1f}")
+                    z_hop = print_z + 50.0
+                    g.append(f"; Retract and move to next segment intra-layer")
+                    g.append(f"G00 Z{z_hop:.1f}")
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}")
                     g.append(f"G01 Z{print_z:.1f}")
 
@@ -1117,14 +1118,12 @@ def compute_slice_paths_with_travel(
                 if i_seg < len(layer_polys) - 1:
                     nxt = layer_polys[i_seg + 1]
                     up_pt = poly[-1].copy()
-                    up_pt[2] = safe_z_clearance
+                    up_pt[2] += 50.0
                     down_pt = nxt[0].copy()
-                    down_pt[2] = safe_z_clearance
-
+                    down_pt[2] += 50.0
                     travel_up = np.vstack([poly[-1], up_pt])
                     travel_xy = np.vstack([up_pt, down_pt])
                     travel_down = np.vstack([down_pt, nxt[0]])
-
                     all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
                     all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
                     all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
