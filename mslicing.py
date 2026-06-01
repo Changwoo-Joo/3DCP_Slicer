@@ -1882,7 +1882,7 @@ def _deepcopy_preset(p: Dict[str, Any]) -> Dict[str, Any]:
 if "mapping_preset" not in st.session_state:
     st.session_state.mapping_preset = _deepcopy_preset(DEFAULT_PRESET)
 
-PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.0,+000.0,+000.0,0000.0,000.0,000.0,0000.0,000,200'
+PAD_LINE = '+0000.0,+0000.0,+0000.0,+000.0,+000.0,+000.0,0000.0,000.0,000.0,0000.0,000,000'
 MAX_LINES = 64000
 
 def _extract_xyz_lines_count(gcode_text: str) -> int:
