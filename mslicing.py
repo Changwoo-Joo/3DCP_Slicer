@@ -954,12 +954,9 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    # 이전 구간 끝나고 노즐을 안전 높이로 위로 들어 올림 (Z-hop)
                     g.append(f"; Retract and move to next segment")
                     g.append(f"G00 Z{safe_z_clearance:.1f}")
-                    # 다음 구간의 시작 위치(XY)로 이동
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}")
-                    # 다시 출력할 Z 높이로 내려옴
                     g.append(f"G01 Z{print_z:.1f}")
 
                 g.append(f"G01 F{feed}")
@@ -1037,7 +1034,7 @@ def compute_slice_paths_with_travel(
         z_values = make_slice_z_values(sub_mesh, z_int)
 
         for z in z_values:
-            display_z = z + 0.5 * float(z_int)   # G-code와 동일한 Z
+            display_z = z + 0.5 * float(z_int)
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -1045,7 +1042,7 @@ def compute_slice_paths_with_travel(
                 slice2D, to3D = sec.to_2D()
             except Exception:
                 continue
-        
+
             segments = []
             for seg in slice2D.discrete:
                 seg = np.array(seg)
@@ -1119,8 +1116,18 @@ def compute_slice_paths_with_travel(
 
                 if i_seg < len(layer_polys) - 1:
                     nxt = layer_polys[i_seg + 1]
-                    travel_intra = np.vstack([poly[-1], nxt[0]])
-                    all_items.append((travel_intra, np.array([0.0, 0.0]) if e_on else None, True))
+                    up_pt = poly[-1].copy()
+                    up_pt[2] = safe_z_clearance
+                    down_pt = nxt[0].copy()
+                    down_pt[2] = safe_z_clearance
+
+                    travel_up = np.vstack([poly[-1], up_pt])
+                    travel_xy = np.vstack([up_pt, down_pt])
+                    travel_down = np.vstack([down_pt, nxt[0]])
+
+                    all_items.append((travel_up, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
+                    all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
 
             prev_layer_last_end = layer_polys[-1][-1]
 
