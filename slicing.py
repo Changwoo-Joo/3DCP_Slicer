@@ -1019,7 +1019,7 @@ def compute_slice_paths_with_travel(
     else:
         sub_meshes = [mesh]
 
-    safe_z_clearance = float(mesh.bounds[1][2]) + 50.0
+    safe_z_clearance = float(mesh.bounds[1][2]) + 150.0
     highest_sliced_z = None
     for _sub_mesh in sub_meshes:
         _z_values = make_slice_z_values(_sub_mesh, z_int)
@@ -1027,10 +1027,14 @@ def compute_slice_paths_with_travel(
             _top_z = float(max(_z_values))
             highest_sliced_z = _top_z if highest_sliced_z is None else max(highest_sliced_z, _top_z)
 
+    if highest_sliced_z is not None:
+        highest_sliced_z += 0.5 * float(z_int)
+
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
         for z in z_values:
+            display_z = z + 0.5 * float(z_int)
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -1043,6 +1047,7 @@ def compute_slice_paths_with_travel(
             for seg in slice2D.discrete:
                 seg = np.array(seg)
                 seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                seg3d[:, 2] = display_z
                 segments.append(seg3d)
             if not segments:
                 continue
