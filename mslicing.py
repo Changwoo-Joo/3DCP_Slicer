@@ -954,7 +954,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
+                    # 이전 구간 끝나고 노즐을 안전 높이로 위로 들어 올림 (Z-hop)
+                    g.append(f"; Retract and move to next segment")
+                    g.append(f"G00 Z{safe_z_clearance:.1f}")
+                    # 다음 구간의 시작 위치(XY)로 이동
+                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}")
+                    # 다시 출력할 Z 높이로 내려옴
+                    g.append(f"G01 Z{print_z:.1f}")
 
                 g.append(f"G01 F{feed}")
                 if start_e_on:
