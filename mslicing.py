@@ -1031,6 +1031,7 @@ def compute_slice_paths_with_travel(
         z_values = make_slice_z_values(sub_mesh, z_int)
 
         for z in z_values:
+            display_z = z + 0.5 * float(z_int)   # G-code와 동일한 Z
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
                 continue
@@ -1038,11 +1039,12 @@ def compute_slice_paths_with_travel(
                 slice2D, to3D = sec.to_2D()
             except Exception:
                 continue
-
+        
             segments = []
             for seg in slice2D.discrete:
                 seg = np.array(seg)
                 seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                seg3d[:, 2] = display_z
                 segments.append(seg3d)
             if not segments:
                 continue
