@@ -985,25 +985,28 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
-if is_thin:
-    simplified = simplify_segment(centerline_path, float(min_spacing))
-else:
-    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-    if enable_inward_offset and float(nozzle_width) > 0:
-        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-        if offset_inverted and skip_invalid_offset:
-            start_pt = closed_mid[0]
-            continue
-    simplified = simplify_segment(closed_mid, float(min_spacing))
-    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-        r_val = float(st.session_state.get('fillet_r', 20.0))
-        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-    simplified = trim_closed_ring_tail(shifted, trim_dist)
-    simplified = simplify_segment(simplified, float(min_spacing))
+
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
+
+                if is_thin:
+                    simplified = simplify_segment(centerline_path, float(min_spacing))
+                else:
+                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                    if enable_inward_offset and float(nozzle_width) > 0:
+                        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                        if offset_inverted and skip_invalid_offset:
+                            start_pt = closed_mid[0]
+                            continue
+                    simplified = simplify_segment(closed_mid, float(min_spacing))
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                        r_val = float(st.session_state.get('fillet_r', 20.0))
+                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -1117,25 +1120,28 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
-if is_thin:
-    simplified = simplify_segment(centerline_path, float(min_spacing))
-else:
-    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-    if enable_inward_offset and float(nozzle_width) > 0:
-        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-        if offset_inverted and skip_invalid_offset:
-            start_pt = closed_mid[0]
-            continue
-    simplified = simplify_segment(closed_mid, float(min_spacing))
-    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-        r_val = float(st.session_state.get('fillet_r', 20.0))
-        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-    simplified = trim_closed_ring_tail(shifted, trim_dist)
-    simplified = simplify_segment(simplified, float(min_spacing))
+
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
+
+                if is_thin:
+                    simplified = simplify_segment(centerline_path, float(min_spacing))
+                else:
+                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                    if enable_inward_offset and float(nozzle_width) > 0:
+                        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                        if offset_inverted and skip_invalid_offset:
+                            start_pt = closed_mid[0]
+                            continue
+                    simplified = simplify_segment(closed_mid, float(min_spacing))
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                        r_val = float(st.session_state.get('fillet_r', 20.0))
+                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
