@@ -744,7 +744,7 @@ def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray
 
     return np.asarray(out, dtype=float)
 
-def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.15, ref_pt: np.ndarray = None):
+def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.1001, ref_pt: np.ndarray = None):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
     if seg3d_closed.shape[0] < 4:
         return seg3d_closed, False
@@ -799,11 +799,53 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
-        # DO NOT FORCE DIRECTION HERE OR IT BREAKS ZIGZAG!
-        # Just return the path as is.
+        # --- 방향 정렬 ---
+        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
+        if ref_pt is not None:
+            ref_xy = np.array(ref_pt[:2], dtype=float)
+            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+            if dist_b < dist_a:
+                out_path = out_path[::-1]  # 뒤집기
+
         return out_path, True
 
     return seg3d_closed, False
+
+def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4 or offset_mm <= 0:
+        return seg3d_closed, False
+    if seg3d_closed.shape[1] < 3:
+        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    try:
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
+        return seg3d_closed, False
+    try:
+        inward = poly.buffer(-float(offset_mm), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+    if inward.is_empty:
+        return seg3d_closed, True
+    if isinstance(inward, MultiPolygon):
+        inward = max(list(inward.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
+    if inward.is_empty or inward.area <= 1e-9:
+        return seg3d_closed, True
+    try:
+        coords = np.asarray(inward.exterior.coords, dtype=float)
+    except Exception:
+        return seg3d_closed, True
+    if len(coords) < 4:
+        return seg3d_closed, True
+    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)])
+    return out, False
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
@@ -990,20 +1032,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    # 1. 무조건 트림을 먼저 적용 (항상 일정한 쪽이 잘리도록)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-
-                    # 2. 잘린 경로를 현재 노즐 위치와 비교하여 가까운 쪽에서 시작하도록 뒤집기 (지그재그)
-                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
-                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
-                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
-                        if dist_end < dist_start:
-                            trimmed_centerline = trimmed_centerline[::-1]
-
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
@@ -1139,20 +1172,11 @@ def compute_slice_paths_with_travel(
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    # 1. 무조건 트림을 먼저 적용 (항상 일정한 쪽이 잘리도록)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-
-                    # 2. 잘린 경로를 현재 노즐 위치와 비교하여 가까운 쪽에서 시작하도록 뒤집기 (지그재그)
-                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
-                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
-                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
-                        if dist_end < dist_start:
-                            trimmed_centerline = trimmed_centerline[::-1]
-
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
