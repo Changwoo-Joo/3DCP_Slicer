@@ -997,20 +997,10 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                # 방향을 강제로 고정하여 추출 (항상 같은 쪽이 트림되도록)
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    # 1. 트림을 먼저 적용 (항상 일정한 끝부분이 잘림)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-
-                    # 2. 이전 레이어 종료점과 가장 가까운 쪽을 시작점으로 잡도록 경로 뒤집기 (지그재그 주행)
-                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
-                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
-                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
-                        if dist_end < dist_start:
-                            trimmed_centerline = trimmed_centerline[::-1]
-
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
@@ -1148,20 +1138,10 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                # 방향을 강제로 고정하여 추출 (항상 같은 쪽이 트림되도록)
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    # 1. 트림을 먼저 적용 (항상 일정한 끝부분이 잘림)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-
-                    # 2. 이전 레이어 종료점과 가장 가까운 쪽을 시작점으로 잡도록 경로 뒤집기 (지그재그 주행)
-                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
-                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
-                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
-                        if dist_end < dist_start:
-                            trimmed_centerline = trimmed_centerline[::-1]
-
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
