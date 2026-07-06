@@ -711,91 +711,156 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
 
 
 
+
 def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
-    if pts.ndim != 2 or len(pts) < 2 or trim_distance <= 0:
+    if len(pts) < 2 or trim_distance <= 0:
         return pts
-    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
-    total = float(np.sum(lens))
-    if total <= trim_distance + 1e-9:
-        return pts[:1].copy()
-    target = total - float(trim_distance)
+
+    n = len(pts)
+    lens = []
+    for i in range(n - 1):
+        lens.append(float(np.linalg.norm((pts[i+1] - pts[i])[:2])))
+
+    total = sum(lens)
+    if total <= trim_distance:
+        return pts[:1]
+
+    target = total - trim_distance
     acc = 0.0
     out = [pts[0].copy()]
-    for i, d in enumerate(lens):
-        d = float(d)
-        if acc + d < target - 1e-9:
-            acc += d
-            out.append(pts[i + 1].copy())
-            continue
-        p = pts[i]
-        q = pts[i + 1]
-        cut = p + ((target - acc) / d) * (q - p) if d > 1e-12 else p.copy()
-        out.append(cut)
-        break
+
+    for i in range(n - 1):
+        if acc + lens[i] < target:
+            acc += lens[i]
+            out.append(pts[i+1].copy())
+        else:
+            p = pts[i]
+            q = pts[i+1]
+            d = lens[i]
+            cut = p + ((target - acc) / d) * (q - p) if d > 0 else p.copy()
+            out.append(cut)
+            break
+
     return np.asarray(out, dtype=float)
 
-
-def _extract_centerline_if_thin(seg3d_closed: np.ndarray,
-                                max_thickness_mm: float = 0.1,
-                                ref_pt: Optional[np.ndarray] = None):
+def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.1, ref_pt: np.ndarray = None):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
-    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4:
+    if seg3d_closed.shape[0] < 4:
         return seg3d_closed, False
+
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2])) if seg3d_closed.shape[1] >= 3 else 0.0
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
+
     try:
+        from shapely.geometry import Polygon
         poly = Polygon(xy)
     except Exception:
         return seg3d_closed, False
-    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-12:
+
+    if poly.is_empty or not poly.is_valid:
         return seg3d_closed, False
+
     try:
-        inward = poly.buffer(-(float(max_thickness_mm) / 2.0), join_style=2)
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
     except Exception:
         return seg3d_closed, False
-    if not inward.is_empty:
+
+    if inward.is_empty:
+        coords = np.array(poly.exterior.coords)
+        if len(coords) < 2:
+            return seg3d_closed, False
+
+        if len(coords) > 100:
+            indices = np.linspace(0, len(coords)-1, 100).astype(int)
+            pts = coords[indices]
+        else:
+            pts = coords
+
+        from scipy.spatial.distance import pdist, squareform
+        D = squareform(pdist(pts))
+        i, j = np.unravel_index(np.argmax(D), D.shape)
+        p_start, p_end = pts[i], pts[j]
+
+        dist_start = np.linalg.norm(coords - p_start, axis=1)
+        dist_end = np.linalg.norm(coords - p_end, axis=1)
+        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
+
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        path1 = coords[idx_start:idx_end+1]
+        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
+
+        chosen_path = path1 if len(path1) > len(path2) else path2
+        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
+
+        # --- 방향 정렬 ---
+        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
+        if ref_pt is not None:
+            ref_xy = np.array(ref_pt[:2], dtype=float)
+            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+            if dist_b < dist_a:
+                out_path = out_path[::-1]  # 뒤집기
+
+        return out_path, True
+
+    return seg3d_closed, False
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon(xy)
+    except Exception:
         return seg3d_closed, False
-    coords = np.asarray(poly.exterior.coords, dtype=float)
-    if len(coords) < 3:
+
+    if poly.is_empty or not poly.is_valid:
         return seg3d_closed, False
-    sample = coords
-    if len(sample) > 200:
-        idx = np.linspace(0, len(sample) - 1, 200).astype(int)
-        sample = sample[idx]
-    diff = sample[:, None, :] - sample[None, :, :]
-    d2 = np.sum(diff * diff, axis=2)
-    i, j = np.unravel_index(int(np.argmax(d2)), d2.shape)
-    p_start = sample[i]
-    p_end = sample[j]
-    idx_start = int(np.argmin(np.linalg.norm(coords - p_start, axis=1)))
-    idx_end = int(np.argmin(np.linalg.norm(coords - p_end, axis=1)))
-    if idx_start > idx_end:
-        idx_start, idx_end = idx_end, idx_start
-    path1 = coords[idx_start:idx_end + 1]
-    path2 = np.vstack([coords[idx_end:], coords[:idx_start + 1]])
-    def _path_len(p):
-        if len(p) < 2:
-            return 0.0
-        return float(np.sum(np.linalg.norm(p[1:] - p[:-1], axis=1)))
-    chosen = path1 if _path_len(path1) >= _path_len(path2) else path2
-    dedup = [chosen[0]]
-    for pt in chosen[1:]:
-        if np.linalg.norm(pt - dedup[-1]) > 1e-9:
-            dedup.append(pt)
-    chosen = np.asarray(dedup, dtype=float)
-    if len(chosen) < 2:
+
+    try:
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
+    except Exception:
         return seg3d_closed, False
-    out = np.column_stack([chosen[:, 0], chosen[:, 1], np.full(len(chosen), z_val, dtype=float)])
-    if ref_pt is not None and len(out) >= 2:
-        ref_xy = np.asarray(ref_pt[:2], dtype=float)
-        da = float(np.linalg.norm(out[0, :2] - ref_xy))
-        db = float(np.linalg.norm(out[-1, :2] - ref_xy))
-        if db < da:
-            out = out[::-1].copy()
-    return out, True
+
+    if inward.is_empty:
+        coords = np.array(poly.exterior.coords)
+        if len(coords) < 2:
+            return seg3d_closed, False
+
+        if len(coords) > 100:
+            indices = np.linspace(0, len(coords)-1, 100).astype(int)
+            pts = coords[indices]
+        else:
+            pts = coords
+
+        from scipy.spatial.distance import pdist, squareform
+        D = squareform(pdist(pts))
+        i, j = np.unravel_index(np.argmax(D), D.shape)
+        p_start, p_end = pts[i], pts[j]
+
+        dist_start = np.linalg.norm(coords - p_start, axis=1)
+        dist_end = np.linalg.norm(coords - p_end, axis=1)
+        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
+
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        path1 = coords[idx_start:idx_end+1]
+        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
+
+        chosen_path = path1 if len(path1) > len(path2) else path2
+        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
+
+        return out_path, True
+
+    return seg3d_closed, False
 
 def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
@@ -951,7 +1016,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
                    seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
-                   skip_invalid_offset=True, thin_wall_as_line=False, thin_wall_threshold=0.1):
+                   skip_invalid_offset=True):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
@@ -1012,35 +1077,17 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
-            current_ref_pt = np.array(ref_pt_layer, dtype=float)
+            current_ref_pt = ref_pt_layer.copy()
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                use_fixed_ref = np.array(ref_pt_user, dtype=float)
-                ref_for_open = current_ref_pt if auto_start else use_fixed_ref
-                ref_for_closed = current_ref_pt if auto_start else use_fixed_ref
-
-                is_thin = False
-                if thin_wall_as_line:
-                    centerline_path, is_thin = _extract_centerline_if_thin(
-                        seg3d_no_dup,
-                        max_thickness_mm=float(thin_wall_threshold),
-                        ref_pt=ref_for_open
-                    )
-                else:
-                    centerline_path = seg3d_no_dup
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    simplified = simplify_segment(centerline_path, float(min_spacing))
-                    if len(simplified) >= 2:
-                        ref_xy = np.array(ref_for_open[:2], dtype=float)
-                        d0 = float(np.linalg.norm(simplified[0, :2] - ref_xy))
-                        d1 = float(np.linalg.norm(simplified[-1, :2] - ref_xy))
-                        if d1 < d0:
-                            simplified = simplified[::-1].copy()
-                    simplified = trim_open_line_tail(simplified, float(trim_dist))
-                    simplified = simplify_segment(simplified, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                     if enable_inward_offset and float(nozzle_width) > 0:
@@ -1049,14 +1096,13 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                             start_pt = closed_mid[0]
                             continue
                     simplified = simplify_segment(closed_mid, float(min_spacing))
-                    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_for_closed)
-                    if st.session_state.get('enable_fillet', False):
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
                         r_val = float(st.session_state.get('fillet_r', 20.0))
                         shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                         rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_for_closed)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
-                    # 최종적으로 다시 한번 최소 점 간격 강제
                     simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
@@ -1084,8 +1130,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f}")
 
                 
-                current_ref_pt = simplified[-1][:2]
-                prev_start_xy = current_ref_pt if auto_start else simplified[0][:2]
+                if iseg == 0: prev_start_xy = start[:2]
+                if len(simplified) > 0: current_ref_pt = simplified[-1][:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
@@ -1101,8 +1147,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
-    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
-    thin_wall_as_line=False, thin_wall_threshold=0.1
+    nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -1169,36 +1214,18 @@ def compute_slice_paths_with_travel(
                 continue
 
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
-            current_ref_pt = np.array(ref_pt_layer, dtype=float)
+            current_ref_pt = ref_pt_layer.copy()
 
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                use_fixed_ref = np.array(ref_pt_user, dtype=float)
-                ref_for_open = current_ref_pt if auto_start else use_fixed_ref
-                ref_for_closed = current_ref_pt if auto_start else use_fixed_ref
-
-                is_thin = False
-                if thin_wall_as_line:
-                    centerline_path, is_thin = _extract_centerline_if_thin(
-                        seg3d_no_dup,
-                        max_thickness_mm=float(thin_wall_threshold),
-                        ref_pt=ref_for_open
-                    )
-                else:
-                    centerline_path = seg3d_no_dup
+                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    simplified = simplify_segment(centerline_path, float(min_spacing))
-                    if len(simplified) >= 2:
-                        ref_xy = np.array(ref_for_open[:2], dtype=float)
-                        d0 = float(np.linalg.norm(simplified[0, :2] - ref_xy))
-                        d1 = float(np.linalg.norm(simplified[-1, :2] - ref_xy))
-                        if d1 < d0:
-                            simplified = simplified[::-1].copy()
-                    simplified = trim_open_line_tail(simplified, float(trim_dist))
-                    simplified = simplify_segment(simplified, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                     if enable_inward_offset and float(nozzle_width) > 0:
@@ -1207,21 +1234,20 @@ def compute_slice_paths_with_travel(
                             start_pt = closed_mid[0]
                             continue
                     simplified = simplify_segment(closed_mid, float(min_spacing))
-                    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_for_closed)
-                    if st.session_state.get('enable_fillet', False):
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
                         r_val = float(st.session_state.get('fillet_r', 20.0))
                         shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                         rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_for_closed)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
-                    # 최종적으로 다시 한번 최소 점 간격 강제
                     simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
                 layer_polys.append(simplified.copy())
-                current_ref_pt = simplified[-1][:2]
-                prev_start_xy = current_ref_pt if auto_start else simplified[0][:2]
+                if i_seg == 0:
+                    prev_start_xy = simplified[0][:2]
 
             if not layer_polys:
                 continue
@@ -1840,9 +1866,6 @@ with st.sidebar.expander("코너 라운딩(R) 옵션", expanded=False):
 
 trim_dist = st.sidebar.number_input("트림 거리(mm)", 0.0, 1000.0, 50.0)
 min_spacing = st.sidebar.number_input("최소 점간격(mm)", 0.0, 1000.0, 5.0)
-with st.sidebar.expander("얇은 벽 단일선 옵션", expanded=False):
-    thin_wall_as_line = st.checkbox("0.1mm 이하 선 경로 처리", value=False, help="체크 시 얇은 벽을 외곽 루프가 아니라 단일 선 경로로 처리합니다.")
-    thin_wall_threshold = st.number_input("단일선 기준 두께(mm)", min_value=0.01, max_value=5.0, value=0.10, step=0.01, disabled=not thin_wall_as_line)
 with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     nozzle_diameter = st.number_input("노즐 직경(mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.get("nozzle_diameter_mm", 0.0)), step=0.5, help="입력한 노즐 직경의 반지름(직경/2)만큼 안쪽으로 오프셋합니다.")
     st.session_state["nozzle_diameter_mm"] = float(nozzle_diameter)
