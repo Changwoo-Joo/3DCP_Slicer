@@ -711,6 +711,39 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
 
 
 
+
+def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or trim_distance <= 0:
+        return pts
+
+    n = len(pts)
+    lens = []
+    for i in range(n - 1):
+        lens.append(float(np.linalg.norm((pts[i+1] - pts[i])[:2])))
+
+    total = sum(lens)
+    if total <= trim_distance:
+        return pts[:1]
+
+    target = total - trim_distance
+    acc = 0.0
+    out = [pts[0].copy()]
+
+    for i in range(n - 1):
+        if acc + lens[i] < target:
+            acc += lens[i]
+            out.append(pts[i+1].copy())
+        else:
+            p = pts[i]
+            q = pts[i+1]
+            d = lens[i]
+            cut = p + ((target - acc) / d) * (q - p) if d > 0 else p.copy()
+            out.append(cut)
+            break
+
+    return np.asarray(out, dtype=float)
+
 def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.1, ref_pt: np.ndarray = None):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
     if seg3d_closed.shape[0] < 4:
@@ -1050,10 +1083,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    simplified = simplify_segment(centerline_path, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                     if enable_inward_offset and float(nozzle_width) > 0:
@@ -1187,10 +1221,11 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
 
                 if is_thin:
-                    simplified = simplify_segment(centerline_path, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                     if enable_inward_offset and float(nozzle_width) > 0:
