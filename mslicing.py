@@ -1080,68 +1080,92 @@ def compute_slice_paths_with_travel(
                 
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
-                        from shapely.geometry import Polygon
-                        # Z축 값 저장 (Shapely는 2D 평면 데이터로 처리하므로 Z값이 소실될 수 있음)
+                        # 얇은 벽(0.1mm 등)의 중심선을 구하기 위한 향상된 알고리즘
                         pts = np.array(simplified)
                         has_z = (pts.shape[1] > 2)
                         z_val = pts[0, 2] if has_z else 0.0
 
-                        # 2D 평면으로 분리
                         pts_2d = pts[:, :2]
-                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
-                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
+                        # 닫힌 루프에서 중복되는 끝점 제거하여 순수 노드만 추출
+                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) < 1e-9:
+                            unique_pts = pts_2d[:-1]
                         else:
-                            poly_pts = pts_2d
+                            unique_pts = pts_2d
 
-                        poly = Polygon(poly_pts)
-                        if poly.is_valid and poly.area > 0:
-                            # 얇은 벽을 오프셋하여 붕괴시킴 (0.04mm)
-                            offset_poly = poly.buffer(-0.04, join_style=2)
+                        N = len(unique_pts)
+                        # 1. 얇은 벽(머리핀 모양)의 양 끝단(가장 곡률이 큰 곳, 즉 거리상 가장 먼 두 쌍 근처)을 찾습니다.
+                        # 가장 간단하게는 바운딩 박스의 대각선 양 끝에 가까운 점이나, 상호 거리가 가장 먼 두 점을 찾습니다.
+                        max_dist = -1
+                        idx_a, idx_b = 0, N // 2
 
-                            centerline_pts = []
-                            if offset_poly.is_empty:
-                                offset_poly = poly.buffer(-0.01, join_style=2)
+                        # 효율성을 위해 Convex Hull을 구해서 가장 먼 두 점(Diameter)을 찾는 것이 좋으나,
+                        # 점 개수가 수백개 이내이므로 모든 쌍을 계산해도 무방합니다.
+                        # 계산 최적화를 위해 일부만 샘플링하거나 scipy.spatial.distance를 쓸 수 있지만 순수 numpy로 구현
+                        for i in range(N):
+                            dists = np.sum((unique_pts - unique_pts[i])**2, axis=1)
+                            furthest_idx = np.argmax(dists)
+                            d = dists[furthest_idx]
+                            if d > max_dist:
+                                max_dist = d
+                                idx_a = i
+                                idx_b = furthest_idx
 
-                            if not offset_poly.is_empty:
-                                if offset_poly.geom_type == 'Polygon':
-                                    centerline_pts = list(offset_poly.exterior.coords)
-                                elif offset_poly.geom_type == 'MultiPolygon':
-                                    largest = max(offset_poly.geoms, key=lambda a: a.area)
-                                    centerline_pts = list(largest.exterior.coords)
-                                elif offset_poly.geom_type in ['LineString', 'MultiLineString']:
-                                    if offset_poly.geom_type == 'LineString':
-                                        centerline_pts = list(offset_poly.coords)
-                                    else:
-                                        longest = max(offset_poly.geoms, key=lambda l: l.length)
-                                        centerline_pts = list(longest.coords)
+                        # idx_a와 idx_b를 양 끝단(Turnaround points)으로 간주합니다.
+                        # 이제 전체 루프를 idx_a에서 시작해서 idx_b까지 가는 두 개의 경로(path1, path2)로 분리합니다.
+                        if idx_a > idx_b:
+                            idx_a, idx_b = idx_b, idx_a
 
-                            if len(centerline_pts) > 2:
-                                c_pts = np.array(centerline_pts)
-                                n = len(c_pts)
-                                seg_lens = np.linalg.norm(c_pts[1:, :2] - c_pts[:-1, :2], axis=1)
-                                target_dist = np.sum(seg_lens) / 2.0
+                        path1 = unique_pts[idx_a:idx_b+1]
+                        path2 = np.concatenate((unique_pts[idx_b:], unique_pts[:idx_a+1]))
+                        # path2는 역방향으로 뒤집어주어 path1과 동일하게 idx_a -> idx_b 방향이 되도록 합니다.
+                        path2 = path2[::-1]
 
-                                out = [c_pts[0, :2]]
-                                acc = 0.0
-                                for i in range(n - 1):
-                                    d = seg_lens[i]
-                                    if acc + d >= target_dist:
-                                        remain = target_dist - acc
-                                        t = remain / d if d > 0 else 0
-                                        mid_pt = (1.0 - t)*c_pts[i, :2] + t*c_pts[i+1, :2]
-                                        out.append(mid_pt)
-                                        break
-                                    else:
-                                        out.append(c_pts[i+1, :2])
-                                        acc += d
+                        # 2. 두 경로 중 더 촘촘한(점 개수가 많은) 경로를 기준으로 삼고,
+                        # 다른 경로를 Interpolation(보간)하여 1:1 매칭시킨 뒤 평균을 냅니다.
+                        def path_length_and_cum(path):
+                            lens = np.linalg.norm(path[1:] - path[:-1], axis=1)
+                            cum = np.zeros(len(path))
+                            cum[1:] = np.cumsum(lens)
+                            return cum[-1], cum
 
-                                out_array = np.array(out, dtype=float)
-                                # Z축 값 복원
-                                if has_z:
-                                    z_array = np.full((len(out_array), 1), z_val)
-                                    simplified = np.hstack((out_array, z_array))
-                                else:
-                                    simplified = out_array
+                        L1, cum1 = path_length_and_cum(path1)
+                        L2, cum2 = path_length_and_cum(path2)
+
+                        # 기준 경로는 점이 더 많은 쪽으로 선택 (디테일 유지)
+                        if len(path1) >= len(path2):
+                            ref_path = path1
+                            ref_cum = cum1
+                            ref_L = L1
+                            other_path = path2
+                            other_cum = cum2
+                            other_L = L2
+                        else:
+                            ref_path = path2
+                            ref_cum = cum2
+                            ref_L = L2
+                            other_path = path1
+                            other_cum = cum1
+                            other_L = L1
+
+                        # 다른 경로를 기준 경로의 비율에 맞춰 리샘플링
+                        # np.interp는 각 차원별로 적용해야 합니다.
+                        # ref_cum / ref_L 은 0 ~ 1 사이의 비율
+                        ratios = ref_cum / ref_L if ref_L > 0 else np.zeros_like(ref_cum)
+                        target_cum = ratios * other_L
+
+                        resampled_x = np.interp(target_cum, other_cum, other_path[:, 0])
+                        resampled_y = np.interp(target_cum, other_cum, other_path[:, 1])
+                        resampled_other = np.column_stack((resampled_x, resampled_y))
+
+                        # 3. 두 경로의 평균(Centerline) 계산
+                        centerline_2d = (ref_path + resampled_other) / 2.0
+
+                        # Z축 복원
+                        if has_z:
+                            z_array = np.full((len(centerline_2d), 1), z_val)
+                            simplified = np.hstack((centerline_2d, z_array))
+                        else:
+                            simplified = centerline_2d
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
