@@ -744,7 +744,7 @@ def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray
 
     return np.asarray(out, dtype=float)
 
-def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.1, ref_pt: np.ndarray = None):
+def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.15, ref_pt: np.ndarray = None):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
     if seg3d_closed.shape[0] < 4:
         return seg3d_closed, False
@@ -757,6 +757,8 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     try:
         from shapely.geometry import Polygon
         poly = Polygon(xy)
+        if not poly.is_valid:
+            poly = poly.buffer(0) # Fix self intersections
     except Exception:
         return seg3d_closed, False
 
@@ -764,6 +766,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     try:
+        # Use 0.15 to ensure 0.1 walls are caught despite float inaccuracies
         inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
     except Exception:
         return seg3d_closed, False
@@ -797,11 +800,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
-        # --- 방향 정렬 ---
-        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
-                # --- 강제 방향 고정 ---
-        # 슬라이싱 시마다 선의 방향이 뒤집히는 것을 막기 위해,
-        # 항상 시작점의 X, Y 좌표가 더 작은 쪽(또는 큰 쪽)을 시작점으로 강제 고정합니다.
+        # --- 강제 방향 고정 ---
         if len(out_path) > 1:
             pt_start = out_path[0]
             pt_end = out_path[-1]
@@ -811,93 +810,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return out_path, True
 
     return seg3d_closed, False
-
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-
-    try:
-        from shapely.geometry import Polygon
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-
-    if poly.is_empty or not poly.is_valid:
-        return seg3d_closed, False
-
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-
-    if inward.is_empty:
-        coords = np.array(poly.exterior.coords)
-        if len(coords) < 2:
-            return seg3d_closed, False
-
-        if len(coords) > 100:
-            indices = np.linspace(0, len(coords)-1, 100).astype(int)
-            pts = coords[indices]
-        else:
-            pts = coords
-
-        from scipy.spatial.distance import pdist, squareform
-        D = squareform(pdist(pts))
-        i, j = np.unravel_index(np.argmax(D), D.shape)
-        p_start, p_end = pts[i], pts[j]
-
-        dist_start = np.linalg.norm(coords - p_start, axis=1)
-        dist_end = np.linalg.norm(coords - p_end, axis=1)
-        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
-
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
-
-        path1 = coords[idx_start:idx_end+1]
-        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
-
-        chosen_path = path1 if len(path1) > len(path2) else path2
-        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
-
-        return out_path, True
-
-    return seg3d_closed, False
-
-def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
-    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
-    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4 or offset_mm <= 0:
-        return seg3d_closed, False
-    if seg3d_closed.shape[1] < 3:
-        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-    try:
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
-        return seg3d_closed, False
-    try:
-        inward = poly.buffer(-float(offset_mm), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-    if inward.is_empty:
-        return seg3d_closed, True
-    if isinstance(inward, MultiPolygon):
-        inward = max(list(inward.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
-    if inward.is_empty or inward.area <= 1e-9:
-        return seg3d_closed, True
-    try:
-        coords = np.asarray(inward.exterior.coords, dtype=float)
-    except Exception:
-        return seg3d_closed, True
-    if len(coords) < 4:
-        return seg3d_closed, True
-    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)])
-    return out, False
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
@@ -1085,7 +997,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
 
                 if is_thin:
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
@@ -1226,7 +1138,7 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
 
                 if is_thin:
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
