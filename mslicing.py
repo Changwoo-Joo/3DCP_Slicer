@@ -2012,7 +2012,7 @@ feed_mm_s = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
 feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
-thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=10.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
+thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=100.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 
 # [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
