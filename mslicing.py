@@ -1079,58 +1079,106 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
+                    # 완전한 뼈대(Skeleton) 추출을 위한 로직 (Shapely 버퍼 붕괴법)
+                    # 사용자의 모델은 연속된 선(단일 경로)으로 3개의 셀을 가진 벽체를 묘사하고 있습니다.
+                    # 선과 선 사이의 간격(벽 두께)의 중심을 지나는 단일 선을 만들어야 합니다.
                     if len(simplified) > 3:
-                        # 0.1mm 두께의 복잡한 리본(얇은 닫힌 폴리곤)에서
-                        # 두 겹을 한 겹의 열린 선으로 확실하게 만드는 로직
+                        from shapely.geometry import Polygon, LineString
+                        import shapely
+
                         pts = np.array(simplified)
                         has_z = (pts.shape[1] > 2)
                         z_val = pts[0, 2] if has_z else 0.0
 
                         pts_2d = pts[:, :2]
-                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) < 1e-9:
-                            pts_2d = pts_2d[:-1]
-
-                        N = len(pts_2d)
-                        # 0.1mm 얇은 벽은 수많은 점들이 시계방향으로 갔다가 반시계방향으로 돌아오는 형태입니다.
-                        # 따라서 전체 점 개수 N의 정확히 절반 위치가 U턴 지점(끝단)일 확률이 100%입니다.
-                        # 길이 기반 절반(원래 로직)은 요철 때문에 오차가 생겼지만,
-                        # "인덱스 기반"으로 정확히 절반을 자르면 완벽한 한 쪽 벽면만 추출됩니다.
-
-                        # 하지만 겹치는 시작점이 다를 수 있으므로, U턴 지점을 '점과 점 사이의 거리'가 가장 먼 쌍으로 찾습니다.
-                        # 복잡한 형태이므로 전체 바운딩 박스의 대각선 양 끝에 가까운 곳이 U턴 지점입니다.
-                        # 더 확실한 방법은, 가장 거리가 먼 두 점을 찾아 거기를 자르는 것입니다.
-
-                        max_d = -1
-                        idx_a, idx_b = 0, N//2
-                        for i in range(N):
-                            dists = np.sum((pts_2d - pts_2d[i])**2, axis=1)
-                            furthest = np.argmax(dists)
-                            if dists[furthest] > max_d:
-                                max_d = dists[furthest]
-                                idx_a = i
-                                idx_b = furthest
-
-                        if idx_a > idx_b:
-                            idx_a, idx_b = idx_b, idx_a
-
-                        # idx_a에서 idx_b까지 가는 경로 1
-                        path1 = pts_2d[idx_a:idx_b+1]
-                        # idx_b에서 idx_a로 돌아가는 경로 2
-                        path2 = np.concatenate((pts_2d[idx_b:], pts_2d[:idx_a+1]))
-
-                        # 0.1mm 두께의 벽에서 한쪽 면만 추출하면 그것이 곧 센터선 역할을 합니다.
-                        # 요철이 많아도 캐드상의 원본 점을 그대로 쓰기 때문에 모양이 깨지지 않습니다.
-                        # 두 경로 중 점이 더 많은(더 복잡한) 경로를 채택합니다.
-                        if len(path1) > len(path2):
-                            selected_path = path1
+                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
+                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
                         else:
-                            selected_path = path2
+                            poly_pts = pts_2d
 
-                        if has_z:
-                            z_array = np.full((len(selected_path), 1), z_val)
-                            simplified = np.hstack((selected_path, z_array))
-                        else:
-                            simplified = selected_path
+                        # 1. 꼬인 폴리곤(Self-intersecting)을 정상화합니다.
+                        # CAD에서 얇은 틈새(Gap)를 두고 그렸다면 정상 폴리곤이 아닐 수 있습니다.
+                        poly = Polygon(poly_pts)
+                        poly = shapely.make_valid(poly)
+
+                        # 만약 선형이 교차하여 MultiPolygon이 되었다면 가장 큰 덩어리들을 결합
+                        if poly.geom_type == 'MultiPolygon' or poly.geom_type == 'GeometryCollection':
+                            poly = shapely.ops.unary_union(poly)
+
+                        if poly.is_valid and poly.area > 0:
+                            # 2. 벽 두께의 절반만큼 안쪽으로 오프셋(Buffer)하여 선으로 붕괴시킵니다.
+                            # 노즐 직경 또는 사용자가 설정한 두께를 기반으로 하지만, 
+                            # 여기서는 붕괴될 때까지 반복적으로 오프셋합니다.
+                            # 벽 두께가 보통 20~50mm 정도라고 가정할 때, 1mm씩 깎아들어갑니다.
+
+                            step = 0.5
+                            max_iters = 200
+                            current_poly = poly
+                            skeleton_lines = []
+
+                            for _ in range(max_iters):
+                                shrunk = current_poly.buffer(-step, join_style=2)
+
+                                if shrunk.is_empty:
+                                    # 완전히 소멸되기 직전의 폴리곤 외곽선을 센터선으로 취급
+                                    if current_poly.geom_type == 'Polygon':
+                                        skeleton_lines.append(current_poly.exterior)
+                                    elif current_poly.geom_type == 'MultiPolygon':
+                                        for geom in current_poly.geoms:
+                                            skeleton_lines.append(geom.exterior)
+                                    break
+
+                                # 매우 얇아진 경우 (면적/둘레 비율이 작음)
+                                if shrunk.area < shrunk.length * step * 2:
+                                    if shrunk.geom_type == 'Polygon':
+                                        skeleton_lines.append(shrunk.exterior)
+                                    elif shrunk.geom_type == 'MultiPolygon':
+                                        for geom in shrunk.geoms:
+                                            skeleton_lines.append(geom.exterior)
+                                    break
+
+                                current_poly = shrunk
+
+                            # 추출된 스켈레톤 선형을 하나로 이어줍니다.
+                            if skeleton_lines:
+                                # 모든 라인스트링을 하나의 MultiLineString으로 병합
+                                merged_lines = shapely.ops.linemerge(skeleton_lines)
+
+                                # 단일 경로로 만들기 위해 가장 긴 선형을 선택
+                                if merged_lines.geom_type == 'LineString':
+                                    final_coords = list(merged_lines.coords)
+                                elif merged_lines.geom_type == 'MultiLineString':
+                                    longest_line = max(merged_lines.geoms, key=lambda x: x.length)
+                                    final_coords = list(longest_line.coords)
+                                else:
+                                    final_coords = []
+
+                                if len(final_coords) > 1:
+                                    # 열린 선(Open Line)을 강제하기 위해 루프를 끊습니다.
+                                    c_pts = np.array(final_coords)
+
+                                    # 만약 닫힌 형태라면 가장 먼 두 점을 찾아 반으로 자릅니다.
+                                    if np.linalg.norm(c_pts[0] - c_pts[-1]) < 1e-9:
+                                        max_d = -1
+                                        idx_a, idx_b = 0, len(c_pts)//2
+                                        for i in range(len(c_pts)):
+                                            dists = np.sum((c_pts - c_pts[i])**2, axis=1)
+                                            furthest = np.argmax(dists)
+                                            if dists[furthest] > max_d:
+                                                max_d = dists[furthest]
+                                                idx_a = i
+                                                idx_b = furthest
+                                        if idx_a > idx_b:
+                                            idx_a, idx_b = idx_b, idx_a
+                                        path1 = c_pts[idx_a:idx_b+1]
+                                        path2 = np.concatenate((c_pts[idx_b:], c_pts[:idx_a+1]))
+                                        c_pts = path1 if len(path1) > len(path2) else path2
+
+                                    if has_z:
+                                        z_array = np.full((len(c_pts), 1), z_val)
+                                        simplified = np.hstack((c_pts, z_array))
+                                    else:
+                                        simplified = c_pts
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
