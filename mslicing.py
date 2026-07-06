@@ -1108,12 +1108,13 @@ def compute_slice_paths_with_travel(
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
                 
-                # slice2D 변수명 매핑 정상화 (언더바 없는 slice2D 사용)
+                # 1. 원래 slice2D가 Path2D 객체이므로 내부 polygons_full 추출
                 if hasattr(slice2D, 'polygons_full'):
                     geom_polys = slice2D.polygons_full
                 else:
                     geom_polys = slice2D.geoms if isinstance(slice2D, MultiPolygon) else [slice2D]
                 
+                # 2. 벽체 두께 중심선(인워드 오프셋) 연산
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
                         valid_p = make_valid(poly)
@@ -1128,6 +1129,7 @@ def compute_slice_paths_with_travel(
                                     else:
                                         new_geoms.append(center_poly)
                                         
+                # 3. 추출된 다각형들을 원본 하단 로직이 인식할 수 있는 trimesh.path.Path2D 객체로 재빌드
                 if new_geoms:
                     lines_entities = []
                     all_vertices = []
@@ -1151,6 +1153,7 @@ def compute_slice_paths_with_travel(
                         current_idx += n_pts
                     
                     if all_vertices:
+                        # 하단 .discrete 호출을 받기 위해 정식 Path2D 객체 생성 및 대입
                         slice2D = trimesh.path.Path2D(
                             entities=lines_entities,
                             vertices=np.vstack(all_vertices)
