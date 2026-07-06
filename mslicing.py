@@ -799,12 +799,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
 
         # --- 방향 정렬 ---
         # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]  # 뒤집기
+        # Removed flipping logic to maintain consistent trim side (prevent missing teeth)
 
         return out_path, True
 
@@ -1114,13 +1109,16 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
+                    g.append(f"G01 Z{print_z:.1f}") # Raise Z first
+                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}") # Then move X Y
 
                 g.append(f"G01 F{feed}")
+                # Raise Z first for the very first segment as well or ensure we are at correct Z before starting
+                g.append(f"G01 Z{print_z:.1f}") 
                 if start_e_on:
-                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f} E{start_e_val:.5f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} E{start_e_val:.5f}")
                 else:
-                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} Z{print_z:.1f}")
+                    g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f}")
 
                 for p1, p2 in zip(simplified[:-1], simplified[1:]):
                     dist = np.linalg.norm(p2[:2] - p1[:2])
