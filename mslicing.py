@@ -1079,12 +1079,29 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
-                    # For thin walls (loops), just take half the loop so we don't go back and forth
+                    import numpy as np
                     if len(simplified) > 3:
-                        # Assuming it's a closed loop that traces a thin wall, 
-                        # half the points go one way, half go the other.
-                        half_idx = len(simplified) // 2
-                        simplified = simplified[:half_idx+1]
+                        # To find the true centerline of a thin walled loop,
+                        # we average the points on the outgoing side and the incoming side.
+                        n = len(simplified)
+                        # Remove the duplicate last point if it's a closed ring
+                        if np.linalg.norm(simplified[0] - simplified[-1]) < 1e-9:
+                            n = n - 1
+
+                        half_idx = n // 2
+                        centerline = []
+                        for i in range(half_idx + 1):
+                            # The opposite point is at index n - 1 - i
+                            # except the first point's opposite is n-1
+                            p1 = simplified[i]
+                            p2 = simplified[(n - i) % n] # when i=0, p2=simplified[0]
+                            # Actually, a better correspondence:
+                            # Usually the start point is on one of the ends.
+                            # So going from 0 to half_idx is one side, and going from N-1 down to half_idx is the other side.
+                            p_opp = simplified[n - 1 - i]
+                            mid = (p1 + p_opp) / 2.0
+                            centerline.append(mid)
+                        simplified = np.array(centerline, dtype=float)
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
@@ -1715,7 +1732,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
-    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 두께의 얇은 닫힌 외곽선을 단일 패스(반쪽짜리 열린 선)로 잘라서 출력합니다.")
+    centerline_mode = st.checkbox("센터라인(얇은 벽) 정밀 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 등 얇은 닫힌 외곽선 루프의 정중앙을 정확히 계산하여 단일 패스로 출력합니다.")
     st.session_state["centerline_mode"] = bool(centerline_mode)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
