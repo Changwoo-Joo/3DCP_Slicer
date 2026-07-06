@@ -1079,10 +1079,10 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
-                    import numpy as np
                     if len(simplified) > 3:
                         pts = simplified
                         n = len(pts)
+                        # Check if closed ring
                         if np.linalg.norm(pts[0] - pts[-1]) < 1e-9:
                             n = n - 1
 
@@ -1092,13 +1092,11 @@ def compute_slice_paths_with_travel(
 
                         target_dist = total_len / 2.0
 
-                        # Walk along the perimeter until we hit target_dist
                         out = [pts[0]]
                         acc = 0.0
                         for i in range(n - 1):
                             d = seg_lens[i]
                             if acc + d >= target_dist:
-                                # Interpolate the exact half-way point
                                 remain = target_dist - acc
                                 t = remain / d if d > 0 else 0
                                 mid_pt = (1.0 - t)*pts[i] + t*pts[i+1]
