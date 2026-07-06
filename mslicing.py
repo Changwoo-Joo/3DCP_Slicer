@@ -681,7 +681,6 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     if seg3d_closed.shape[1] < 3:
         seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
     xy = seg3d_closed[:, :2]
-    # 시작점의 z높이를 반영
     z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
@@ -751,8 +750,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    # 시작점의 z높이를 반영
-    z_val = float(seg3d_closed[0, 2])
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -813,8 +811,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    # 시작점의 z높이를 반영
-    z_val = float(seg3d_closed[0, 2])
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -872,8 +869,7 @@ def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     if seg3d_closed.shape[1] < 3:
         seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
     xy = seg3d_closed[:, :2]
-    # 시작점의 z높이를 반영
-    z_val = float(seg3d_closed[0, 2])
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
     try:
@@ -1079,26 +1075,20 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 segments.append(seg3d)
             if not segments: continue
 
+            segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=0.1)
+
             g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
             current_ref_pt = ref_pt_layer.copy()
 
-            for iseg, seg3d in enumerate(segments):
+            for iseg, job in enumerate(segment_jobs):
+                seg3d = np.asarray(job["seg3d"], dtype=float)
+                merged_thin_centerline = bool(job.get("merged_centerline", False))
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
-
-                if is_thin:
-                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                else:
+                # --- 얇은 두께 중심선 변환 로직 ---
+                if merged_thin_centerline:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                    if enable_inward_offset and float(nozzle_width) > 0:
-                        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-                        if offset_inverted and skip_invalid_offset:
-                            start_pt = closed_mid[0]
-                            continue
                     simplified = simplify_segment(closed_mid, float(min_spacing))
                     shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
                     if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
@@ -1108,6 +1098,28 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
                     simplified = simplify_segment(simplified, float(min_spacing))
+                else:
+                    centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+
+                    if is_thin:
+                        trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                        simplified = simplify_segment(trimmed_centerline, float(min_spacing))
+                    else:
+                        closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                        if enable_inward_offset and float(nozzle_width) > 0:
+                            closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                            if offset_inverted and skip_invalid_offset:
+                                start_pt = closed_mid[0]
+                                continue
+                        simplified = simplify_segment(closed_mid, float(min_spacing))
+                        shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                        if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                            r_val = float(st.session_state.get('fillet_r', 20.0))
+                            shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                            rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                            shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                        simplified = trim_closed_ring_tail(shifted, trim_dist)
+                        simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -1144,6 +1156,140 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     g.append(f"G01 F{feed}")
     if m30_on: g.append("M30")
     return "\n".join(g)
+
+def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.1):
+    try:
+        from shapely.geometry import Polygon
+    except Exception:
+        return [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
+
+    prepared = []
+    for idx, seg3d in enumerate(segments):
+        seg3d = np.asarray(seg3d, dtype=float)
+        seg3d_no_dup = ensure_open_ring(seg3d)
+
+        if len(seg3d_no_dup) < 3:
+            prepared.append({
+                "idx": idx,
+                "seg3d": seg3d_no_dup,
+                "poly": None,
+                "z": float(seg3d_no_dup[0, 2]) if len(seg3d_no_dup) > 0 and seg3d_no_dup.shape[1] >= 3 else 0.0,
+                "used": False,
+            })
+            continue
+
+        xy = seg3d_no_dup[:, :2]
+        if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+            xy = np.vstack([xy, xy[0]])
+
+        try:
+            poly = Polygon(xy)
+            if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
+                poly = None
+        except Exception:
+            poly = None
+
+        prepared.append({
+            "idx": idx,
+            "seg3d": seg3d_no_dup,
+            "poly": poly,
+            "z": float(seg3d_no_dup[0, 2]) if seg3d_no_dup.shape[1] >= 3 else 0.0,
+            "used": False,
+        })
+
+    order = sorted(
+        range(len(prepared)),
+        key=lambda k: prepared[k]["poly"].area if prepared[k]["poly"] is not None else -1.0,
+        reverse=True,
+    )
+
+    merged = []
+    eps = 1e-6
+
+    for oi in order:
+        outer_item = prepared[oi]
+        if outer_item["used"]:
+            continue
+
+        outer_poly = outer_item["poly"]
+        if outer_poly is None:
+            outer_item["used"] = True
+            merged.append({
+                "order_key": outer_item["idx"],
+                "seg3d": outer_item["seg3d"],
+                "merged_centerline": False,
+            })
+            continue
+
+        paired = False
+
+        for ii in order:
+            if ii == oi:
+                continue
+
+            inner_item = prepared[ii]
+            if inner_item["used"]:
+                continue
+
+            inner_poly = inner_item["poly"]
+            if inner_poly is None:
+                continue
+            if outer_poly.area <= inner_poly.area:
+                continue
+
+            try:
+                if not outer_poly.buffer(eps).covers(inner_poly):
+                    continue
+
+                wall_region = outer_poly.difference(inner_poly)
+                if wall_region.is_empty or wall_region.area <= eps:
+                    continue
+
+                thickness_mm = float(outer_poly.boundary.distance(inner_poly.boundary))
+                if thickness_mm <= eps or thickness_mm > (float(max_thickness_mm) + 1e-6):
+                    continue
+
+                center_geom = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
+                if center_geom.is_empty:
+                    continue
+                if center_geom.geom_type == "MultiPolygon":
+                    center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
+                if center_geom.geom_type != "Polygon":
+                    continue
+
+                coords = np.asarray(center_geom.exterior.coords, dtype=float)
+                if coords.shape[0] < 4:
+                    continue
+
+                z_val = outer_item["z"]
+                centerline = np.column_stack([
+                    coords[:, 0],
+                    coords[:, 1],
+                    np.full(len(coords), z_val, dtype=float),
+                ])
+
+                outer_item["used"] = True
+                inner_item["used"] = True
+                merged.append({
+                    "order_key": min(outer_item["idx"], inner_item["idx"]),
+                    "seg3d": centerline,
+                    "merged_centerline": True,
+                })
+                paired = True
+                break
+            except Exception:
+                continue
+
+        if not paired and not outer_item["used"]:
+            outer_item["used"] = True
+            merged.append({
+                "order_key": outer_item["idx"],
+                "seg3d": outer_item["seg3d"],
+                "merged_centerline": False,
+            })
+
+    merged.sort(key=lambda item: item["order_key"])
+    return merged
 
 # =========================
 # Slice path computation 
@@ -1217,26 +1363,20 @@ def compute_slice_paths_with_travel(
             if not segments:
                 continue
 
+            segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=0.1)
+
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
             current_ref_pt = ref_pt_layer.copy()
 
             layer_polys: List[np.ndarray] = []
-            for i_seg, seg3d in enumerate(segments):
+            for i_seg, job in enumerate(segment_jobs):
+                seg3d = np.asarray(job["seg3d"], dtype=float)
+                merged_thin_centerline = bool(job.get("merged_centerline", False))
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
-
-                if is_thin:
-                    trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
-                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                else:
+                # --- 얇은 두께 중심선 변환 로직 ---
+                if merged_thin_centerline:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                    if enable_inward_offset and float(nozzle_width) > 0:
-                        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-                        if offset_inverted and skip_invalid_offset:
-                            start_pt = closed_mid[0]
-                            continue
                     simplified = simplify_segment(closed_mid, float(min_spacing))
                     shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
                     if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
@@ -1246,6 +1386,28 @@ def compute_slice_paths_with_travel(
                         shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
                     simplified = simplify_segment(simplified, float(min_spacing))
+                else:
+                    centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
+
+                    if is_thin:
+                        trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+                        simplified = simplify_segment(trimmed_centerline, float(min_spacing))
+                    else:
+                        closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                        if enable_inward_offset and float(nozzle_width) > 0:
+                            closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+                            if offset_inverted and skip_invalid_offset:
+                                start_pt = closed_mid[0]
+                                continue
+                        simplified = simplify_segment(closed_mid, float(min_spacing))
+                        shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                        if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                            r_val = float(st.session_state.get('fillet_r', 20.0))
+                            shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                            rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                            shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                        simplified = trim_closed_ring_tail(shifted, trim_dist)
+                        simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
