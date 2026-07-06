@@ -1079,7 +1079,6 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
-                    import numpy as np
                     if len(simplified) > 3:
                         # To find the true centerline of a thin walled loop,
                         # we average the points on the outgoing side and the incoming side.
@@ -1091,13 +1090,7 @@ def compute_slice_paths_with_travel(
                         half_idx = n // 2
                         centerline = []
                         for i in range(half_idx + 1):
-                            # The opposite point is at index n - 1 - i
-                            # except the first point's opposite is n-1
                             p1 = simplified[i]
-                            p2 = simplified[(n - i) % n] # when i=0, p2=simplified[0]
-                            # Actually, a better correspondence:
-                            # Usually the start point is on one of the ends.
-                            # So going from 0 to half_idx is one side, and going from N-1 down to half_idx is the other side.
                             p_opp = simplified[n - 1 - i]
                             mid = (p1 + p_opp) / 2.0
                             centerline.append(mid)
