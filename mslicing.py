@@ -915,7 +915,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             except Exception: continue
 
             # [G-code 생성에도 Centerline 오프셋 똑같이 보정 처리]
-#  [위 구역을 지우고 이 코드를 통째로 붙여넣으세요]
+# ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
                 offset_dist = wall_thickness / 2.0
@@ -928,20 +928,49 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
-                        center_poly = poly.buffer(-offset_dist)
-                        if not center_poly.is_empty:
-                            new_geoms.append(center_poly)
+                        # 0.001mm만 아주 미세하게 버퍼를 주어 클리닝 후 마이너스 오프셋 적용
+                        cleaned_poly = poly.buffer(0.001).buffer(-offset_dist)
+                        if not cleaned_poly.is_empty:
+                            new_geoms.append(cleaned_poly)
                             
                 if new_geoms:
-                    if len(new_geoms) > 1:
-                        combined_geom = MultiPolygon(new_geoms)
-                    else:
-                        combined_geom = new_geoms[0]
+                    # 기존 discrete 반복문이 좌표 배열을 바로 읽을 수 있도록 수동으로 Path2D 객체를 재조립합니다.
+                    lines_entities = []
+                    all_vertices = []
+                    current_idx = 0
                     
-                    #  오프셋된 Shapely 데이터를 trimesh 전용 포맷으로 완벽히 복원합니다.
-                    slice2D = trimesh.path.polygons.polygon_to_path(combined_geom)
+                    for g in new_geoms:
+                        # MultiPolygon 내부의 개별 Polygon 처리 지원
+                        individual_polys = g.geoms if isinstance(g, MultiPolygon) else [g]
+                        for ind_p in individual_polys:
+                            if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
+                                continue
+                            coords = np.array(ind_p.exterior.coords)
+                            if len(coords) < 2:
+                                continue
+                            # 중복된 마지막 점 제거하여 열린 형태로 추가 준비
+                            if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
+                                coords = coords[:-1]
+                            
+                            n_pts = len(coords)
+                            if n_pts < 2:
+                                continue
+                                
+                            all_vertices.append(coords)
+                            # 폐곡선 선분 엔티티 매핑 데이터 생성
+                            pts_indices = np.arange(current_idx, current_idx + n_pts)
+                            lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
+                            current_idx += n_pts
+                    
+                    if all_vertices:
+                        slice2D = trimesh.path.Path2D(
+                            entities=lines_entities,
+                            vertices=np.vstack(all_vertices)
+                        )
+                    else:
+                        continue
                 else:
-                    continue
+                    continue # 오프셋 후 벽체가 소멸한 경우 레이어 스킵
 
             segments = []
             for seg in slice_2D.discrete:
@@ -1071,7 +1100,7 @@ def compute_slice_paths_with_travel(
             except Exception:
                 continue
 
-#  [위 구역을 지우고 이 코드를 통째로 붙여넣으세요]
+# ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
                 offset_dist = wall_thickness / 2.0
@@ -1084,20 +1113,49 @@ def compute_slice_paths_with_travel(
                 
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
-                        center_poly = poly.buffer(-offset_dist)
-                        if not center_poly.is_empty:
-                            new_geoms.append(center_poly)
+                        # 0.001mm만 아주 미세하게 버퍼를 주어 클리닝 후 마이너스 오프셋 적용
+                        cleaned_poly = poly.buffer(0.001).buffer(-offset_dist)
+                        if not cleaned_poly.is_empty:
+                            new_geoms.append(cleaned_poly)
                             
                 if new_geoms:
-                    if len(new_geoms) > 1:
-                        combined_geom = MultiPolygon(new_geoms)
-                    else:
-                        combined_geom = new_geoms[0]
+                    # 기존 discrete 반복문이 좌표 배열을 바로 읽을 수 있도록 수동으로 Path2D 객체를 재조립합니다.
+                    lines_entities = []
+                    all_vertices = []
+                    current_idx = 0
                     
-                    #  오프셋된 Shapely 데이터를 trimesh 전용 포맷으로 완벽히 복원합니다.
-                    slice2D = trimesh.path.polygons.polygon_to_path(combined_geom)
+                    for g in new_geoms:
+                        # MultiPolygon 내부의 개별 Polygon 처리 지원
+                        individual_polys = g.geoms if isinstance(g, MultiPolygon) else [g]
+                        for ind_p in individual_polys:
+                            if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
+                                continue
+                            coords = np.array(ind_p.exterior.coords)
+                            if len(coords) < 2:
+                                continue
+                            # 중복된 마지막 점 제거하여 열린 형태로 추가 준비
+                            if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
+                                coords = coords[:-1]
+                            
+                            n_pts = len(coords)
+                            if n_pts < 2:
+                                continue
+                                
+                            all_vertices.append(coords)
+                            # 폐곡선 선분 엔티티 매핑 데이터 생성
+                            pts_indices = np.arange(current_idx, current_idx + n_pts)
+                            lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
+                            current_idx += n_pts
+                    
+                    if all_vertices:
+                        slice2D = trimesh.path.Path2D(
+                            entities=lines_entities,
+                            vertices=np.vstack(all_vertices)
+                        )
+                    else:
+                        continue
                 else:
-                    continue
+                    continue # 오프셋 후 벽체가 소멸한 경우 레이어 스킵
 
             segments = []
             for seg in slice2D.discrete:
