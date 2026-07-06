@@ -915,18 +915,39 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             except Exception: continue
 
             # [G-code 생성에도 Centerline 오프셋 똑같이 보정 처리]
+# ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
+                from shapely.geometry import Polygon, MultiPolygon
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
-                polys = slice_2D.geoms if isinstance(slice_2D, MultiPolygon) else [slice_2D]
-                for poly in polys:
-                    center_poly = poly.buffer(-offset_dist)
-                    if not center_poly.is_empty:
-                        new_geoms.append(center_poly)
-                if new_geoms:
-                    slice_2D = MultiPolygon(new_geoms) if len(new_geoms) > 1 else new_geoms[0]
+                
+                # slice2D가 trimesh의 Path2D 객체인 경우 shapely geometry 객체로 변환
+                if hasattr(slice2D, 'polygons_full'):
+                    geom_polys = slice2D.polygons_full
+                elif isinstance(slice2D, (Polygon, MultiPolygon)):
+                    geom_polys = slice2D.geoms if isinstance(slice2D, MultiPolygon) else [slice2D]
                 else:
-                    continue
+                    geom_polys = []
+                
+                for poly in geom_polys:
+                    # 완벽히 Polygon 타입인 경우에만 buffer 연산 수행
+                    if isinstance(poly, Polygon):
+                        center_poly = poly.buffer(-offset_dist)
+                        if not center_poly.is_empty:
+                            new_geoms.append(center_poly)
+                            
+                if new_geoms:
+                    # trimesh의 Path2D 포맷과 연동을 보장하기 위해 shapely 객체들을 결합
+                    if len(new_geoms) > 1:
+                        combined_geom = MultiPolygon(new_geoms)
+                    else:
+                        combined_geom = new_geoms[0]
+                    
+                    # 다시 trimesh.path.Path2D 형태로 안전하게 변환하여 뒤쪽 discrete 로직과 연결
+                    slice2D = trimesh.path.Path2D(entities=[trimesh.path.entities.Line(points=np.arange(len(g.exterior.coords)), closed=True) for g in (combined_geom.geoms if isinstance(combined_geom, MultiPolygon) else [combined_geom])],
+                                                  vertices=np.vstack([np.array(g.exterior.coords) for g in (combined_geom.geoms if isinstance(combined_geom, MultiPolygon) else [combined_geom])]))
+                else:
+                    continue # 오프셋 후 남은 영역이 없으면 해당 레이어 생략
 
             segments = []
             for seg in slice_2D.discrete:
@@ -1057,18 +1078,39 @@ def compute_slice_paths_with_travel(
                 continue
 
             # ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
+# ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
+                from shapely.geometry import Polygon, MultiPolygon
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
-                polys = slice2D.geoms if isinstance(slice2D, MultiPolygon) else [slice2D]
-                for poly in polys:
-                    center_poly = poly.buffer(-offset_dist)
-                    if not center_poly.is_empty:
-                        new_geoms.append(center_poly)
-                if new_geoms:
-                    slice2D = MultiPolygon(new_geoms) if len(new_geoms) > 1 else new_geoms[0]
+                
+                # slice2D가 trimesh의 Path2D 객체인 경우 shapely geometry 객체로 변환
+                if hasattr(slice2D, 'polygons_full'):
+                    geom_polys = slice2D.polygons_full
+                elif isinstance(slice2D, (Polygon, MultiPolygon)):
+                    geom_polys = slice2D.geoms if isinstance(slice2D, MultiPolygon) else [slice2D]
                 else:
-                    continue # 다 사라진 구간은 출력하지 않고 생략
+                    geom_polys = []
+                
+                for poly in geom_polys:
+                    # 완벽히 Polygon 타입인 경우에만 buffer 연산 수행
+                    if isinstance(poly, Polygon):
+                        center_poly = poly.buffer(-offset_dist)
+                        if not center_poly.is_empty:
+                            new_geoms.append(center_poly)
+                            
+                if new_geoms:
+                    # trimesh의 Path2D 포맷과 연동을 보장하기 위해 shapely 객체들을 결합
+                    if len(new_geoms) > 1:
+                        combined_geom = MultiPolygon(new_geoms)
+                    else:
+                        combined_geom = new_geoms[0]
+                    
+                    # 다시 trimesh.path.Path2D 형태로 안전하게 변환하여 뒤쪽 discrete 로직과 연결
+                    slice2D = trimesh.path.Path2D(entities=[trimesh.path.entities.Line(points=np.arange(len(g.exterior.coords)), closed=True) for g in (combined_geom.geoms if isinstance(combined_geom, MultiPolygon) else [combined_geom])],
+                                                  vertices=np.vstack([np.array(g.exterior.coords) for g in (combined_geom.geoms if isinstance(combined_geom, MultiPolygon) else [combined_geom])]))
+                else:
+                    continue # 오프셋 후 남은 영역이 없으면 해당 레이어 생략
 
             segments = []
             for seg in slice2D.discrete:
