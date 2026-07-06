@@ -1080,87 +1080,57 @@ def compute_slice_paths_with_travel(
                 
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
-                        # 300mm 두께의 거대한 벽의 정중앙(Centerline)을 구하기 위해
-                        # Voronoi 다이어그램 기반의 뼈대 추출 또는 안쪽 오프셋을 활용합니다.
-                        from shapely.geometry import Polygon, LineString
-
+                        # 0.1mm 두께의 복잡한 리본(얇은 닫힌 폴리곤)에서
+                        # 두 겹을 한 겹의 열린 선으로 확실하게 만드는 로직
                         pts = np.array(simplified)
                         has_z = (pts.shape[1] > 2)
                         z_val = pts[0, 2] if has_z else 0.0
 
                         pts_2d = pts[:, :2]
-                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
-                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
+                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) < 1e-9:
+                            pts_2d = pts_2d[:-1]
+
+                        N = len(pts_2d)
+                        # 0.1mm 얇은 벽은 수많은 점들이 시계방향으로 갔다가 반시계방향으로 돌아오는 형태입니다.
+                        # 따라서 전체 점 개수 N의 정확히 절반 위치가 U턴 지점(끝단)일 확률이 100%입니다.
+                        # 길이 기반 절반(원래 로직)은 요철 때문에 오차가 생겼지만,
+                        # "인덱스 기반"으로 정확히 절반을 자르면 완벽한 한 쪽 벽면만 추출됩니다.
+
+                        # 하지만 겹치는 시작점이 다를 수 있으므로, U턴 지점을 '점과 점 사이의 거리'가 가장 먼 쌍으로 찾습니다.
+                        # 복잡한 형태이므로 전체 바운딩 박스의 대각선 양 끝에 가까운 곳이 U턴 지점입니다.
+                        # 더 확실한 방법은, 가장 거리가 먼 두 점을 찾아 거기를 자르는 것입니다.
+
+                        max_d = -1
+                        idx_a, idx_b = 0, N//2
+                        for i in range(N):
+                            dists = np.sum((pts_2d - pts_2d[i])**2, axis=1)
+                            furthest = np.argmax(dists)
+                            if dists[furthest] > max_d:
+                                max_d = dists[furthest]
+                                idx_a = i
+                                idx_b = furthest
+
+                        if idx_a > idx_b:
+                            idx_a, idx_b = idx_b, idx_a
+
+                        # idx_a에서 idx_b까지 가는 경로 1
+                        path1 = pts_2d[idx_a:idx_b+1]
+                        # idx_b에서 idx_a로 돌아가는 경로 2
+                        path2 = np.concatenate((pts_2d[idx_b:], pts_2d[:idx_a+1]))
+
+                        # 0.1mm 두께의 벽에서 한쪽 면만 추출하면 그것이 곧 센터선 역할을 합니다.
+                        # 요철이 많아도 캐드상의 원본 점을 그대로 쓰기 때문에 모양이 깨지지 않습니다.
+                        # 두 경로 중 점이 더 많은(더 복잡한) 경로를 채택합니다.
+                        if len(path1) > len(path2):
+                            selected_path = path1
                         else:
-                            poly_pts = pts_2d
+                            selected_path = path2
 
-                        poly = Polygon(poly_pts)
-                        if poly.is_valid and poly.area > 0:
-                            # 폴리곤의 두께를 대략적으로 파악하기 위해 면적/둘레를 사용하거나
-                            # 단순히 충분히 큰 값부터 줄여가며 오프셋하여 붕괴선을 찾습니다.
-                            # 사용자의 콘크리트 벽은 두께가 꽤 큼 (수십~수백mm)
-                            # Shapely의 centerline 모듈을 직접 구현하기는 길어지므로,
-                            # 가장 얇아질 때까지 반복해서 오프셋(수축)하는 방식으로 중심 골격선을 찾습니다.
-
-                            current_poly = poly
-                            # 1mm씩 깎아들어가며 선으로 붕괴될 때까지 반복
-                            # 최대 500회 (두께 1000mm 커버)
-                            step = 1.0
-                            last_valid_geom = None
-
-                            for _ in range(500):
-                                shrunk = current_poly.buffer(-step, join_style=2)
-                                if shrunk.is_empty:
-                                    break
-
-                                # 면적이 매우 작아져서 사실상 선이나 얇은 조각이 된 경우
-                                if shrunk.area < 10.0 and shrunk.length > 0:
-                                    last_valid_geom = shrunk
-                                    break
-
-                                current_poly = shrunk
-                                last_valid_geom = current_poly
-
-                            # 수축된 기하학적 형태에서 중심선을 추출
-                            centerline_pts = []
-                            if last_valid_geom is not None:
-                                if last_valid_geom.geom_type == 'Polygon':
-                                    # 매우 얇아진 폴리곤이라면 그 둘레의 절반을 취함
-                                    # 이 때 시작점을 X좌표의 양 끝단 중 하나로 강제
-                                    coords = list(last_valid_geom.exterior.coords)
-                                    if len(coords) > 2:
-                                        c_pts = np.array(coords)
-                                        # X축으로 가장 양 끝단인 두 점 찾기
-                                        x_coords = c_pts[:, 0]
-                                        idx_a = np.argmin(x_coords)
-                                        idx_b = np.argmax(x_coords)
-
-                                        if idx_a > idx_b:
-                                            idx_a, idx_b = idx_b, idx_a
-
-                                        path1 = c_pts[idx_a:idx_b+1]
-                                        path2 = np.concatenate((c_pts[idx_b:], c_pts[:idx_a+1]))
-
-                                        # 두 경로 중 길이가 더 짧은(직선에 가까운) 중앙선을 선택
-                                        len1 = np.sum(np.linalg.norm(path1[1:] - path1[:-1], axis=1))
-                                        len2 = np.sum(np.linalg.norm(path2[1:] - path2[:-1], axis=1))
-
-                                        centerline_pts = path1 if len1 < len2 else path2
-
-                                elif last_valid_geom.geom_type in ['LineString', 'MultiLineString']:
-                                    if last_valid_geom.geom_type == 'LineString':
-                                        centerline_pts = list(last_valid_geom.coords)
-                                    else:
-                                        longest = max(last_valid_geom.geoms, key=lambda l: l.length)
-                                        centerline_pts = list(longest.coords)
-
-                            if len(centerline_pts) > 1:
-                                out_array = np.array(centerline_pts, dtype=float)
-                                if has_z:
-                                    z_array = np.full((len(out_array), 1), z_val)
-                                    simplified = np.hstack((out_array, z_array))
-                                else:
-                                    simplified = out_array
+                        if has_z:
+                            z_array = np.full((len(selected_path), 1), z_val)
+                            simplified = np.hstack((selected_path, z_array))
+                        else:
+                            simplified = selected_path
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
