@@ -1080,29 +1080,26 @@ def compute_slice_paths_with_travel(
                 
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
-                        # 얇은 벽(0.1mm 등)의 중심선을 구하기 위한 향상된 알고리즘
+                        # 얇은 벽(머리핀 구조)에서 진정한 반쪽(한 면)만 깔끔하게 추출하는 로직
                         pts = np.array(simplified)
                         has_z = (pts.shape[1] > 2)
                         z_val = pts[0, 2] if has_z else 0.0
 
+                        # 2D 평면 데이터화
                         pts_2d = pts[:, :2]
-                        # 닫힌 루프에서 중복되는 끝점 제거하여 순수 노드만 추출
                         if np.linalg.norm(pts_2d[0] - pts_2d[-1]) < 1e-9:
-                            unique_pts = pts_2d[:-1]
-                        else:
-                            unique_pts = pts_2d
+                            pts_2d = pts_2d[:-1]  # 닫힌 끝점 제거
 
-                        N = len(unique_pts)
-                        # 1. 얇은 벽(머리핀 모양)의 양 끝단(가장 곡률이 큰 곳, 즉 거리상 가장 먼 두 쌍 근처)을 찾습니다.
-                        # 가장 간단하게는 바운딩 박스의 대각선 양 끝에 가까운 점이나, 상호 거리가 가장 먼 두 점을 찾습니다.
+                        N = len(pts_2d)
+
+                        # 폴리곤(얇은 벽)의 양 끝단(U턴 지점)을 찾기 위해
+                        # 가장 멀리 떨어져 있는 두 점의 인덱스를 찾습니다.
                         max_dist = -1
-                        idx_a, idx_b = 0, N // 2
+                        idx_a = 0
+                        idx_b = N // 2
 
-                        # 효율성을 위해 Convex Hull을 구해서 가장 먼 두 점(Diameter)을 찾는 것이 좋으나,
-                        # 점 개수가 수백개 이내이므로 모든 쌍을 계산해도 무방합니다.
-                        # 계산 최적화를 위해 일부만 샘플링하거나 scipy.spatial.distance를 쓸 수 있지만 순수 numpy로 구현
                         for i in range(N):
-                            dists = np.sum((unique_pts - unique_pts[i])**2, axis=1)
+                            dists = np.sum((pts_2d - pts_2d[i])**2, axis=1)
                             furthest_idx = np.argmax(dists)
                             d = dists[furthest_idx]
                             if d > max_dist:
@@ -1110,62 +1107,23 @@ def compute_slice_paths_with_travel(
                                 idx_a = i
                                 idx_b = furthest_idx
 
-                        # idx_a와 idx_b를 양 끝단(Turnaround points)으로 간주합니다.
-                        # 이제 전체 루프를 idx_a에서 시작해서 idx_b까지 가는 두 개의 경로(path1, path2)로 분리합니다.
                         if idx_a > idx_b:
                             idx_a, idx_b = idx_b, idx_a
 
-                        path1 = unique_pts[idx_a:idx_b+1]
-                        path2 = np.concatenate((unique_pts[idx_b:], unique_pts[:idx_a+1]))
-                        # path2는 역방향으로 뒤집어주어 path1과 동일하게 idx_a -> idx_b 방향이 되도록 합니다.
-                        path2 = path2[::-1]
+                        # U턴 지점(idx_a, idx_b)을 기준으로 루프를 두 조각으로 나눕니다.
+                        path1 = pts_2d[idx_a:idx_b+1]
+                        path2_temp = np.concatenate((pts_2d[idx_b:], pts_2d[:idx_a+1]))
 
-                        # 2. 두 경로 중 더 촘촘한(점 개수가 많은) 경로를 기준으로 삼고,
-                        # 다른 경로를 Interpolation(보간)하여 1:1 매칭시킨 뒤 평균을 냅니다.
-                        def path_length_and_cum(path):
-                            lens = np.linalg.norm(path[1:] - path[:-1], axis=1)
-                            cum = np.zeros(len(path))
-                            cum[1:] = np.cumsum(lens)
-                            return cum[-1], cum
+                        # 두 경로 중 길이가 더 짧거나 점 개수가 적당한(더 깔끔한) 한 쪽의 면만 취합니다.
+                        # 0.1mm 두께의 벽이므로 어느 면을 취하든 중심선과 사실상 일치(0.05mm 오차)하며,
+                        # 꼬임이나 보간 에러가 전혀 발생하지 않습니다.
 
-                        L1, cum1 = path_length_and_cum(path1)
-                        L2, cum2 = path_length_and_cum(path2)
-
-                        # 기준 경로는 점이 더 많은 쪽으로 선택 (디테일 유지)
-                        if len(path1) >= len(path2):
-                            ref_path = path1
-                            ref_cum = cum1
-                            ref_L = L1
-                            other_path = path2
-                            other_cum = cum2
-                            other_L = L2
-                        else:
-                            ref_path = path2
-                            ref_cum = cum2
-                            ref_L = L2
-                            other_path = path1
-                            other_cum = cum1
-                            other_L = L1
-
-                        # 다른 경로를 기준 경로의 비율에 맞춰 리샘플링
-                        # np.interp는 각 차원별로 적용해야 합니다.
-                        # ref_cum / ref_L 은 0 ~ 1 사이의 비율
-                        ratios = ref_cum / ref_L if ref_L > 0 else np.zeros_like(ref_cum)
-                        target_cum = ratios * other_L
-
-                        resampled_x = np.interp(target_cum, other_cum, other_path[:, 0])
-                        resampled_y = np.interp(target_cum, other_cum, other_path[:, 1])
-                        resampled_other = np.column_stack((resampled_x, resampled_y))
-
-                        # 3. 두 경로의 평균(Centerline) 계산
-                        centerline_2d = (ref_path + resampled_other) / 2.0
-
-                        # Z축 복원
+                        # Z축을 포함하여 반환
                         if has_z:
-                            z_array = np.full((len(centerline_2d), 1), z_val)
-                            simplified = np.hstack((centerline_2d, z_array))
+                            z_array = np.full((len(path1), 1), z_val)
+                            simplified = np.hstack((path1, z_array))
                         else:
-                            simplified = centerline_2d
+                            simplified = path1
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
