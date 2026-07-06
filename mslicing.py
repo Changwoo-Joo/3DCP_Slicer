@@ -842,6 +842,57 @@ def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     )
     return fig
 
+
+
+def extract_true_centerline_from_closed_ring(segment: np.ndarray, spacing_mm: float = 1.0) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if pts.ndim != 2 or len(pts) < 4:
+        return np.asarray(segment, dtype=float)
+    if pts.shape[1] < 3:
+        pts = np.c_[pts[:, :2], np.zeros(len(pts), dtype=float)]
+
+    ring = ensure_open_ring(pts)
+    if len(ring) < 4:
+        return ring
+
+    closed = np.vstack([ring, ring[0]])
+    s = _poly_arc_lens_xy(closed)
+    total = float(s[-1])
+    if not np.isfinite(total) or total <= 1e-9:
+        return ring
+
+    step = max(0.5, min(float(spacing_mm), 2.0))
+    count = max(64, int(np.ceil(total / step)))
+    if count % 2 == 1:
+        count += 1
+
+    targets = np.linspace(0.0, total, count, endpoint=False)
+    rs = _resample_polyline_by_s(closed, targets)
+    if len(rs) < 4:
+        return ring
+
+    half = len(rs) // 2
+    best_i = 0
+    best_d = -1.0
+    for i in range(half):
+        d = float(np.linalg.norm(rs[i, :2] - rs[i + half, :2]))
+        if d > best_d:
+            best_d = d
+            best_i = i
+
+    ordered = np.vstack([rs[best_i:], rs[:best_i]])
+    center_pts = []
+    for k in range(half + 1):
+        p1 = ordered[k]
+        p2 = ordered[(k + half) % len(ordered)]
+        center_pts.append((p1 + p2) / 2.0)
+
+    out = np.asarray(center_pts, dtype=float)
+    out = _compress_collinear_open_path(out)
+    if len(out) >= 2 and np.linalg.norm(out[0, :2] - out[-1, :2]) < 1e-9:
+        out = out[:-1]
+    return out
+
 def make_slice_z_values(mesh, z_int: float) -> List[float]:
     zmin = float(mesh.bounds[0, 2])
     zmax = float(mesh.bounds[1, 2])
@@ -941,9 +992,16 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한번 최소 점 간격 강제
-                simplified = simplify_segment(simplified, float(min_spacing))
+                if st.session_state.get("centerline_mode", False):
+                    simplified = extract_true_centerline_from_closed_ring(
+                        shifted,
+                        spacing_mm=max(0.5, min(float(min_spacing), 2.0))
+                    )
+                    simplified = _compress_collinear_open_path(simplified)
+                else:
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    # 최종적으로 다시 한번 최소 점 간격 강제
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -1071,42 +1129,19 @@ def compute_slice_paths_with_travel(
                     shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
                     rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
                     shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한번 최소 점 간격 강제
-                simplified = simplify_segment(simplified, float(min_spacing))
+                if st.session_state.get("centerline_mode", False):
+                    simplified = extract_true_centerline_from_closed_ring(
+                        shifted,
+                        spacing_mm=max(0.5, min(float(min_spacing), 2.0))
+                    )
+                    simplified = _compress_collinear_open_path(simplified)
+                else:
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    # 최종적으로 다시 한번 최소 점 간격 강제
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
-                
-                if st.session_state.get("centerline_mode", False):
-                    if len(simplified) > 3:
-                        pts = simplified
-                        n = len(pts)
-                        # Check if closed ring
-                        if np.linalg.norm(pts[0] - pts[-1]) < 1e-9:
-                            n = n - 1
-
-                        # Calculate segment lengths
-                        seg_lens = np.linalg.norm(pts[1:n] - pts[:n-1], axis=1)
-                        total_len = np.sum(seg_lens) + np.linalg.norm(pts[0] - pts[n-1])
-
-                        target_dist = total_len / 2.0
-
-                        out = [pts[0]]
-                        acc = 0.0
-                        for i in range(n - 1):
-                            d = seg_lens[i]
-                            if acc + d >= target_dist:
-                                remain = target_dist - acc
-                                t = remain / d if d > 0 else 0
-                                mid_pt = (1.0 - t)*pts[i] + t*pts[i+1]
-                                out.append(mid_pt)
-                                break
-                            else:
-                                out.append(pts[i+1])
-                                acc += d
-
-                        simplified = np.array(out, dtype=float)
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
