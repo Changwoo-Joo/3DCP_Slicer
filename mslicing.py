@@ -1705,6 +1705,9 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
+    
+    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 등 얇은 모델을 센터라인 1줄로 출력할 때 필터링에 의해 경로가 삭제되지 않도록 보호합니다.")
+    st.session_state["centerline_mode"] = bool(centerline_mode)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
