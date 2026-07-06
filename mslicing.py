@@ -799,15 +799,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
-        # --- 방향 정렬 ---
-        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]  # 뒤집기
-
         return out_path, True
 
     return seg3d_closed, False
@@ -1033,9 +1024,22 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=None)
 
                 if is_thin:
+                    if len(centerline_path) > 1 and current_ref_pt is not None:
+                        dist_a = np.linalg.norm(centerline_path[0, :2] - current_ref_pt[:2])
+                        dist_b = np.linalg.norm(centerline_path[-1, :2] - current_ref_pt[:2])
+                        if dist_b < dist_a:
+                            centerline_path = centerline_path[::-1]
+
+                    if len(centerline_path) > 1 and current_ref_pt is not None:
+                        dist_start = np.linalg.norm(centerline_path[0, :2] - current_ref_pt[:2])
+                        if 1e-3 < dist_start < float(trim_dist) * 2.0:
+                            centerline_path = centerline_path[::-1]
+                            centerline_path = trim_open_line_tail(centerline_path, float(dist_start))
+                            centerline_path = centerline_path[::-1]
+
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
@@ -1173,9 +1177,22 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1001, ref_pt=None)
 
                 if is_thin:
+                    if len(centerline_path) > 1 and current_ref_pt is not None:
+                        dist_a = np.linalg.norm(centerline_path[0, :2] - current_ref_pt[:2])
+                        dist_b = np.linalg.norm(centerline_path[-1, :2] - current_ref_pt[:2])
+                        if dist_b < dist_a:
+                            centerline_path = centerline_path[::-1]
+
+                    if len(centerline_path) > 1 and current_ref_pt is not None:
+                        dist_start = np.linalg.norm(centerline_path[0, :2] - current_ref_pt[:2])
+                        if 1e-3 < dist_start < float(trim_dist) * 2.0:
+                            centerline_path = centerline_path[::-1]
+                            centerline_path = trim_open_line_tail(centerline_path, float(dist_start))
+                            centerline_path = centerline_path[::-1]
+
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
