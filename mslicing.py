@@ -1083,7 +1083,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
 
                 if is_thin:
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
@@ -1221,7 +1221,7 @@ def compute_slice_paths_with_travel(
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
                 # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.2, ref_pt=current_ref_pt)
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1, ref_pt=current_ref_pt)
 
                 if is_thin:
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
