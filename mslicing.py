@@ -709,6 +709,64 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
         out = np.vstack([out, out[0]])
     return out
 
+
+def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: float = 0.1):
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.shape[0] < 4:
+        return seg3d_closed, False
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+
+    if poly.is_empty or not poly.is_valid:
+        return seg3d_closed, False
+
+    try:
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+
+    if inward.is_empty:
+        coords = np.array(poly.exterior.coords)
+        if len(coords) < 2:
+            return seg3d_closed, False
+
+        if len(coords) > 100:
+            indices = np.linspace(0, len(coords)-1, 100).astype(int)
+            pts = coords[indices]
+        else:
+            pts = coords
+
+        from scipy.spatial.distance import pdist, squareform
+        D = squareform(pdist(pts))
+        i, j = np.unravel_index(np.argmax(D), D.shape)
+        p_start, p_end = pts[i], pts[j]
+
+        dist_start = np.linalg.norm(coords - p_start, axis=1)
+        dist_end = np.linalg.norm(coords - p_end, axis=1)
+        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
+
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        path1 = coords[idx_start:idx_end+1]
+        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
+
+        chosen_path = path1 if len(path1) > len(path2) else path2
+        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
+
+        return out_path, True
+
+    return seg3d_closed, False
+
 def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     seg3d_closed = np.asarray(seg3d_closed, dtype=float)
     if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4 or offset_mm <= 0:
@@ -927,23 +985,25 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-                
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                if enable_inward_offset and float(nozzle_width) > 0:
-                    closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-                    if offset_inverted and skip_invalid_offset:
-                        start_pt = closed_mid[0]
-                        continue
-                simplified = simplify_segment(closed_mid, float(min_spacing))
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                if st.session_state.get('enable_fillet', False):
-                    r_val = float(st.session_state.get('fillet_r', 20.0))
-                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한번 최소 점 간격 강제
-                simplified = simplify_segment(simplified, float(min_spacing))
+centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
+if is_thin:
+    simplified = simplify_segment(centerline_path, float(min_spacing))
+else:
+    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+    if enable_inward_offset and float(nozzle_width) > 0:
+        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+        if offset_inverted and skip_invalid_offset:
+            start_pt = closed_mid[0]
+            continue
+    simplified = simplify_segment(closed_mid, float(min_spacing))
+    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+    if st.session_state.get('enable_fillet', False):
+        r_val = float(st.session_state.get('fillet_r', 20.0))
+        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+    simplified = trim_closed_ring_tail(shifted, trim_dist)
+    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -1057,130 +1117,29 @@ def compute_slice_paths_with_travel(
             layer_polys: List[np.ndarray] = []
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
-
-                closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                if enable_inward_offset and float(nozzle_width) > 0:
-                    closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
-                    if offset_inverted and skip_invalid_offset:
-                        start_pt = closed_mid[0]
-                        continue
-                simplified = simplify_segment(closed_mid, float(min_spacing))
-                shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
-                if st.session_state.get('enable_fillet', False):
-                    r_val = float(st.session_state.get('fillet_r', 20.0))
-                    shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                    rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                    shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
-                simplified = trim_closed_ring_tail(shifted, trim_dist)
-                # 최종적으로 다시 한번 최소 점 간격 강제
-                simplified = simplify_segment(simplified, float(min_spacing))
+centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.1)
+if is_thin:
+    simplified = simplify_segment(centerline_path, float(min_spacing))
+else:
+    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+    if enable_inward_offset and float(nozzle_width) > 0:
+        closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
+        if offset_inverted and skip_invalid_offset:
+            start_pt = closed_mid[0]
+            continue
+    simplified = simplify_segment(closed_mid, float(min_spacing))
+    shifted, _ = shift_to_nearest_start(simplified, ref_point=ref_pt_layer)
+    if st.session_state.get('enable_fillet', False):
+        r_val = float(st.session_state.get('fillet_r', 20.0))
+        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+        shifted, _ = shift_to_nearest_start(rounded, ref_point=ref_pt_layer)
+    simplified = trim_closed_ring_tail(shifted, trim_dist)
+    simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
-                
-                if st.session_state.get("centerline_mode", False):
-                    # 완전한 뼈대(Skeleton) 추출을 위한 로직 (Shapely 버퍼 붕괴법)
-                    # 사용자의 모델은 연속된 선(단일 경로)으로 3개의 셀을 가진 벽체를 묘사하고 있습니다.
-                    # 선과 선 사이의 간격(벽 두께)의 중심을 지나는 단일 선을 만들어야 합니다.
-                    if len(simplified) > 3:
-                        from shapely.geometry import Polygon, LineString
-                        import shapely
-
-                        pts = np.array(simplified)
-                        has_z = (pts.shape[1] > 2)
-                        z_val = pts[0, 2] if has_z else 0.0
-
-                        pts_2d = pts[:, :2]
-                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
-                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
-                        else:
-                            poly_pts = pts_2d
-
-                        # 1. 꼬인 폴리곤(Self-intersecting)을 정상화합니다.
-                        # CAD에서 얇은 틈새(Gap)를 두고 그렸다면 정상 폴리곤이 아닐 수 있습니다.
-                        poly = Polygon(poly_pts)
-                        poly = shapely.make_valid(poly)
-
-                        # 만약 선형이 교차하여 MultiPolygon이 되었다면 가장 큰 덩어리들을 결합
-                        if poly.geom_type == 'MultiPolygon' or poly.geom_type == 'GeometryCollection':
-                            poly = shapely.ops.unary_union(poly)
-
-                        if poly.is_valid and poly.area > 0:
-                            # 2. 벽 두께의 절반만큼 안쪽으로 오프셋(Buffer)하여 선으로 붕괴시킵니다.
-                            # 노즐 직경 또는 사용자가 설정한 두께를 기반으로 하지만, 
-                            # 여기서는 붕괴될 때까지 반복적으로 오프셋합니다.
-                            # 벽 두께가 보통 20~50mm 정도라고 가정할 때, 1mm씩 깎아들어갑니다.
-
-                            step = 0.5
-                            max_iters = 200
-                            current_poly = poly
-                            skeleton_lines = []
-
-                            for _ in range(max_iters):
-                                shrunk = current_poly.buffer(-step, join_style=2)
-
-                                if shrunk.is_empty:
-                                    # 완전히 소멸되기 직전의 폴리곤 외곽선을 센터선으로 취급
-                                    if current_poly.geom_type == 'Polygon':
-                                        skeleton_lines.append(current_poly.exterior)
-                                    elif current_poly.geom_type == 'MultiPolygon':
-                                        for geom in current_poly.geoms:
-                                            skeleton_lines.append(geom.exterior)
-                                    break
-
-                                # 매우 얇아진 경우 (면적/둘레 비율이 작음)
-                                if shrunk.area < shrunk.length * step * 2:
-                                    if shrunk.geom_type == 'Polygon':
-                                        skeleton_lines.append(shrunk.exterior)
-                                    elif shrunk.geom_type == 'MultiPolygon':
-                                        for geom in shrunk.geoms:
-                                            skeleton_lines.append(geom.exterior)
-                                    break
-
-                                current_poly = shrunk
-
-                            # 추출된 스켈레톤 선형을 하나로 이어줍니다.
-                            if skeleton_lines:
-                                # 모든 라인스트링을 하나의 MultiLineString으로 병합
-                                merged_lines = shapely.ops.linemerge(skeleton_lines)
-
-                                # 단일 경로로 만들기 위해 가장 긴 선형을 선택
-                                if merged_lines.geom_type == 'LineString':
-                                    final_coords = list(merged_lines.coords)
-                                elif merged_lines.geom_type == 'MultiLineString':
-                                    longest_line = max(merged_lines.geoms, key=lambda x: x.length)
-                                    final_coords = list(longest_line.coords)
-                                else:
-                                    final_coords = []
-
-                                if len(final_coords) > 1:
-                                    # 열린 선(Open Line)을 강제하기 위해 루프를 끊습니다.
-                                    c_pts = np.array(final_coords)
-
-                                    # 만약 닫힌 형태라면 가장 먼 두 점을 찾아 반으로 자릅니다.
-                                    if np.linalg.norm(c_pts[0] - c_pts[-1]) < 1e-9:
-                                        max_d = -1
-                                        idx_a, idx_b = 0, len(c_pts)//2
-                                        for i in range(len(c_pts)):
-                                            dists = np.sum((c_pts - c_pts[i])**2, axis=1)
-                                            furthest = np.argmax(dists)
-                                            if dists[furthest] > max_d:
-                                                max_d = dists[furthest]
-                                                idx_a = i
-                                                idx_b = furthest
-                                        if idx_a > idx_b:
-                                            idx_a, idx_b = idx_b, idx_a
-                                        path1 = c_pts[idx_a:idx_b+1]
-                                        path2 = np.concatenate((c_pts[idx_b:], c_pts[:idx_a+1]))
-                                        c_pts = path1 if len(path1) > len(path2) else path2
-
-                                    if has_z:
-                                        z_array = np.full((len(c_pts), 1), z_val)
-                                        simplified = np.hstack((c_pts, z_array))
-                                    else:
-                                        simplified = c_pts
                 layer_polys.append(simplified.copy())
-
                 if i_seg == 0:
                     prev_start_xy = simplified[0][:2]
 
@@ -1808,9 +1767,6 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
-
-    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 두께의 얇은 닫힌 외곽선을 단일 패스(반쪽짜리 열린 선)로 잘라서 출력합니다.")
-    st.session_state["centerline_mode"] = bool(centerline_mode)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
