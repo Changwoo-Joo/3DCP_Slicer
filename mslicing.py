@@ -681,7 +681,8 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
     if seg3d_closed.shape[1] < 3:
         seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    # 시작점의 z높이를 반영
+    z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
     poly = Polygon(xy)
@@ -750,7 +751,8 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    # 시작점의 z높이를 반영
+    z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -811,7 +813,8 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    # 시작점의 z높이를 반영
+    z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -869,7 +872,8 @@ def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
     if seg3d_closed.shape[1] < 3:
         seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    # 시작점의 z높이를 반영
+    z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
     try:
