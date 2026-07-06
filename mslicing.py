@@ -1078,7 +1078,6 @@ def compute_slice_paths_with_travel(
                     continue
 
                 
-                import streamlit as st
                 if st.session_state.get("centerline_mode", False):
                     # For thin walls, convert the loop to a single straight line
                     x_coords = simplified[:, 0]
