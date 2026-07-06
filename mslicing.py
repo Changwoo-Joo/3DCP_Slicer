@@ -758,7 +758,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         from shapely.geometry import Polygon
         poly = Polygon(xy)
         if not poly.is_valid:
-            poly = poly.buffer(0) # Fix self intersections
+            poly = poly.buffer(0)
     except Exception:
         return seg3d_closed, False
 
@@ -766,7 +766,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     try:
-        # Use 0.15 to ensure 0.1 walls are caught despite float inaccuracies
         inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
     except Exception:
         return seg3d_closed, False
@@ -800,13 +799,8 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
-        # --- 강제 방향 고정 ---
-        if len(out_path) > 1:
-            pt_start = out_path[0]
-            pt_end = out_path[-1]
-            if pt_start[0] > pt_end[0] or (abs(pt_start[0] - pt_end[0]) < 1e-5 and pt_start[1] > pt_end[1]):
-                out_path = out_path[::-1]
-
+        # DO NOT FORCE DIRECTION HERE OR IT BREAKS ZIGZAG!
+        # Just return the path as is.
         return out_path, True
 
     return seg3d_closed, False
@@ -996,11 +990,20 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             for iseg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
+                                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
 
                 if is_thin:
+                    # 1. 무조건 트림을 먼저 적용 (항상 일정한 쪽이 잘리도록)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+
+                    # 2. 잘린 경로를 현재 노즐 위치와 비교하여 가까운 쪽에서 시작하도록 뒤집기 (지그재그)
+                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
+                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
+                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
+                        if dist_end < dist_start:
+                            trimmed_centerline = trimmed_centerline[::-1]
+
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
@@ -1028,12 +1031,11 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                     g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f} Z{safe_z_clearance:.1f}")
 
                 if iseg > 0:
-                    g.append(f"G01 Z{print_z:.1f}") # Raise Z first
-                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}") # Then move X Y
+                    g.append(f"G01 Z{print_z:.1f}")
+                    g.append(f"G00 X{start[0]:.1f} Y{start[1]:.1f}")
 
                 g.append(f"G01 F{feed}")
-                # Raise Z first for the very first segment as well or ensure we are at correct Z before starting
-                g.append(f"G01 Z{print_z:.1f}") 
+                g.append(f"G01 Z{print_z:.1f}")
                 if start_e_on:
                     g.append(f"G01 X{start[0]:.1f} Y{start[1]:.1f} E{start_e_val:.5f}")
                 else:
@@ -1137,11 +1139,20 @@ def compute_slice_paths_with_travel(
             for i_seg, seg3d in enumerate(segments):
                 seg3d_no_dup = ensure_open_ring(seg3d)
 
-                # --- 얇은 두께 단일선 변환 로직 ---
-                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=current_ref_pt)
+                                # --- 얇은 두께 단일선 변환 로직 ---
+                centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=0.15, ref_pt=None)
 
                 if is_thin:
+                    # 1. 무조건 트림을 먼저 적용 (항상 일정한 쪽이 잘리도록)
                     trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
+
+                    # 2. 잘린 경로를 현재 노즐 위치와 비교하여 가까운 쪽에서 시작하도록 뒤집기 (지그재그)
+                    if len(trimmed_centerline) > 1 and current_ref_pt is not None:
+                        dist_start = np.linalg.norm(trimmed_centerline[0, :2] - current_ref_pt[:2])
+                        dist_end = np.linalg.norm(trimmed_centerline[-1, :2] - current_ref_pt[:2])
+                        if dist_end < dist_start:
+                            trimmed_centerline = trimmed_centerline[::-1]
+
                     simplified = simplify_segment(trimmed_centerline, float(min_spacing))
                 else:
                     closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
@@ -1183,7 +1194,6 @@ def compute_slice_paths_with_travel(
                     all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
                     all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
                 else:
-                    # Z 이동 후 XY 이동하도록 꺾은선으로 표시
                     travel_z_up = prev_layer_last_end.copy()
                     travel_z_up[2] = first_poly_start[2]
                     travel = np.vstack([prev_layer_last_end, travel_z_up, first_poly_start])
