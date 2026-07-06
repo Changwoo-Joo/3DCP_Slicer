@@ -1079,24 +1079,36 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
+                    import numpy as np
                     if len(simplified) > 3:
                         pts = simplified
                         n = len(pts)
                         if np.linalg.norm(pts[0] - pts[-1]) < 1e-9:
                             n = n - 1
 
-                        dists_from_0 = np.linalg.norm(pts[:n] - pts[0], axis=1)
-                        end1_idx = int(np.argmax(dists_from_0))
+                        # Calculate segment lengths
+                        seg_lens = np.linalg.norm(pts[1:n] - pts[:n-1], axis=1)
+                        total_len = np.sum(seg_lens) + np.linalg.norm(pts[0] - pts[n-1])
 
-                        dists_from_end1 = np.linalg.norm(pts[:n] - pts[end1_idx], axis=1)
-                        end2_idx = int(np.argmax(dists_from_end1))
+                        target_dist = total_len / 2.0
 
-                        if end1_idx < end2_idx:
-                            path1 = pts[end1_idx:end2_idx+1]
-                        else:
-                            path1 = pts[end2_idx:end1_idx+1]
+                        # Walk along the perimeter until we hit target_dist
+                        out = [pts[0]]
+                        acc = 0.0
+                        for i in range(n - 1):
+                            d = seg_lens[i]
+                            if acc + d >= target_dist:
+                                # Interpolate the exact half-way point
+                                remain = target_dist - acc
+                                t = remain / d if d > 0 else 0
+                                mid_pt = (1.0 - t)*pts[i] + t*pts[i+1]
+                                out.append(mid_pt)
+                                break
+                            else:
+                                out.append(pts[i+1])
+                                acc += d
 
-                        simplified = path1.copy()
+                        simplified = np.array(out, dtype=float)
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
@@ -1727,7 +1739,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
-    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 두께의 닫힌 외곽선 양 끝점을 찾아 완벽하게 한쪽 궤적만 추출하는 단일 패스 모드입니다.")
+    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 두께의 얇은 닫힌 외곽선을 단일 패스(반쪽짜리 열린 선)로 잘라서 출력합니다.")
     st.session_state["centerline_mode"] = bool(centerline_mode)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
