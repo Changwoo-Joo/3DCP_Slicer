@@ -915,7 +915,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             except Exception: continue
 
 #  [G-code 함수 내부 교체용 코드]
-if use_centerline and wall_thickness > 0:
+            if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
                 from shapely.validation import make_valid
                 offset_dist = wall_thickness / 2.0
