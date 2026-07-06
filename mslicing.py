@@ -1032,7 +1032,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         g.append(f"G01 X{p2[0]:.1f} Y{p2[1]:.1f}")
 
                 
-                if iseg == 0: prev_start_xy = start[:2]
+                if iseg == 0: prev_start_xy = simplified[-1][:2] if is_thin else start[:2]
 
         if seq_print and subidx < len(submeshes) - 1:
             g.append(f"\n; Retracting to Safe Z before moving to next object")
@@ -1160,7 +1160,7 @@ def compute_slice_paths_with_travel(
 
                 layer_polys.append(simplified.copy())
                 if i_seg == 0:
-                    prev_start_xy = simplified[0][:2]
+                    prev_start_xy = simplified[-1][:2] if is_thin else simplified[0][:2]
 
             if not layer_polys:
                 continue
