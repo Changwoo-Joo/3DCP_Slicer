@@ -918,6 +918,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 # ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
+                from shapely.validation import make_valid
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
                 
@@ -928,33 +929,61 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                 
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
-                        # 0.001mm만 아주 미세하게 버퍼를 주어 클리닝 후 마이너스 오프셋 적용
-                        cleaned_poly = poly.buffer(0.001).buffer(-offset_dist)
-                        if not cleaned_poly.is_empty:
-                            new_geoms.append(cleaned_poly)
+                        # 1. 꼬인 정점 및 기하학적 오류 강제 수정 (make_valid)
+                        valid_p = make_valid(poly)
+                        
+                        # make_valid 결과가 MultiPolygon 등으로 쪼개질 수 있으므로 분기 처리
+                        sub_polys = valid_p.geoms if isinstance(valid_p, MultiPolygon) else [valid_p]
+                        for sp in sub_polys:
+                            if not isinstance(sp, Polygon) or sp.is_empty:
+                                continue
+                            
+                            # 2. 외곽선(Exterior)만 분리하여 내부 구멍(Hole) 간섭 제거
+                            # 벽체 두께의 정중앙을 딸 때는 외곽선 자체를 줄이는 것이 가장 안전합니다.
+                            clean_outer = Polygon(sp.exterior.coords)
+                            
+                            # 3. 미세 버퍼로 구조 안정화 후 마이너스 오프셋 적용
+                            center_poly = clean_outer.buffer(0.01, join_style=2).buffer(-offset_dist, join_style=2)
+                            
+                            if not center_poly.is_empty:
+                                # 결과가 MultiPolygon일 경우를 대비해 개별 분해하여 저장
+                                if isinstance(center_poly, MultiPolygon):
+                                    new_geoms.extend(list(center_poly.geoms))
+                                else:
+                                    new_geoms.append(center_poly)
                             
                 if new_geoms:
-                    # 기존 discrete 반복문이 좌표 배열을 바로 읽을 수 있도록 수동으로 Path2D 객체를 재조립합니다.
                     lines_entities = []
                     all_vertices = []
                     current_idx = 0
                     
-                    for g in new_geoms:
-                        # MultiPolygon 내부의 개별 Polygon 처리 지원
-                        individual_polys = g.geoms if isinstance(g, MultiPolygon) else [g]
-                        for ind_p in individual_polys:
-                            if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
-                                continue
-                            coords = np.array(ind_p.exterior.coords)
-                            if len(coords) < 2:
-                                continue
-                            # 중복된 마지막 점 제거하여 열린 형태로 추가 준비
-                            if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
-                                coords = coords[:-1]
+                    for ind_p in new_geoms:
+                        if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
+                            continue
+                        coords = np.array(ind_p.exterior.coords)
+                        if len(coords) < 2:
+                            continue
+                        if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
+                            coords = coords[:-1]
+                        
+                        n_pts = len(coords)
+                        if n_pts < 2:
+                            continue
                             
-                            n_pts = len(coords)
-                            if n_pts < 2:
-                                continue
+                        all_vertices.append(coords)
+                        pts_indices = np.arange(current_idx, current_idx + n_pts)
+                        lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
+                        current_idx += n_pts
+                    
+                    if all_vertices:
+                        slice2D = trimesh.path.Path2D(
+                            entities=lines_entities,
+                            vertices=np.vstack(all_vertices)
+                        )
+                    else:
+                        continue
+                else:
+                    continue # 구조가 완전히 닫히지 않았거나 인입 실패 시 스킵
                                 
                             all_vertices.append(coords)
                             # 폐곡선 선분 엔티티 매핑 데이터 생성
@@ -1103,6 +1132,7 @@ def compute_slice_paths_with_travel(
 # ── [핵심 제어로직 추가: 벽 중심선 생성 옵션 처리] ──
             if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
+                from shapely.validation import make_valid
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
                 
@@ -1113,39 +1143,51 @@ def compute_slice_paths_with_travel(
                 
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
-                        # 0.001mm만 아주 미세하게 버퍼를 주어 클리닝 후 마이너스 오프셋 적용
-                        cleaned_poly = poly.buffer(0.001).buffer(-offset_dist)
-                        if not cleaned_poly.is_empty:
-                            new_geoms.append(cleaned_poly)
+                        # 1. 꼬인 정점 및 기하학적 오류 강제 수정 (make_valid)
+                        valid_p = make_valid(poly)
+                        
+                        # make_valid 결과가 MultiPolygon 등으로 쪼개질 수 있으므로 분기 처리
+                        sub_polys = valid_p.geoms if isinstance(valid_p, MultiPolygon) else [valid_p]
+                        for sp in sub_polys:
+                            if not isinstance(sp, Polygon) or sp.is_empty:
+                                continue
+                            
+                            # 2. 외곽선(Exterior)만 분리하여 내부 구멍(Hole) 간섭 제거
+                            # 벽체 두께의 정중앙을 딸 때는 외곽선 자체를 줄이는 것이 가장 안전합니다.
+                            clean_outer = Polygon(sp.exterior.coords)
+                            
+                            # 3. 미세 버퍼로 구조 안정화 후 마이너스 오프셋 적용
+                            center_poly = clean_outer.buffer(0.01, join_style=2).buffer(-offset_dist, join_style=2)
+                            
+                            if not center_poly.is_empty:
+                                # 결과가 MultiPolygon일 경우를 대비해 개별 분해하여 저장
+                                if isinstance(center_poly, MultiPolygon):
+                                    new_geoms.extend(list(center_poly.geoms))
+                                else:
+                                    new_geoms.append(center_poly)
                             
                 if new_geoms:
-                    # 기존 discrete 반복문이 좌표 배열을 바로 읽을 수 있도록 수동으로 Path2D 객체를 재조립합니다.
                     lines_entities = []
                     all_vertices = []
                     current_idx = 0
                     
-                    for g in new_geoms:
-                        # MultiPolygon 내부의 개별 Polygon 처리 지원
-                        individual_polys = g.geoms if isinstance(g, MultiPolygon) else [g]
-                        for ind_p in individual_polys:
-                            if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
-                                continue
-                            coords = np.array(ind_p.exterior.coords)
-                            if len(coords) < 2:
-                                continue
-                            # 중복된 마지막 점 제거하여 열린 형태로 추가 준비
-                            if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
-                                coords = coords[:-1]
+                    for ind_p in new_geoms:
+                        if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
+                            continue
+                        coords = np.array(ind_p.exterior.coords)
+                        if len(coords) < 2:
+                            continue
+                        if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
+                            coords = coords[:-1]
+                        
+                        n_pts = len(coords)
+                        if n_pts < 2:
+                            continue
                             
-                            n_pts = len(coords)
-                            if n_pts < 2:
-                                continue
-                                
-                            all_vertices.append(coords)
-                            # 폐곡선 선분 엔티티 매핑 데이터 생성
-                            pts_indices = np.arange(current_idx, current_idx + n_pts)
-                            lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
-                            current_idx += n_pts
+                        all_vertices.append(coords)
+                        pts_indices = np.arange(current_idx, current_idx + n_pts)
+                        lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
+                        current_idx += n_pts
                     
                     if all_vertices:
                         slice2D = trimesh.path.Path2D(
@@ -1155,7 +1197,7 @@ def compute_slice_paths_with_travel(
                     else:
                         continue
                 else:
-                    continue # 오프셋 후 벽체가 소멸한 경우 레이어 스킵
+                    continue # 구조가 완전히 닫히지 않았거나 인입 실패 시 스킵
 
             segments = []
             for seg in slice2D.discrete:
