@@ -856,7 +856,7 @@ def extract_true_centerline_from_closed_ring(segment: np.ndarray, spacing_mm: fl
         return ring
 
     closed = np.vstack([ring, ring[0]])
-    s = _poly_arc_lens_xy(closed)
+    s = _poly_arclen_s_xy(closed)
     total = float(s[-1])
     if not np.isfinite(total) or total <= 1e-9:
         return ring
@@ -867,7 +867,7 @@ def extract_true_centerline_from_closed_ring(segment: np.ndarray, spacing_mm: fl
         count += 1
 
     targets = np.linspace(0.0, total, count, endpoint=False)
-    rs = _resample_polyline_by_s(closed, targets)
+    rs = resample_polyline_by_s(closed, targets)
     if len(rs) < 4:
         return ring
 
@@ -888,7 +888,7 @@ def extract_true_centerline_from_closed_ring(segment: np.ndarray, spacing_mm: fl
         center_pts.append((p1 + p2) / 2.0)
 
     out = np.asarray(center_pts, dtype=float)
-    out = _compress_collinear_open_path(out)
+    out = compress_collinear_open_path(out)
     if len(out) >= 2 and np.linalg.norm(out[0, :2] - out[-1, :2]) < 1e-9:
         out = out[:-1]
     return out
@@ -997,7 +997,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         shifted,
                         spacing_mm=max(0.5, min(float(min_spacing), 2.0))
                     )
-                    simplified = _compress_collinear_open_path(simplified)
+                    simplified = compress_collinear_open_path(simplified)
                 else:
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
                     # 최종적으로 다시 한번 최소 점 간격 강제
@@ -1134,7 +1134,7 @@ def compute_slice_paths_with_travel(
                         shifted,
                         spacing_mm=max(0.5, min(float(min_spacing), 2.0))
                     )
-                    simplified = _compress_collinear_open_path(simplified)
+                    simplified = compress_collinear_open_path(simplified)
                 else:
                     simplified = trim_closed_ring_tail(shifted, trim_dist)
                     # 최종적으로 다시 한번 최소 점 간격 강제
