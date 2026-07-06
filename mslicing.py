@@ -799,7 +799,14 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
 
         # --- 방향 정렬 ---
         # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
-        # Removed flipping logic to maintain consistent trim side (prevent missing teeth)
+                # --- 강제 방향 고정 ---
+        # 슬라이싱 시마다 선의 방향이 뒤집히는 것을 막기 위해,
+        # 항상 시작점의 X, Y 좌표가 더 작은 쪽(또는 큰 쪽)을 시작점으로 강제 고정합니다.
+        if len(out_path) > 1:
+            pt_start = out_path[0]
+            pt_end = out_path[-1]
+            if pt_start[0] > pt_end[0] or (abs(pt_start[0] - pt_end[0]) < 1e-5 and pt_start[1] > pt_end[1]):
+                out_path = out_path[::-1]
 
         return out_path, True
 
@@ -1264,7 +1271,10 @@ def compute_slice_paths_with_travel(
                     all_items.append((travel_xy, np.array([0.0, 0.0]) if e_on else None, True))
                     all_items.append((travel_down, np.array([0.0, 0.0]) if e_on else None, True))
                 else:
-                    travel = np.vstack([prev_layer_last_end, first_poly_start])
+                    # Z 이동 후 XY 이동하도록 꺾은선으로 표시
+                    travel_z_up = prev_layer_last_end.copy()
+                    travel_z_up[2] = first_poly_start[2]
+                    travel = np.vstack([prev_layer_last_end, travel_z_up, first_poly_start])
                     all_items.append((travel, np.array([0.0, 0.0]) if e_on else None, True))
 
             for i_seg in range(len(layer_polys)):
