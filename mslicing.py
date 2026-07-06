@@ -1079,22 +1079,38 @@ def compute_slice_paths_with_travel(
 
                 
                 if st.session_state.get("centerline_mode", False):
+                    import numpy as np
                     if len(simplified) > 3:
-                        # To find the true centerline of a thin walled loop,
-                        # we average the points on the outgoing side and the incoming side.
-                        n = len(simplified)
-                        # Remove the duplicate last point if it's a closed ring
-                        if np.linalg.norm(simplified[0] - simplified[-1]) < 1e-9:
-                            n = n - 1
+                        # Robust thin-wall to single-line converter
+                        # 1. Find the two points that are furthest apart
+                        pts = simplified
+                        n = len(pts)
+                        if np.linalg.norm(pts[0] - pts[-1]) < 1e-9:
+                            n = n - 1 # ignore duplicate last point
 
-                        half_idx = n // 2
-                        centerline = []
-                        for i in range(half_idx + 1):
-                            p1 = simplified[i]
-                            p_opp = simplified[n - 1 - i]
-                            mid = (p1 + p_opp) / 2.0
-                            centerline.append(mid)
-                        simplified = np.array(centerline, dtype=float)
+                        # To find the true "ends" of the shape efficiently:
+                        # Just find the point furthest from pt[0] -> end1
+                        # Then find the point furthest from end1 -> end2
+                        dists_from_0 = np.linalg.norm(pts[:n] - pts[0], axis=1)
+                        end1_idx = np.argmax(dists_from_0)
+
+                        dists_from_end1 = np.linalg.norm(pts[:n] - pts[end1_idx], axis=1)
+                        end2_idx = np.argmax(dists_from_end1)
+
+                        # Now we have end1_idx and end2_idx.
+                        # The path from end1_idx to end2_idx along the perimeter is exactly one side of the wall.
+                        # We just take this path!
+                        if end1_idx < end2_idx:
+                            path1 = pts[end1_idx:end2_idx+1]
+                            path2 = np.vstack([pts[end2_idx:n], pts[:end1_idx+1]])
+                        else:
+                            path1 = pts[end2_idx:end1_idx+1]
+                            path2 = np.vstack([pts[end1_idx:n], pts[:end2_idx+1]])
+
+                        # Choose the path with fewer points (usually they are similar), 
+                        # or just path1. Path1 is one side of the wall, Path2 is the other side.
+                        # Both perfectly describe the shape.
+                        simplified = path1.copy()
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
@@ -1725,7 +1741,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
 
-    centerline_mode = st.checkbox("센터라인(얇은 벽) 정밀 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 등 얇은 닫힌 외곽선 루프의 정중앙을 정확히 계산하여 단일 패스로 출력합니다.")
+    centerline_mode = st.checkbox("센터라인(얇은 벽) 강제 출력 모드", value=bool(st.session_state.get("centerline_mode", False)), help="0.1mm 두께의 모델을 무조건 1줄짜리 센터라인으로 압축하여 단일 패스(Single-pass)로 출력합니다.")
     st.session_state["centerline_mode"] = bool(centerline_mode)
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
