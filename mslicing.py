@@ -1072,17 +1072,17 @@ def compute_slice_paths_with_travel(
             except Exception:
                 continue
 
-#  [슬라이싱 패스 연산 함수 내부 교체용 코드]
+#  [G-code 함수 내부 교체용 코드]
             if use_centerline and wall_thickness > 0:
                 from shapely.geometry import Polygon, MultiPolygon
                 from shapely.validation import make_valid
                 offset_dist = wall_thickness / 2.0
                 new_geoms = []
                 
-                if hasattr(slice2D, 'polygons_full'):
-                    geom_polys = slice2D.polygons_full
+                if hasattr(slice_2D, 'polygons_full'):
+                    geom_polys = slice_2D.polygons_full
                 else:
-                    geom_polys = slice2D.geoms if isinstance(slice2D, MultiPolygon) else [slice2D]
+                    geom_polys = slice_2D.geoms if isinstance(slice_2D, MultiPolygon) else [slice_2D]
                 
                 for poly in geom_polys:
                     if isinstance(poly, Polygon) and not poly.is_empty:
@@ -1097,36 +1097,8 @@ def compute_slice_paths_with_travel(
                                         new_geoms.extend(list(center_poly.geoms))
                                     else:
                                         new_geoms.append(center_poly)
-                                        
                 if new_geoms:
-                    lines_entities = []
-                    all_vertices = []
-                    current_idx = 0
-                    for ind_p in new_geoms:
-                        if ind_p.is_empty or not hasattr(ind_p, 'exterior'):
-                            continue
-                        coords = np.array(ind_p.exterior.coords)
-                        if len(coords) < 2:
-                            continue
-                        if np.linalg.norm(coords[0] - coords[-1]) < 1e-9:
-                            coords = coords[:-1]
-                        
-                        n_pts = len(coords)
-                        if n_pts < 2:
-                            continue
-                            
-                        all_vertices.append(coords)
-                        pts_indices = np.arange(current_idx, current_idx + n_pts)
-                        lines_entities.append(trimesh.path.entities.Line(points=pts_indices, closed=True))
-                        current_idx += n_pts
-                    
-                    if all_vertices:
-                        slice2D = trimesh.path.Path2D(
-                            entities=lines_entities,
-                            vertices=np.vstack(all_vertices)
-                        )
-                    else:
-                        continue
+                    slice_2D = MultiPolygon(new_geoms) if len(new_geoms) > 1 else new_geoms[0]
                 else:
                     continue
 
