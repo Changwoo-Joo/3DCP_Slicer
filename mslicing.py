@@ -1080,33 +1080,57 @@ def compute_slice_paths_with_travel(
                 
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
+                        from shapely.geometry import Polygon
+                        # 닫힌 폴리곤으로 간주
                         pts = simplified
-                        n = len(pts)
-                        # Check if closed ring
-                        if np.linalg.norm(pts[0] - pts[-1]) < 1e-9:
-                            n = n - 1
+                        # 마지막 점이 첫 점과 같지 않으면 닫아줌
+                        if np.linalg.norm(pts[0] - pts[-1]) > 1e-9:
+                            poly_pts = np.vstack([pts, pts[0]])
+                        else:
+                            poly_pts = pts
 
-                        # Calculate segment lengths
-                        seg_lens = np.linalg.norm(pts[1:n] - pts[:n-1], axis=1)
-                        total_len = np.sum(seg_lens) + np.linalg.norm(pts[0] - pts[n-1])
+                        poly = Polygon(poly_pts)
+                        if poly.is_valid and poly.area > 0:
+                            # 얇은 벽(예: 0.1mm)의 절반보다 약간 작게 오프셋하여 붕괴시킴 (0.04mm)
+                            offset_poly = poly.buffer(-0.04, join_style=2)
 
-                        target_dist = total_len / 2.0
+                            centerline_pts = []
+                            if offset_poly.is_empty:
+                                offset_poly = poly.buffer(-0.01, join_style=2)
 
-                        out = [pts[0]]
-                        acc = 0.0
-                        for i in range(n - 1):
-                            d = seg_lens[i]
-                            if acc + d >= target_dist:
-                                remain = target_dist - acc
-                                t = remain / d if d > 0 else 0
-                                mid_pt = (1.0 - t)*pts[i] + t*pts[i+1]
-                                out.append(mid_pt)
-                                break
-                            else:
-                                out.append(pts[i+1])
-                                acc += d
+                            if not offset_poly.is_empty:
+                                if offset_poly.geom_type == 'Polygon':
+                                    centerline_pts = list(offset_poly.exterior.coords)
+                                elif offset_poly.geom_type == 'MultiPolygon':
+                                    largest = max(offset_poly.geoms, key=lambda a: a.area)
+                                    centerline_pts = list(largest.exterior.coords)
+                                elif offset_poly.geom_type in ['LineString', 'MultiLineString']:
+                                    if offset_poly.geom_type == 'LineString':
+                                        centerline_pts = list(offset_poly.coords)
+                                    else:
+                                        longest = max(offset_poly.geoms, key=lambda l: l.length)
+                                        centerline_pts = list(longest.coords)
 
-                        simplified = np.array(out, dtype=float)
+                            if len(centerline_pts) > 2:
+                                c_pts = np.array(centerline_pts)
+                                n = len(c_pts)
+                                seg_lens = np.linalg.norm(c_pts[1:] - c_pts[:-1], axis=1)
+                                target_dist = np.sum(seg_lens) / 2.0
+
+                                out = [c_pts[0]]
+                                acc = 0.0
+                                for i in range(n - 1):
+                                    d = seg_lens[i]
+                                    if acc + d >= target_dist:
+                                        remain = target_dist - acc
+                                        t = remain / d if d > 0 else 0
+                                        mid_pt = (1.0 - t)*c_pts[i] + t*c_pts[i+1]
+                                        out.append(mid_pt)
+                                        break
+                                    else:
+                                        out.append(c_pts[i+1])
+                                        acc += d
+                                simplified = np.array(out, dtype=float)
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
