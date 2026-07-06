@@ -1080,50 +1080,87 @@ def compute_slice_paths_with_travel(
                 
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
-                        # 얇은 벽(머리핀 구조)에서 진정한 반쪽(한 면)만 깔끔하게 추출하는 로직
+                        # 300mm 두께의 거대한 벽의 정중앙(Centerline)을 구하기 위해
+                        # Voronoi 다이어그램 기반의 뼈대 추출 또는 안쪽 오프셋을 활용합니다.
+                        from shapely.geometry import Polygon, LineString
+
                         pts = np.array(simplified)
                         has_z = (pts.shape[1] > 2)
                         z_val = pts[0, 2] if has_z else 0.0
 
-                        # 2D 평면 데이터화
                         pts_2d = pts[:, :2]
-                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) < 1e-9:
-                            pts_2d = pts_2d[:-1]  # 닫힌 끝점 제거
-
-                        N = len(pts_2d)
-
-                        # 폴리곤(얇은 벽)의 양 끝단(U턴 지점)을 찾기 위해
-                        # 가장 멀리 떨어져 있는 두 점의 인덱스를 찾습니다.
-                        max_dist = -1
-                        idx_a = 0
-                        idx_b = N // 2
-
-                        for i in range(N):
-                            dists = np.sum((pts_2d - pts_2d[i])**2, axis=1)
-                            furthest_idx = np.argmax(dists)
-                            d = dists[furthest_idx]
-                            if d > max_dist:
-                                max_dist = d
-                                idx_a = i
-                                idx_b = furthest_idx
-
-                        if idx_a > idx_b:
-                            idx_a, idx_b = idx_b, idx_a
-
-                        # U턴 지점(idx_a, idx_b)을 기준으로 루프를 두 조각으로 나눕니다.
-                        path1 = pts_2d[idx_a:idx_b+1]
-                        path2_temp = np.concatenate((pts_2d[idx_b:], pts_2d[:idx_a+1]))
-
-                        # 두 경로 중 길이가 더 짧거나 점 개수가 적당한(더 깔끔한) 한 쪽의 면만 취합니다.
-                        # 0.1mm 두께의 벽이므로 어느 면을 취하든 중심선과 사실상 일치(0.05mm 오차)하며,
-                        # 꼬임이나 보간 에러가 전혀 발생하지 않습니다.
-
-                        # Z축을 포함하여 반환
-                        if has_z:
-                            z_array = np.full((len(path1), 1), z_val)
-                            simplified = np.hstack((path1, z_array))
+                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
+                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
                         else:
-                            simplified = path1
+                            poly_pts = pts_2d
+
+                        poly = Polygon(poly_pts)
+                        if poly.is_valid and poly.area > 0:
+                            # 폴리곤의 두께를 대략적으로 파악하기 위해 면적/둘레를 사용하거나
+                            # 단순히 충분히 큰 값부터 줄여가며 오프셋하여 붕괴선을 찾습니다.
+                            # 사용자의 콘크리트 벽은 두께가 꽤 큼 (수십~수백mm)
+                            # Shapely의 centerline 모듈을 직접 구현하기는 길어지므로,
+                            # 가장 얇아질 때까지 반복해서 오프셋(수축)하는 방식으로 중심 골격선을 찾습니다.
+
+                            current_poly = poly
+                            # 1mm씩 깎아들어가며 선으로 붕괴될 때까지 반복
+                            # 최대 500회 (두께 1000mm 커버)
+                            step = 1.0
+                            last_valid_geom = None
+
+                            for _ in range(500):
+                                shrunk = current_poly.buffer(-step, join_style=2)
+                                if shrunk.is_empty:
+                                    break
+
+                                # 면적이 매우 작아져서 사실상 선이나 얇은 조각이 된 경우
+                                if shrunk.area < 10.0 and shrunk.length > 0:
+                                    last_valid_geom = shrunk
+                                    break
+
+                                current_poly = shrunk
+                                last_valid_geom = current_poly
+
+                            # 수축된 기하학적 형태에서 중심선을 추출
+                            centerline_pts = []
+                            if last_valid_geom is not None:
+                                if last_valid_geom.geom_type == 'Polygon':
+                                    # 매우 얇아진 폴리곤이라면 그 둘레의 절반을 취함
+                                    # 이 때 시작점을 X좌표의 양 끝단 중 하나로 강제
+                                    coords = list(last_valid_geom.exterior.coords)
+                                    if len(coords) > 2:
+                                        c_pts = np.array(coords)
+                                        # X축으로 가장 양 끝단인 두 점 찾기
+                                        x_coords = c_pts[:, 0]
+                                        idx_a = np.argmin(x_coords)
+                                        idx_b = np.argmax(x_coords)
+
+                                        if idx_a > idx_b:
+                                            idx_a, idx_b = idx_b, idx_a
+
+                                        path1 = c_pts[idx_a:idx_b+1]
+                                        path2 = np.concatenate((c_pts[idx_b:], c_pts[:idx_a+1]))
+
+                                        # 두 경로 중 길이가 더 짧은(직선에 가까운) 중앙선을 선택
+                                        len1 = np.sum(np.linalg.norm(path1[1:] - path1[:-1], axis=1))
+                                        len2 = np.sum(np.linalg.norm(path2[1:] - path2[:-1], axis=1))
+
+                                        centerline_pts = path1 if len1 < len2 else path2
+
+                                elif last_valid_geom.geom_type in ['LineString', 'MultiLineString']:
+                                    if last_valid_geom.geom_type == 'LineString':
+                                        centerline_pts = list(last_valid_geom.coords)
+                                    else:
+                                        longest = max(last_valid_geom.geoms, key=lambda l: l.length)
+                                        centerline_pts = list(longest.coords)
+
+                            if len(centerline_pts) > 1:
+                                out_array = np.array(centerline_pts, dtype=float)
+                                if has_z:
+                                    z_array = np.full((len(out_array), 1), z_val)
+                                    simplified = np.hstack((out_array, z_array))
+                                else:
+                                    simplified = out_array
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
