@@ -1081,17 +1081,21 @@ def compute_slice_paths_with_travel(
                 if st.session_state.get("centerline_mode", False):
                     if len(simplified) > 3:
                         from shapely.geometry import Polygon
-                        # 닫힌 폴리곤으로 간주
-                        pts = simplified
-                        # 마지막 점이 첫 점과 같지 않으면 닫아줌
-                        if np.linalg.norm(pts[0] - pts[-1]) > 1e-9:
-                            poly_pts = np.vstack([pts, pts[0]])
+                        # Z축 값 저장 (Shapely는 2D 평면 데이터로 처리하므로 Z값이 소실될 수 있음)
+                        pts = np.array(simplified)
+                        has_z = (pts.shape[1] > 2)
+                        z_val = pts[0, 2] if has_z else 0.0
+
+                        # 2D 평면으로 분리
+                        pts_2d = pts[:, :2]
+                        if np.linalg.norm(pts_2d[0] - pts_2d[-1]) > 1e-9:
+                            poly_pts = np.vstack([pts_2d, pts_2d[0]])
                         else:
-                            poly_pts = pts
+                            poly_pts = pts_2d
 
                         poly = Polygon(poly_pts)
                         if poly.is_valid and poly.area > 0:
-                            # 얇은 벽(예: 0.1mm)의 절반보다 약간 작게 오프셋하여 붕괴시킴 (0.04mm)
+                            # 얇은 벽을 오프셋하여 붕괴시킴 (0.04mm)
                             offset_poly = poly.buffer(-0.04, join_style=2)
 
                             centerline_pts = []
@@ -1114,23 +1118,30 @@ def compute_slice_paths_with_travel(
                             if len(centerline_pts) > 2:
                                 c_pts = np.array(centerline_pts)
                                 n = len(c_pts)
-                                seg_lens = np.linalg.norm(c_pts[1:] - c_pts[:-1], axis=1)
+                                seg_lens = np.linalg.norm(c_pts[1:, :2] - c_pts[:-1, :2], axis=1)
                                 target_dist = np.sum(seg_lens) / 2.0
 
-                                out = [c_pts[0]]
+                                out = [c_pts[0, :2]]
                                 acc = 0.0
                                 for i in range(n - 1):
                                     d = seg_lens[i]
                                     if acc + d >= target_dist:
                                         remain = target_dist - acc
                                         t = remain / d if d > 0 else 0
-                                        mid_pt = (1.0 - t)*c_pts[i] + t*c_pts[i+1]
+                                        mid_pt = (1.0 - t)*c_pts[i, :2] + t*c_pts[i+1, :2]
                                         out.append(mid_pt)
                                         break
                                     else:
-                                        out.append(c_pts[i+1])
+                                        out.append(c_pts[i+1, :2])
                                         acc += d
-                                simplified = np.array(out, dtype=float)
+
+                                out_array = np.array(out, dtype=float)
+                                # Z축 값 복원
+                                if has_z:
+                                    z_array = np.full((len(out_array), 1), z_val)
+                                    simplified = np.hstack((out_array, z_array))
+                                else:
+                                    simplified = out_array
                 layer_polys.append(simplified.copy())
 
                 if i_seg == 0:
