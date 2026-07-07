@@ -282,6 +282,57 @@ def save_access_log():
 
 save_access_log()
 
+def _build_polygons_from_segments(segments):
+    from shapely.geometry import Polygon
+    import numpy as np
+
+    prepared = []
+    for seg3d in segments:
+        xy = seg3d[:, :2]
+        if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+            xy = np.vstack([xy, xy[0]])
+        try:
+            poly = Polygon(xy)
+            if not poly.is_empty and poly.is_valid and poly.area > 1e-9:
+                prepared.append(poly)
+        except Exception:
+            pass
+
+    if not prepared:
+        return []
+
+    # Sort by area descending
+    prepared.sort(key=lambda p: p.area, reverse=True)
+
+    used = [False] * len(prepared)
+    new_polygons = []
+
+    eps = 1e-6
+    for i, outer in enumerate(prepared):
+        if used[i]: continue
+
+        holes = []
+        for j, inner in enumerate(prepared):
+            if i == j or used[j]: continue
+            if outer.area <= inner.area: continue
+            try:
+                if outer.buffer(eps).covers(inner):
+                    holes.append(inner)
+                    used[j] = True
+            except Exception:
+                pass
+
+        try:
+            full_poly = Polygon(shell=outer.exterior, holes=[h.exterior for h in holes])
+            if full_poly.is_valid:
+                new_polygons.append(full_poly)
+        except Exception:
+            pass
+
+        used[i] = True
+
+    return new_polygons
+
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -2078,6 +2129,72 @@ if uploaded is not None:
         )
 
     st.session_state.mesh = mesh
+
+
+with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
+    st.markdown("⚠️ 주의: 수직(Z축)으로 일정한 2.5D 형상에만 권장합니다.")
+    stl_offset_val = st.number_input("조절량 (mm)", min_value=-100.0, max_value=100.0, value=0.0, step=0.1, help="양수: 굵게, 음수: 얇게")
+
+    col1, col2 = st.columns(2)
+    if col1.button("적용 및 미리보기", use_container_width=True):
+        if "mesh" in st.session_state and st.session_state.mesh is not None:
+            mesh = st.session_state.mesh
+            bounds = mesh.bounds
+            z_min = bounds[0][2]
+            z_max = bounds[1][2]
+            height = z_max - z_min
+
+            # Slice slightly above bottom
+            sec = mesh.section(plane_origin=[0, 0, z_min + min(1.0, height/2.0)], plane_normal=[0, 0, 1])
+            if sec is not None:
+                slice2D, to3D = sec.to_2D()
+
+                # Extract 3D segments
+                segments = []
+                for seg in slice2D.discrete:
+                    seg = np.array(seg)
+                    seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                    segments.append(seg3d)
+
+                # Build Polygons with holes
+                polys = _build_polygons_from_segments(segments)
+
+                # Offset and Extrude
+                extruded_meshes = []
+                for poly in polys:
+                    try:
+                        buffered = poly.buffer(stl_offset_val, join_style=2)
+                        geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
+                        for g in geoms:
+                            if g.geom_type == 'Polygon' and not g.is_empty:
+                                ex_mesh = trimesh.creation.extrude_polygon(g, height=height)
+                                extruded_meshes.append(ex_mesh)
+                    except Exception as e:
+                        pass
+
+                if extruded_meshes:
+                    import trimesh.util
+                    new_mesh = trimesh.util.concatenate(extruded_meshes)
+
+                    # Move to original Z
+                    new_mesh.apply_translation([0, 0, z_min])
+                    st.session_state.mesh = new_mesh
+                    st.success("두께 조절 완료!")
+                else:
+                    st.error("오프셋 결과물이 비어있거나 에러가 발생했습니다.")
+            else:
+                st.error("단면을 추출할 수 없습니다.")
+
+    if "mesh" in st.session_state and st.session_state.mesh is not None:
+        stl_bytes = trimesh.exchange.stl.export_stl(st.session_state.mesh)
+        col2.download_button(
+            label="STL 파일 저장",
+            data=stl_bytes,
+            file_name="adjusted_model.stl",
+            mime="model/stl",
+            use_container_width=True
+        )
+
     st.session_state.base_name = Path(uploaded.name).stem or "output"
     st.session_state.last_uploaded_name = uploaded.name
     if is_new_upload:
