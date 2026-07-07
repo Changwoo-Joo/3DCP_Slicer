@@ -2786,8 +2786,20 @@ with right_col:
     if segments is None or total_segments == 0:
         st.info("슬라이싱 후 진행 슬라이더가 나타납니다.")
     else:
+
         default_val = int(clamp(st.session_state.paths_scrub, 0, total_segments))
+
+        # --- [수정] 슬라이더 및 입력창의 기존 값이 변경된 total_segments를 초과하지 않도록 강제 교정 ---
+        if st.session_state.get("paths_scrub_slider", 0) > total_segments:
+            st.session_state.paths_scrub_slider = total_segments
+        if st.session_state.get("paths_scrub_input", 0) > total_segments:
+            st.session_state.paths_scrub_input = total_segments
+        if st.session_state.get("paths_scrub", 0) > total_segments:
+            st.session_state.paths_scrub = total_segments
+        # -----------------------------------------------------------------------------------
+
         if "paths_scrub_slider_initialized" not in st.session_state:
+
             st.session_state.paths_scrub_slider = default_val
             st.session_state.paths_scrub_slider_initialized = True
         if "paths_scrub_input_initialized" not in st.session_state:
