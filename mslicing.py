@@ -314,18 +314,36 @@ def _build_polygons_from_segments(segments):
     return []
 
 
-def _extrude_polygon_walls(poly, height):
+def _extrude_robust_dense(poly, height):
     import numpy as np
     import trimesh
+    from shapely.geometry import Polygon, LineString, Point
+    from scipy.spatial import Delaunay
 
-    # 1순위: 만약 환경에 맵박스(mapbox-earcut) 등 엔진이 있다면 기본 익스트루드 사용
+    # 1. 맵박스 엔진이 있으면 그것을 최우선으로 사용
     try:
         clean_poly = poly.buffer(0)
         return trimesh.creation.extrude_polygon(clean_poly, height=height)
     except Exception:
         pass
 
-    # 2순위: 엔진이 없을 경우, 수동으로 뚜껑(캡)과 외벽을 모두 생성하는 로직 (Scipy 기반)
+    # 2. 엔진이 없을 경우 Scipy 우회 로직 (외곽선을 촘촘하게 쪼개서 Delaunay의 경계 침범 방지)
+    def densify_line(coords, max_dist=1.0):
+        dense_pts = []
+        for i in range(len(coords)-1):
+            p1 = np.array(coords[i])
+            p2 = np.array(coords[i+1])
+            dist = np.linalg.norm(p2 - p1)
+            num_segs = max(1, int(np.ceil(dist / max_dist)))
+            for j in range(num_segs):
+                dense_pts.append(p1 + (p2 - p1) * (j / num_segs))
+        # 마지막 점은 폐곡선이므로 추가하지 않음 (첫 점과 동일)
+        return dense_pts
+
+    # 외벽 꼭짓점 추출 (촘촘하게)
+    dense_ext = densify_line(list(poly.exterior.coords))
+    dense_holes = [densify_line(list(interior.coords)) for interior in poly.interiors]
+
     vertices = []
     faces = []
 
@@ -336,32 +354,34 @@ def _extrude_polygon_walls(poly, height):
         start_idx = len(vertices)
         for pt in coords: vertices.append([pt[0], pt[1], 0.0])
         for pt in coords: vertices.append([pt[0], pt[1], height])
-        for i in range(n - 1):
-            b1, b2 = start_idx + i, start_idx + i + 1
-            t1, t2 = start_idx + n + i, start_idx + n + i + 1
+        for i in range(n):
+            next_i = (i + 1) % n
+            b1, b2 = start_idx + i, start_idx + next_i
+            t1, t2 = start_idx + n + i, start_idx + n + next_i
             faces.extend([[b1, b2, t1], [t1, b2, t2]])
 
-    _add_ring_walls(list(poly.exterior.coords))
-    for interior in poly.interiors:
-        _add_ring_walls(list(interior.coords))
+    _add_ring_walls(dense_ext)
+    for hole in dense_holes:
+        _add_ring_walls(hole)
 
-    # 2. 위/아래 뚜껑 생성 (Scipy Delaunay 삼각분할 활용)
+    # 2. 뚜껑 생성 (Delaunay)
     try:
-        from scipy.spatial import Delaunay
-        from shapely.geometry import Point
-
-        pts = list(poly.exterior.coords)
-        for interior in poly.interiors:
-            pts.extend(list(interior.coords))
+        pts = dense_ext.copy()
+        for hole in dense_holes:
+            pts.extend(hole)
         pts = np.array(pts)
 
         if len(pts) >= 3:
             tri = Delaunay(pts)
             cap_faces = []
+
+            # 다각형 내부에 있는 삼각형만 필터링
             for face in tri.simplices:
                 p1, p2, p3 = pts[face[0]], pts[face[1]], pts[face[2]]
                 centroid = Point((p1[0]+p2[0]+p3[0])/3.0, (p1[1]+p2[1]+p3[1])/3.0)
-                if poly.covers(centroid):  # 다각형 내부에 있는 삼각형만 추출
+
+                # 외곽선 내부이고 구멍 외부에 있는지 검사
+                if poly.covers(centroid):
                     cp = np.cross(p2 - p1, p3 - p1)
                     if cp < 0:
                         cap_faces.append([face[0], face[2], face[1]])
@@ -369,12 +389,10 @@ def _extrude_polygon_walls(poly, height):
                         cap_faces.append([face[0], face[1], face[2]])
 
             if len(cap_faces) > 0:
-                # 바닥 뚜껑 (법선이 아래를 향하도록 순서 뒤집기)
                 start_bot = len(vertices)
                 for pt in pts: vertices.append([pt[0], pt[1], 0.0])
                 for f in cap_faces: faces.append([start_bot + f[0], start_bot + f[2], start_bot + f[1]])
 
-                # 천장 뚜껑 (법선이 위를 향함)
                 start_top = len(vertices)
                 for pt in pts: vertices.append([pt[0], pt[1], height])
                 for f in cap_faces: faces.append([start_top + f[0], start_top + f[1], start_top + f[2]])
@@ -2204,7 +2222,7 @@ if uploaded is not None:
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
                     for g in geoms:
                         if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = _extrude_polygon_walls(g, height=height)
+                            ex_mesh = _extrude_robust_dense(g, height=height)
                             extruded_meshes.append(ex_mesh)
                 if extruded_meshes:
                     import trimesh.util
