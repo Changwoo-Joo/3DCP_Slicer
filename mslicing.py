@@ -909,81 +909,57 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     if inward.is_empty:
-        exterior_coords = list(poly.exterior.coords)
-        max_dist = -1.0
-        idx_start, idx_end = 0, 0
-        num_pts = len(exterior_coords)
+        # 이 도형은 중심선 변환 기준 두께보다 얇은 벽체입니다.
+        # 중심선을 완벽하게 추출하기 위해, 뼈대(Skeleton)가 될 때까지 점진적으로 깎아냅니다.
+        step = max_thickness_mm / 4.0
+        current = poly
+        while step > 0.005:
+            next_geom = current.buffer(-step, join_style=2)
+            if next_geom.is_empty:
+                step /= 2.0
+            else:
+                current = next_geom
 
-        # Subsample if too large to find ends
-        if num_pts > 200:
-            indices = np.linspace(0, num_pts-1, 200).astype(int)
-            sampled_coords = [exterior_coords[i] for i in indices]
-        else:
-            indices = list(range(num_pts))
-            sampled_coords = exterior_coords
+        if current.geom_type == 'MultiPolygon':
+            current = max(list(current.geoms), key=lambda x: x.area)
 
-        for i in range(len(sampled_coords) - 1):
-            for j in range(i + 1, len(sampled_coords)):
-                d = math.hypot(sampled_coords[i][0] - sampled_coords[j][0], 
-                               sampled_coords[i][1] - sampled_coords[j][1])
-                if d > max_dist:
-                    max_dist = d
-                    idx_start, idx_end = indices[i], indices[j]
+        coords = list(current.exterior.coords)[:-1]
 
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
+        # 뼈대의 외곽선은 두 개의 긴 변과 두 개의 매우 짧은 끝단(마구리면)으로 구성됩니다.
+        # 가장 짧은 두 변을 찾아서 절단하면 정확한 중심선 1가닥을 얻을 수 있습니다.
+        edges = []
+        for i in range(len(coords)):
+            p1 = coords[i]
+            p2 = coords[(i+1)%len(coords)]
+            d = np.linalg.norm(np.array(p1) - np.array(p2))
+            edges.append((i, d))
 
-        path1_coords = exterior_coords[idx_start : idx_end + 1]
-        path2_coords = exterior_coords[idx_end:] + exterior_coords[: idx_start + 1]
+        edges.sort(key=lambda x: x[1])
 
-        if len(path1_coords) < 2 or len(path2_coords) < 2:
-            return seg3d_closed, False
+        # 최소 2개의 엣지가 존재해야 함
+        if len(edges) >= 2:
+            idx1 = edges[0][0]
+            idx2 = edges[1][0]
 
-        line1 = LineString(path1_coords)
-        line2 = LineString(path2_coords)
+            if idx1 > idx2: idx1, idx2 = idx2, idx1
 
-        longer_line = line1 if line1.length > line2.length else line2
+            path1 = coords[idx1+1 : idx2+1]
+            path2 = coords[idx2+1:] + coords[:idx1+1]
 
-        # Area / Length gives a highly accurate average thickness for ribbons
-        thickness = poly.area / longer_line.length
+            if len(path1) >= 2 and len(path2) >= 2:
+                l1 = LineString(path1)
+                l2 = LineString(path2)
+                centerline = l1 if l1.length > l2.length else l2
+                pts = np.array(centerline.coords)
 
-        # Offset the longer contour line inward by exactly half thickness
-        try:
-            offset1 = longer_line.parallel_offset(thickness / 2.0, 'left', join_style=2)
-            offset2 = longer_line.parallel_offset(thickness / 2.0, 'right', join_style=2)
+                seg3d_out = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
+                return seg3d_out, True
 
-            len1 = offset1.intersection(poly).length
-            len2 = offset2.intersection(poly).length
-
-            centerline = offset1 if len1 > len2 else offset2
-
-            from shapely.ops import linemerge
-            if centerline.geom_type == 'MultiLineString':
-                centerline = linemerge(centerline)
-                if centerline.geom_type == 'MultiLineString':
-                    centerline = max(list(centerline.geoms), key=lambda x: x.length)
-
-            pts = np.array(centerline.coords)
-
-        except Exception:
-            return seg3d_closed, False
-
-        if len(pts) < 2:
-            return seg3d_closed, False
-
-        out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
-
-        # --- 방향 정렬 ---
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]
-
-        return out_path, True
+        # 만약 실패하면 기존 외곽선 반환
+        return seg3d_closed, False
 
     return seg3d_closed, False
+
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
