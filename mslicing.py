@@ -889,76 +889,137 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    z_val = float(np.mean(seg3d_closed[:, 2])) if seg3d_closed.shape[1] >= 3 else 0.0
 
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
     try:
-        from shapely.geometry import Polygon, LineString
+        from shapely.geometry import Polygon
         poly = Polygon(xy)
     except Exception:
         return seg3d_closed, False
 
-    if poly.is_empty or not poly.is_valid:
+    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
         return seg3d_closed, False
 
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
+    if len(poly.interiors) > 0:
         return seg3d_closed, False
 
-    if inward.is_empty:
-        # 이 도형은 중심선 변환 기준 두께보다 얇은 벽체입니다.
-        # 중심선을 완벽하게 추출하기 위해, 뼈대(Skeleton)가 될 때까지 점진적으로 깎아냅니다.
-        step = max_thickness_mm / 4.0
-        current = poly
-        while step > 0.005:
-            next_geom = current.buffer(-step, join_style=2)
-            if next_geom.is_empty:
-                step /= 2.0
-            else:
-                current = next_geom
+    coords = list(poly.exterior.coords)
+    if len(coords) < 5:
+        return seg3d_closed, False
+    coords = coords[:-1]
 
-        if current.geom_type == 'MultiPolygon':
-            current = max(list(current.geoms), key=lambda x: x.area)
-
-        coords = list(current.exterior.coords)[:-1]
-
-        # 뼈대의 외곽선은 두 개의 긴 변과 두 개의 매우 짧은 끝단(마구리면)으로 구성됩니다.
-        # 가장 짧은 두 변을 찾아서 절단하면 정확한 중심선 1가닥을 얻을 수 있습니다.
-        edges = []
-        for i in range(len(coords)):
-            p1 = coords[i]
-            p2 = coords[(i+1)%len(coords)]
-            d = np.linalg.norm(np.array(p1) - np.array(p2))
-            edges.append((i, d))
-
-        edges.sort(key=lambda x: x[1])
-
-        # 최소 2개의 엣지가 존재해야 함
-        if len(edges) >= 2:
-            idx1 = edges[0][0]
-            idx2 = edges[1][0]
-
-            if idx1 > idx2: idx1, idx2 = idx2, idx1
-
-            path1 = coords[idx1+1 : idx2+1]
-            path2 = coords[idx2+1:] + coords[:idx1+1]
-
-            if len(path1) >= 2 and len(path2) >= 2:
-                l1 = LineString(path1)
-                l2 = LineString(path2)
-                centerline = l1 if l1.length > l2.length else l2
-                pts = np.array(centerline.coords)
-
-                seg3d_out = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
-                return seg3d_out, True
-
-        # 만약 실패하면 기존 외곽선 반환
+    perimeter = float(poly.exterior.length)
+    area = float(poly.area)
+    disc = perimeter * perimeter - 16.0 * area
+    if disc <= 0.0:
         return seg3d_closed, False
 
-    return seg3d_closed, False
+    est_thickness = (perimeter - np.sqrt(disc)) / 4.0
+    if (not np.isfinite(est_thickness)) or est_thickness <= 0.0:
+        return seg3d_closed, False
+
+    judge_tol = max(1.0, est_thickness * 0.05)
+    if est_thickness > float(max_thickness_mm) + judge_tol:
+        return seg3d_closed, False
+
+    n = len(coords)
+    edge_lengths = []
+    for i in range(n):
+        p1 = np.asarray(coords[i], dtype=float)
+        p2 = np.asarray(coords[(i + 1) % n], dtype=float)
+        edge_lengths.append(float(np.linalg.norm(p2 - p1)))
+
+    end_tol = max(2.0, est_thickness * 0.12)
+    candidates = [i for i, d in enumerate(edge_lengths) if abs(d - est_thickness) <= end_tol]
+    if len(candidates) < 2:
+        return seg3d_closed, False
+
+    best_pair = None
+    best_sep = -1
+    best_score = None
+    for a_i in range(len(candidates) - 1):
+        for b_i in range(a_i + 1, len(candidates)):
+            a = candidates[a_i]
+            b = candidates[b_i]
+            sep = min((b - a) % n, (a - b) % n)
+            score = abs(edge_lengths[a] - est_thickness) + abs(edge_lengths[b] - est_thickness)
+            if sep > best_sep or (sep == best_sep and (best_score is None or score < best_score)):
+                best_pair = (a, b)
+                best_sep = sep
+                best_score = score
+
+    if best_pair is None:
+        return seg3d_closed, False
+
+    idx1, idx2 = best_pair
+    if idx1 > idx2:
+        idx1, idx2 = idx2, idx1
+
+    path1 = coords[idx1 + 1 : idx2 + 1]
+    path2 = coords[idx2 + 1 :] + coords[: idx1 + 1]
+    if len(path1) < 2 or len(path2) < 2:
+        return seg3d_closed, False
+
+    path2 = path2[::-1]
+
+    def _dedupe(points):
+        pts = np.asarray(points, dtype=float)
+        if len(pts) <= 1:
+            return pts
+        keep = [0]
+        for i in range(1, len(pts)):
+            if np.linalg.norm(pts[i] - pts[keep[-1]]) > 1e-9:
+                keep.append(i)
+        return pts[keep]
+
+    def _resample(points, count):
+        pts = _dedupe(points)
+        if len(pts) == 0:
+            return pts
+        if len(pts) == 1:
+            return np.repeat(pts[:1], count, axis=0)
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        total = float(np.sum(seg))
+        if total <= 1e-9:
+            return np.repeat(pts[:1], count, axis=0)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        targets = np.linspace(0.0, total, count)
+        out = []
+        j = 0
+        for t in targets:
+            while j < len(seg) - 1 and cum[j + 1] < t:
+                j += 1
+            denom = seg[j] if seg[j] > 1e-12 else 1.0
+            alpha = (t - cum[j]) / denom
+            out.append(pts[j] * (1.0 - alpha) + pts[j + 1] * alpha)
+        return np.asarray(out, dtype=float)
+
+    sample_count = int(max(32, min(2000, max(len(path1), len(path2)))))
+    p1 = _resample(path1, sample_count)
+    p2 = _resample(path2, sample_count)
+    if len(p1) < 2 or len(p2) < 2:
+        return seg3d_closed, False
+
+    same_dir = np.linalg.norm(p1[0] - p2[0]) + np.linalg.norm(p1[-1] - p2[-1])
+    rev_dir = np.linalg.norm(p1[0] - p2[-1]) + np.linalg.norm(p1[-1] - p2[0])
+    if rev_dir < same_dir:
+        p2 = p2[::-1]
+
+    center_pts = 0.5 * (p1 + p2)
+    center_pts = _dedupe(center_pts)
+    if len(center_pts) < 2:
+        return seg3d_closed, False
+
+    if ref_pt is not None:
+        ref_xy = np.asarray(ref_pt, dtype=float)[:2]
+        if np.linalg.norm(center_pts[0] - ref_xy) > np.linalg.norm(center_pts[-1] - ref_xy):
+            center_pts = center_pts[::-1]
+
+    seg3d_out = np.column_stack([center_pts[:, 0], center_pts[:, 1], np.full(len(center_pts), z_val)])
+    return seg3d_out, True
 
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
