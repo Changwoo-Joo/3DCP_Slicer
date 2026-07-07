@@ -317,8 +317,8 @@ def _build_polygons_from_segments(segments):
 def _extrude_robust_dense(poly, height):
     import numpy as np
     import trimesh
-    from shapely.geometry import Polygon, LineString, Point
-    from scipy.spatial import Delaunay
+    from shapely.geometry import Polygon, LineString
+    from shapely.ops import triangulate
 
     # 1. 맵박스 엔진이 있으면 그것을 최우선으로 사용
     try:
@@ -327,8 +327,8 @@ def _extrude_robust_dense(poly, height):
     except Exception:
         pass
 
-    # 2. 엔진이 없을 경우 Scipy 우회 로직 (외곽선을 촘촘하게 쪼개서 Delaunay의 경계 침범 방지)
-    def densify_line(coords, max_dist=1.0):
+    # 2. 엔진이 없을 경우 Shapely 삼각분할을 이용한 강제 뚜껑 생성
+    def densify_line(coords, max_dist=2.0):
         dense_pts = []
         for i in range(len(coords)-1):
             p1 = np.array(coords[i])
@@ -336,13 +336,17 @@ def _extrude_robust_dense(poly, height):
             dist = np.linalg.norm(p2 - p1)
             num_segs = max(1, int(np.ceil(dist / max_dist)))
             for j in range(num_segs):
-                dense_pts.append(p1 + (p2 - p1) * (j / num_segs))
-        # 마지막 점은 폐곡선이므로 추가하지 않음 (첫 점과 동일)
+                dense_pts.append(tuple(p1 + (p2 - p1) * (j / num_segs)))
         return dense_pts
 
-    # 외벽 꼭짓점 추출 (촘촘하게)
+    # 외곽선과 구멍을 촘촘하게 분할
     dense_ext = densify_line(list(poly.exterior.coords))
     dense_holes = [densify_line(list(interior.coords)) for interior in poly.interiors]
+
+    # 조밀한 점들로 임시 폴리곤 생성
+    dense_poly = Polygon(shell=dense_ext, holes=dense_holes)
+    if not dense_poly.is_valid:
+        dense_poly = dense_poly.buffer(0)
 
     vertices = []
     faces = []
@@ -364,43 +368,57 @@ def _extrude_robust_dense(poly, height):
     for hole in dense_holes:
         _add_ring_walls(hole)
 
-    # 2. 뚜껑 생성 (Delaunay)
+    # 2. 뚜껑 생성 (Shapely Triangulate)
     try:
-        pts = dense_ext.copy()
-        for hole in dense_holes:
-            pts.extend(hole)
-        pts = np.array(pts)
+        # Shapely의 GEOS 엔진은 에러 없이 강력하게 삼각분할을 수행합니다.
+        tris = triangulate(dense_poly)
 
-        if len(pts) >= 3:
-            tri = Delaunay(pts)
+        # 다각형 내부에 있는 삼각형만 필터링
+        valid_tris = [t for t in tris if dense_poly.covers(t.centroid)]
+
+        if valid_tris:
+            cap_vertices = []
+            vertex_map = {}
             cap_faces = []
 
-            # 다각형 내부에 있는 삼각형만 필터링
-            for face in tri.simplices:
-                p1, p2, p3 = pts[face[0]], pts[face[1]], pts[face[2]]
-                centroid = Point((p1[0]+p2[0]+p3[0])/3.0, (p1[1]+p2[1]+p3[1])/3.0)
+            for t in valid_tris:
+                coords = list(t.exterior.coords)[:-1]
+                face_idx = []
+                for pt in coords:
+                    pt_tuple = (round(pt[0], 4), round(pt[1], 4))
+                    if pt_tuple not in vertex_map:
+                        vertex_map[pt_tuple] = len(cap_vertices)
+                        cap_vertices.append([pt[0], pt[1]])
+                    face_idx.append(vertex_map[pt_tuple])
 
-                # 외곽선 내부이고 구멍 외부에 있는지 검사
-                if poly.covers(centroid):
-                    cp = np.cross(p2 - p1, p3 - p1)
-                    if cp < 0:
-                        cap_faces.append([face[0], face[2], face[1]])
-                    else:
-                        cap_faces.append([face[0], face[1], face[2]])
+                # 법선 계산을 위한 외적
+                p1, p2, p3 = np.array(cap_vertices[face_idx[0]]), np.array(cap_vertices[face_idx[1]]), np.array(cap_vertices[face_idx[2]])
+                cp = np.cross(p2 - p1, p3 - p1)
 
-            if len(cap_faces) > 0:
+                if cp < 0:
+                    cap_faces.append([face_idx[0], face_idx[2], face_idx[1]])
+                else:
+                    cap_faces.append([face_idx[0], face_idx[1], face_idx[2]])
+
+            if cap_faces:
+                # 바닥 뚜껑 (법선 아래)
                 start_bot = len(vertices)
-                for pt in pts: vertices.append([pt[0], pt[1], 0.0])
+                for pt in cap_vertices: vertices.append([pt[0], pt[1], 0.0])
                 for f in cap_faces: faces.append([start_bot + f[0], start_bot + f[2], start_bot + f[1]])
 
+                # 천장 뚜껑 (법선 위)
                 start_top = len(vertices)
-                for pt in pts: vertices.append([pt[0], pt[1], height])
+                for pt in cap_vertices: vertices.append([pt[0], pt[1], height])
                 for f in cap_faces: faces.append([start_top + f[0], start_top + f[1], start_top + f[2]])
-    except Exception:
-        pass
+
+    except Exception as e:
+        import streamlit as st
+        st.error(f"뚜껑 생성 중 오류 발생: {e}")
 
     if not vertices: return None
-    return trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
+    mesh = trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
+    mesh.fix_normals() # 상용 뷰어 호환성을 위한 법선 재정렬
+    return mesh
 
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
