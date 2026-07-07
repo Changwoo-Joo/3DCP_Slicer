@@ -5,7 +5,7 @@ import math
 import json
 import trimesh
 from shapely.geometry import Polygon, MultiPolygon, LineString
-from shapely.ops import nearest_points
+from shapely.ops import linemerge
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -758,7 +758,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
 
     try:
         from shapely.geometry import Polygon, LineString
-        import math
         poly = Polygon(xy)
     except Exception:
         return seg3d_closed, False
@@ -777,9 +776,8 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         idx_start, idx_end = 0, 0
         num_pts = len(exterior_coords)
 
-        # To avoid O(N^2) for very large polygons, subsample if too large
+        # Subsample if too large to find ends
         if num_pts > 200:
-
             indices = np.linspace(0, num_pts-1, 200).astype(int)
             sampled_coords = [exterior_coords[i] for i in indices]
         else:
@@ -807,38 +805,35 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         line2 = LineString(path2_coords)
 
         longer_line = line1 if line1.length > line2.length else line2
-        shorter_line = line2 if line1.length > line2.length else line1
 
+        # Area / Length gives a highly accurate average thickness for ribbons
+        thickness = poly.area / longer_line.length
 
+        # Offset the longer contour line inward by exactly half thickness
+        try:
+            offset1 = longer_line.parallel_offset(thickness / 2.0, 'left', join_style=2)
+            offset2 = longer_line.parallel_offset(thickness / 2.0, 'right', join_style=2)
 
-        # Resample longer line proportionally to detail
-        step = max(2.0, longer_line.length / 200.0) # at most ~200 points
-        distances = np.arange(0, longer_line.length, step)
-        if distances[-1] != longer_line.length:
-            distances = np.append(distances, longer_line.length)
+            len1 = offset1.intersection(poly).length
+            len2 = offset2.intersection(poly).length
 
-        centerline_pts = []
-        for d in distances:
-            pt1 = longer_line.interpolate(d)
-            # Find nearest point on the shorter wall
-            _, pt2 = nearest_points(pt1, shorter_line)
+            centerline = offset1 if len1 > len2 else offset2
 
-            mid_x = (pt1.x + pt2.x) / 2.0
-            mid_y = (pt1.y + pt2.y) / 2.0
-            centerline_pts.append([mid_x, mid_y, z_val])
+            from shapely.ops import linemerge
+            centerline = linemerge(centerline)
 
-        out_path = np.array(centerline_pts, dtype=float)
+            if centerline.geom_type == 'MultiLineString':
+                centerline = max(list(centerline.geoms), key=lambda x: x.length)
 
-        # Remove duplicate points if any
-        clean_pts = []
-        for pt in out_path:
-            if not clean_pts or np.linalg.norm(pt[:2] - clean_pts[-1][:2]) > 1e-5:
-                clean_pts.append(pt)
+            pts = np.array(centerline.coords)
 
-        out_path = np.array(clean_pts, dtype=float)
-
-        if len(out_path) < 2:
+        except Exception:
             return seg3d_closed, False
+
+        if len(pts) < 2:
+            return seg3d_closed, False
+
+        out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
 
         # --- 방향 정렬 ---
         if ref_pt is not None:
@@ -851,6 +846,89 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return out_path, True
 
     return seg3d_closed, False
+
+def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return pts
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    max_idx = int(np.argmax(lens))
+
+    p1 = pts[max_idx]
+    p2 = pts[(max_idx + 1) % n]
+    mid = (p1 + p2) / 2.0
+
+    out = [mid]
+    for i in range(1, n + 1):
+        out.append(pts[(max_idx + i) % n].copy())
+    out.append(mid.copy())
+    return np.asarray(out, dtype=float)
+
+def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
+    """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2 or shift_dist <= 0:
+        return pts
+    
+    # 닫힌 루프 확인 및 중복 끝점 제거
+    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
+        pts = pts[:-1]
+        
+    n = len(pts)
+    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
+    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
+    total = float(np.sum(lens))
+    
+    shift_dist = shift_dist % total
+    if shift_dist < 1e-5:
+        return np.vstack([pts, pts[0]]) # 닫아서 반환
+        
+    acc = 0.0
+    i = 0
+    while i < n and acc + lens[i] < shift_dist:
+        acc += lens[i]
+        i += 1
+        
+    p = pts[i]
+    q = pts[(i + 1) % n]
+    d = lens[i]
+    
+    cut = p + ((shift_dist - acc) / d) * (q - p) if d > 0 else p.copy()
+    
+    out = [cut]
+    for j in range(1, n + 1):
+        idx = (i + j) % n
+        out.append(pts[idx].copy())
+        
+    out.append(cut.copy())
+    return np.asarray(out, dtype=float)
+
+# =========================
+# Plotly: STL (정적)
+# =========================
+def _apply_translation_to_mesh(mesh: trimesh.Trimesh, dx: float, dy: float, dz: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    m.apply_translation([float(dx), float(dy), float(dz)])
+    return m
+
+
+def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, rx_deg: float = 0.0, ry_deg: float = 0.0) -> trimesh.Trimesh:
+    m = mesh.copy()
+    c = np.asarray(m.bounding_box.centroid, dtype=float)
+    T1 = trimesh.transformations.translation_matrix(-c)
+    T2 = trimesh.transformations.translation_matrix(c)
+    Rz = trimesh.transformations.rotation_matrix(np.deg2rad(float(rz_deg)), [0, 0, 1])
+    Rx = trimesh.transformations.rotation_matrix(np.deg2rad(float(rx_deg)), [1, 0, 0])
+    Ry = trimesh.transformations.rotation_matrix(np.deg2rad(float(ry_deg)), [0, 1, 0])
+    M = T2 @ (Rz @ Rx @ Ry) @ T1
+    m.apply_transform(M)
+    return m
+
 
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
