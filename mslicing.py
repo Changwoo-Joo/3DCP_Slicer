@@ -1295,7 +1295,12 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
                 if thickness_mm <= eps or thickness_mm > (float(max_thickness_mm) + 1e-6):
                     continue
 
-                center_geom = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
+                center_geom = wall_region.buffer(-(thickness_mm / 2.0), join_style=2)
+                if center_geom.is_empty:
+                    try:
+                        center_geom = wall_region.buffer(-(thickness_mm * 0.5 - 1e-6), join_style=2)
+                    except Exception:
+                        center_geom = center_geom
                 if center_geom.is_empty:
                     continue
                 if center_geom.geom_type == "MultiPolygon":
