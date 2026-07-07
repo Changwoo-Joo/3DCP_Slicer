@@ -1319,7 +1319,6 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
 # =========================
 # Slice path computation 
 # =========================
-
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
@@ -2171,24 +2170,8 @@ if uploaded is not None:
                     seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
                     segments.append(seg3d)
 
-
                 polys = _build_polygons_from_segments(segments)
-
-                # --- [수정] 여러 개의 독립된 다각형(CAD 파츠)들을 하나로 합침 ---
-                from shapely.ops import unary_union
-                try:
-                    inflated = [p.buffer(0.1, join_style=2) for p in polys if p.is_valid]
-                    unified_poly = unary_union(inflated).buffer(-0.1, join_style=2)
-                    if unified_poly.geom_type == 'Polygon':
-                        polys = [unified_poly]
-                    elif unified_poly.geom_type == 'MultiPolygon':
-                        polys = list(unified_poly.geoms)
-                except Exception:
-                    pass
-                # -----------------------------------------------------------------
-
                 extruded_meshes = []
-
                 for poly in polys:
                     buffered = poly.buffer(offset_val / 2.0, join_style=2)
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
