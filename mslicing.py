@@ -314,50 +314,21 @@ def _build_polygons_from_segments(segments):
     return []
 
 
-def triangulate_polygon_with_scipy(poly):
-    import numpy as np
-    from scipy.spatial import Delaunay
-    from shapely.geometry import Point
-
-    # Extract all points
-    pts = list(poly.exterior.coords)
-    for interior in poly.interiors:
-        pts.extend(list(interior.coords))
-
-    pts = np.array(pts)
-    if len(pts) < 3:
-        return np.array([]), np.array([])
-
-    # Delaunay triangulation
-    tri = Delaunay(pts)
-
-    # Filter triangles that are outside the polygon or inside holes
-    faces = []
-    for face in tri.simplices:
-        p1, p2, p3 = pts[face[0]], pts[face[1]], pts[face[2]]
-        # Check centroid
-        centroid = Point((p1[0]+p2[0]+p3[0])/3.0, (p1[1]+p2[1]+p3[1])/3.0)
-
-        # covers() is slightly faster and more robust than contains()
-        if poly.covers(centroid):
-            # Ensure correct winding (counter-clockwise)
-            # Cross product
-            cp = np.cross(p2 - p1, p3 - p1)
-            if cp < 0:
-                faces.append([face[0], face[2], face[1]])
-            else:
-                faces.append([face[0], face[1], face[2]])
-
-    return pts, np.array(faces)
-
-def _extrude_polygon_walls_with_caps(poly, height):
-    import numpy as np
+def _extrude_robust(poly, height):
     import trimesh
+    import numpy as np
 
-    # Get vertical walls
+    # 먼저 완벽한 뚜껑(캡)이 있는 3D 생성을 시도합니다.
+    try:
+        # 미세한 오류를 교정하기 위해 buffer(0) 적용
+        clean_poly = poly.buffer(0)
+        return trimesh.creation.extrude_polygon(clean_poly, height=height)
+    except Exception:
+        pass
+
+    # 만약 사용자의 환경에 triangulation 엔진이 없어서 실패하면, 뚜껑 없이 외벽만 세웁니다.
     vertices = []
     faces = []
-
     def _add_ring_walls(coords):
         n = len(coords)
         if n < 2: return
@@ -373,32 +344,8 @@ def _extrude_polygon_walls_with_caps(poly, height):
     for interior in poly.interiors:
         _add_ring_walls(list(interior.coords))
 
-    # Get caps using Scipy Delaunay
-    try:
-        cap_pts, cap_faces = triangulate_polygon_with_scipy(poly)
-        if len(cap_faces) > 0:
-            start_cap = len(vertices)
-
-            # Bottom cap (z=0, winding reversed so normal points down)
-            for pt in cap_pts:
-                vertices.append([pt[0], pt[1], 0.0])
-            for f in cap_faces:
-                faces.append([start_cap + f[0], start_cap + f[2], start_cap + f[1]]) # Reverse winding
-
-            # Top cap (z=height, normal points up)
-            start_top_cap = len(vertices)
-            for pt in cap_pts:
-                vertices.append([pt[0], pt[1], height])
-            for f in cap_faces:
-                faces.append([start_top_cap + f[0], start_top_cap + f[1], start_top_cap + f[2]])
-
-    except Exception as e:
-        print("Cap triangulation failed:", e)
-        pass
-
     if not vertices: return None
     return trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
-
 
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -1362,7 +1309,6 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
 # =========================
 # Slice path computation 
 # =========================
-
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
@@ -2214,30 +2160,14 @@ if uploaded is not None:
                     seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
                     segments.append(seg3d)
 
-
                 polys = _build_polygons_from_segments(segments)
-
-                # --- [수정] 여러 개의 독립된 다각형(CAD 파츠)들을 하나로 합침 ---
-                from shapely.ops import unary_union
-                try:
-                    inflated = [p.buffer(0.1, join_style=2) for p in polys if p.is_valid]
-                    unified_poly = unary_union(inflated).buffer(-0.1, join_style=2)
-                    if unified_poly.geom_type == 'Polygon':
-                        polys = [unified_poly]
-                    elif unified_poly.geom_type == 'MultiPolygon':
-                        polys = list(unified_poly.geoms)
-                except Exception:
-                    pass
-                # -----------------------------------------------------------------
-
                 extruded_meshes = []
-
                 for poly in polys:
                     buffered = poly.buffer(offset_val / 2.0, join_style=2)
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
                     for g in geoms:
                         if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = _extrude_polygon_walls_with_caps(g, height=height)
+                            ex_mesh = _extrude_robust(g, height=height)
                             extruded_meshes.append(ex_mesh)
                 if extruded_meshes:
                     import trimesh.util
