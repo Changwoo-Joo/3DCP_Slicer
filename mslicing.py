@@ -1110,6 +1110,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.1):
     try:
         from shapely.geometry import Polygon
+        from shapely.ops import unary_union
     except Exception:
         return [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
 
@@ -1147,6 +1148,7 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
             "used": False,
         })
 
+    # Sort by area descending (largest first)
     order = sorted(
         range(len(prepared)),
         key=lambda k: prepared[k]["poly"].area if prepared[k]["poly"] is not None else -1.0,
@@ -1171,16 +1173,15 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
             })
             continue
 
-        paired = False
-
+        # Find ALL inner polygons covered by this outer_poly
+        inner_holes = []
+        inner_indices = []
         for ii in order:
             if ii == oi:
                 continue
-
             inner_item = prepared[ii]
             if inner_item["used"]:
                 continue
-
             inner_poly = inner_item["poly"]
             if inner_poly is None:
                 continue
@@ -1188,62 +1189,107 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
                 continue
 
             try:
-                if not outer_poly.buffer(eps).covers(inner_poly):
-                    continue
-
-                wall_region = outer_poly.difference(inner_poly)
-                if wall_region.is_empty or wall_region.area <= eps:
-                    continue
-
-                thickness_mm = float(outer_poly.boundary.distance(inner_poly.boundary))
-                if thickness_mm <= eps or thickness_mm > (float(max_thickness_mm) + 1e-6):
-                    continue
-
-                center_geom = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
-                if center_geom.is_empty:
-                    continue
-                if center_geom.geom_type == "MultiPolygon":
-                    center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
-                if center_geom.geom_type != "Polygon":
-                    continue
-
-                coords = np.asarray(center_geom.exterior.coords, dtype=float)
-                if coords.shape[0] < 4:
-                    continue
-
-                z_val = outer_item["z"]
-                centerline = np.column_stack([
-                    coords[:, 0],
-                    coords[:, 1],
-                    np.full(len(coords), z_val, dtype=float),
-                ])
-
-                outer_item["used"] = True
-                inner_item["used"] = True
-                merged.append({
-                    "order_key": min(outer_item["idx"], inner_item["idx"]),
-                    "seg3d": centerline,
-                    "merged_centerline": True,
-                })
-                paired = True
-                break
+                if outer_poly.buffer(eps).covers(inner_poly):
+                    inner_holes.append(inner_poly)
+                    inner_indices.append(ii)
             except Exception:
                 continue
 
-        if not paired and not outer_item["used"]:
+        if not inner_holes:
             outer_item["used"] = True
             merged.append({
                 "order_key": outer_item["idx"],
                 "seg3d": outer_item["seg3d"],
                 "merged_centerline": False,
             })
+            continue
 
-    merged.sort(key=lambda item: item["order_key"])
+        # Create a single Polygon with all holes!
+        try:
+            # Reconstruct the outer poly with all holes
+            full_wall_poly = Polygon(shell=outer_poly.exterior, holes=[h.exterior for h in inner_holes])
+
+            # Check thickness to ensure it's a thin wall
+            # The thickness is the distance between the outer boundary and any inner boundary
+            # We can use the minimum distance to the largest hole
+            thickness_mm = float(outer_poly.boundary.distance(inner_holes[0].boundary))
+            if thickness_mm <= eps or thickness_mm > (float(max_thickness_mm) + 1e-6):
+                # If the wall is thicker than max_thickness_mm, we DO NOT merge them!
+                outer_item["used"] = True
+                merged.append({
+                    "order_key": outer_item["idx"],
+                    "seg3d": outer_item["seg3d"],
+                    "merged_centerline": False,
+                })
+                continue
+
+            # Buffer inward by half thickness to get the centerline sliver
+            center_geom = full_wall_poly.buffer(-(thickness_mm / 2.0) + 0.05, join_style=2)
+
+            if center_geom.is_empty:
+                # Try exact half if 0.05 margin was too much or too little
+                center_geom = full_wall_poly.buffer(-(thickness_mm / 2.0), join_style=2)
+
+            if center_geom.is_empty:
+                outer_item["used"] = True
+                merged.append({"order_key": outer_item["idx"], "seg3d": outer_item["seg3d"], "merged_centerline": False})
+                continue
+
+            # Extract all boundaries from the resulting center_geom
+            geoms_to_process = [center_geom] if center_geom.geom_type == 'Polygon' else list(center_geom.geoms)
+
+            z_val = outer_item["z"]
+
+            # Mark all as used
+            outer_item["used"] = True
+            for ii in inner_indices:
+                prepared[ii]["used"] = True
+
+            for geom in geoms_to_process:
+                if geom.geom_type != 'Polygon':
+                    continue
+
+                # The exterior is a centerline path
+                coords = np.asarray(geom.exterior.coords, dtype=float)
+                if coords.shape[0] >= 4:
+                    merged.append({
+                        "order_key": outer_item["idx"],
+                        "seg3d": np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)]),
+                        "merged_centerline": True,
+                    })
+
+                # The interiors are ALSO centerline paths (for internal dividing walls)!
+                for interior in geom.interiors:
+                    coords_in = np.asarray(interior.coords, dtype=float)
+                    if coords_in.shape[0] >= 4:
+                        merged.append({
+                            "order_key": outer_item["idx"],
+                            "seg3d": np.column_stack([coords_in[:, 0], coords_in[:, 1], np.full(len(coords_in), z_val, dtype=float)]),
+                            "merged_centerline": True,
+                        })
+
+        except Exception:
+            outer_item["used"] = True
+            merged.append({
+                "order_key": outer_item["idx"],
+                "seg3d": outer_item["seg3d"],
+                "merged_centerline": False,
+            })
+            continue
+
+    # Catch any remaining unused items
+    for item in prepared:
+        if not item["used"]:
+            merged.append({
+                "order_key": item["idx"],
+                "seg3d": item["seg3d"],
+                "merged_centerline": False,
+            })
+
+    merged.sort(key=lambda x: x["order_key"])
     return merged
 
-# =========================
-# Slice path computation 
-# =========================
+
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
