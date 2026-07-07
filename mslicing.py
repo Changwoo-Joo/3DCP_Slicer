@@ -751,6 +751,114 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
 
     xy = seg3d_closed[:, :2]
     z_val = float(np.mean(seg3d_closed[:, 2]))
+
+    # Close the ring if it's open
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        from shapely.geometry import Polygon, LineString
+        import math
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+
+    if poly.is_empty or not poly.is_valid:
+        return seg3d_closed, False
+
+    try:
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+
+    # If inward is empty, it means the polygon is thinner than max_thickness_mm, so we should convert it.
+    if inward.is_empty:
+        exterior_coords = list(poly.exterior.coords)
+
+        # 1. Find the two furthest points on the exterior boundary
+        max_dist = -1.0
+        idx_start, idx_end = 0, 0
+        num_pts = len(exterior_coords)
+
+        # To avoid O(N^2) for very large polygons, we can subsample if it's too large
+        if num_pts > 200:
+            indices = np.linspace(0, num_pts-1, 200).astype(int)
+            sampled_coords = [exterior_coords[i] for i in indices]
+        else:
+            indices = list(range(num_pts))
+            sampled_coords = exterior_coords
+
+        for i in range(len(sampled_coords) - 1):
+            for j in range(i + 1, len(sampled_coords)):
+                d = math.hypot(sampled_coords[i][0] - sampled_coords[j][0], 
+                               sampled_coords[i][1] - sampled_coords[j][1])
+                if d > max_dist:
+                    max_dist = d
+                    idx_start, idx_end = indices[i], indices[j]
+
+        p_start = exterior_coords[idx_start]
+        p_end = exterior_coords[idx_end]
+
+        # 2. Split the exterior ring into two opposite walls/paths
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        path1_coords = exterior_coords[idx_start : idx_end + 1]
+        path2_coords = exterior_coords[idx_end:] + exterior_coords[: idx_start + 1]
+
+        if len(path1_coords) < 2 or len(path2_coords) < 2:
+            return seg3d_closed, False
+
+        # IMPORTANT: path2 must be reversed to go in the same parametric direction as path1
+        # from p_start to p_end
+        # Wait, if path1 goes from idx_start to idx_end, 
+        # path2 goes from idx_end to idx_start. 
+        # So we MUST reverse path2 so they both start at p_start and end at p_end!
+        path2_coords = path2_coords[::-1]
+
+        line1 = LineString(path1_coords)
+        line2 = LineString(path2_coords)
+
+        # 3. Sample corresponding matching points along both sides to compute midpoints
+        num_samples = max(20, int(max_dist / 2.0))
+        centerline_pts = []
+
+        for i in range(num_samples + 1):
+            frac = i / float(num_samples)
+            pt1 = line1.interpolate(frac, normalized=True)
+            pt2 = line2.interpolate(frac, normalized=True)
+
+            mid_x = (pt1.x + pt2.x) / 2.0
+            mid_y = (pt1.y + pt2.y) / 2.0
+            centerline_pts.append([mid_x, mid_y, z_val])
+
+        out_path = np.array(centerline_pts, dtype=float)
+
+        # Remove duplicate points if any
+        clean_pts = []
+        for pt in out_path:
+            if not clean_pts or np.linalg.norm(pt[:2] - clean_pts[-1][:2]) > 1e-5:
+                clean_pts.append(pt)
+
+        out_path = np.array(clean_pts, dtype=float)
+
+        if len(out_path) < 2:
+            return seg3d_closed, False
+
+        # --- 방향 정렬 ---
+        if ref_pt is not None:
+            ref_xy = np.array(ref_pt[:2], dtype=float)
+            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+            if dist_b < dist_a:
+                out_path = out_path[::-1]
+
+        return out_path, True
+
+    return seg3d_closed, False
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
