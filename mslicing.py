@@ -820,10 +820,10 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
             centerline = offset1 if len1 > len2 else offset2
 
             from shapely.ops import linemerge
-            centerline = linemerge(centerline)
-
             if centerline.geom_type == 'MultiLineString':
-                centerline = max(list(centerline.geoms), key=lambda x: x.length)
+                centerline = linemerge(centerline)
+                if centerline.geom_type == 'MultiLineString':
+                    centerline = max(list(centerline.geoms), key=lambda x: x.length)
 
             pts = np.array(centerline.coords)
 
