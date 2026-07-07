@@ -283,55 +283,36 @@ def save_access_log():
 save_access_log()
 
 def _build_polygons_from_segments(segments):
-    from shapely.geometry import Polygon
+    from shapely.geometry import Polygon, LineString
+    from shapely.ops import polygonize, unary_union
     import numpy as np
 
-    prepared = []
+    lines = []
     for seg3d in segments:
         xy = seg3d[:, :2]
         if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
             xy = np.vstack([xy, xy[0]])
-        try:
-            poly = Polygon(xy)
-            if not poly.is_empty and poly.is_valid and poly.area > 1e-9:
-                prepared.append(poly)
-        except Exception:
-            pass
+        if len(xy) >= 2:
+            lines.append(LineString(xy))
 
-    if not prepared:
+    # Node the lines to fix any intersection/touching issues
+    noded_lines = unary_union(lines)
+
+    # Extract polygons from the noded lines
+    polys = list(polygonize(noded_lines))
+
+    merged = unary_union(polys)
+
+    if merged.is_empty:
         return []
 
-    # Sort by area descending
-    prepared.sort(key=lambda p: p.area, reverse=True)
+    if merged.geom_type == 'Polygon':
+        return [merged]
+    elif merged.geom_type == 'MultiPolygon':
+        return list(merged.geoms)
 
-    used = [False] * len(prepared)
-    new_polygons = []
+    return []
 
-    eps = 1e-6
-    for i, outer in enumerate(prepared):
-        if used[i]: continue
-
-        holes = []
-        for j, inner in enumerate(prepared):
-            if i == j or used[j]: continue
-            if outer.area <= inner.area: continue
-            try:
-                if outer.buffer(eps).covers(inner):
-                    holes.append(inner)
-                    used[j] = True
-            except Exception:
-                pass
-
-        try:
-            full_poly = Polygon(shell=outer.exterior, holes=[h.exterior for h in holes])
-            if full_poly.is_valid:
-                new_polygons.append(full_poly)
-        except Exception:
-            pass
-
-        used[i] = True
-
-    return new_polygons
 
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -2095,7 +2076,7 @@ if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
 if uploaded is not None:
-    is_new_upload = (st.session_state.get("last_uploaded_name") != uploaded.name)
+    is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
         tmp.write(uploaded.read())
         tmp_path = tmp.name
@@ -2195,8 +2176,15 @@ with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
             use_container_width=True
         )
 
-    st.session_state.base_name = Path(uploaded.name).stem or "output"
-    st.session_state.last_uploaded_name = uploaded.name
+
+    if uploaded is not None and hasattr(uploaded, "name"):
+        st.session_state.base_name = Path(uploaded.name).stem or "output"
+        st.session_state.last_uploaded_name = uploaded.name
+    elif "last_uploaded_name" in st.session_state:
+        st.session_state.base_name = Path(st.session_state.last_uploaded_name).stem or "output"
+    else:
+        st.session_state.base_name = "output"
+
     if is_new_upload:
         st.session_state.main_view = "STL 미리보기"
 
