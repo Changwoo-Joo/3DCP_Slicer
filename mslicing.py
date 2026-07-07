@@ -2170,8 +2170,23 @@ if uploaded is not None:
                     seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
                     segments.append(seg3d)
 
+
                 polys = _build_polygons_from_segments(segments)
+
+                # --- [수정] 여러 개의 독립된 다각형(CAD 파츠)들을 하나로 합침 ---
+                from shapely.ops import unary_union
+                try:
+                    unified_poly = unary_union(polys)
+                    if unified_poly.geom_type == 'Polygon':
+                        polys = [unified_poly]
+                    elif unified_poly.geom_type == 'MultiPolygon':
+                        polys = list(unified_poly.geoms)
+                except Exception:
+                    pass
+                # -----------------------------------------------------------------
+
                 extruded_meshes = []
+
                 for poly in polys:
                     buffered = poly.buffer(offset_val / 2.0, join_style=2)
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
