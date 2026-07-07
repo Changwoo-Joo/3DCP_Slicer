@@ -314,6 +314,49 @@ def _build_polygons_from_segments(segments):
     return []
 
 
+def _extrude_polygon_walls(poly, height):
+    import numpy as np
+    import trimesh
+
+    vertices = []
+    faces = []
+
+    def _add_ring_walls(coords):
+        n = len(coords)
+        if n < 2: return
+        start_idx = len(vertices)
+
+        # Add all bottom vertices
+        for pt in coords:
+            vertices.append([pt[0], pt[1], 0.0])
+        # Add all top vertices
+        for pt in coords:
+            vertices.append([pt[0], pt[1], height])
+
+        # Create quad faces
+        for i in range(n - 1):
+            b1 = start_idx + i
+            b2 = start_idx + i + 1
+            t1 = start_idx + n + i
+            t2 = start_idx + n + i + 1
+
+            # Triangle 1
+            faces.append([b1, b2, t1])
+            # Triangle 2
+            faces.append([t1, b2, t2])
+
+    # Add exterior
+    _add_ring_walls(list(poly.exterior.coords))
+
+    # Add interiors
+    for interior in poly.interiors:
+        _add_ring_walls(list(interior.coords))
+
+    if not vertices:
+        return None
+
+    return trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
+
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -2134,7 +2177,7 @@ if uploaded is not None:
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
                     for g in geoms:
                         if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = trimesh.creation.extrude_polygon(g, height=height)
+                            ex_mesh = _extrude_polygon_walls(g, height=height)
                             extruded_meshes.append(ex_mesh)
                 if extruded_meshes:
                     import trimesh.util
