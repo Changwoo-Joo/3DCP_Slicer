@@ -2111,7 +2111,7 @@ if uploaded is not None:
         )
 
     # --- 자동 두께 조절 ---
-    offset_val = float(st.session_state.get("stl_offset_val", 0.0))
+    offset_val = float(st.session_state.get("applied_offset_val", 0.0))
     if offset_val != 0.0:
         try:
             bounds = mesh.bounds
@@ -2151,15 +2151,19 @@ if uploaded is not None:
 
     with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
         st.markdown("⚠️ 주의: 수직(Z축)으로 일정한 2.5D 형상에만 권장합니다.")
-        if "stl_offset_val" not in st.session_state:
-            st.session_state.stl_offset_val = 0.0
-        stl_offset_val = st.number_input("조절량 (mm)", min_value=-500.0, max_value=500.0, value=float(st.session_state.stl_offset_val), step=0.1, help="양수: 굵게, 음수: 얇게 (전체 두께 기준)")
-        st.session_state.stl_offset_val = stl_offset_val
+
+        target_offset_val = st.number_input("조절량 (mm)", min_value=-500.0, max_value=500.0, value=float(st.session_state.get("ui_target_offset", 0.0)), step=0.1, help="양수: 굵게, 음수: 얇게 (전체 두께 기준)", key="ui_target_offset")
+
+        col1, col2 = st.columns(2)
+        if col1.button("적용 및 미리보기", use_container_width=True):
+            st.session_state.applied_offset_val = target_offset_val
+            st.session_state.main_view = "STL 미리보기"  # 클릭 즉시 미리보기 화면으로 강제 전환
+            st.rerun()
 
         if "mesh" in st.session_state and st.session_state.mesh is not None:
             stl_bytes = trimesh.exchange.stl.export_stl(st.session_state.mesh)
-            st.download_button(
-                label="조절된 STL 파일 저장",
+            col2.download_button(
+                label="조절된 STL 저장",
                 data=stl_bytes,
                 file_name="adjusted_model.stl",
                 mime="model/stl",
