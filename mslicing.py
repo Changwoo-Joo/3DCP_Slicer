@@ -750,7 +750,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    z_val = float(seg3d_closed[0, 2])
+    z_val = float(np.mean(seg3d_closed[:, 2]))
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -772,54 +772,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         coords = np.array(poly.exterior.coords)
         if len(coords) < 2:
             return seg3d_closed, False
-
-        try:
-            rect = np.asarray(poly.minimum_rotated_rectangle.exterior.coords[:-1], dtype=float)
-            if rect.shape[0] == 4:
-                edges = np.roll(rect, -1, axis=0) - rect
-                lengths = np.linalg.norm(edges, axis=1)
-                if np.max(lengths) > 1e-9:
-                    short_len = float(np.min(lengths))
-                    short_idx = [k for k, L in enumerate(lengths) if abs(L - short_len) <= max(1e-6, short_len * 1e-6)]
-                    if len(short_idx) >= 2:
-                        i0 = short_idx[0]
-                        i1 = next((k for k in short_idx[1:] if (k - i0) % 4 == 2), short_idx[1])
-                        mid0 = 0.5 * (rect[i0] + rect[(i0 + 1) % 4])
-                        mid1 = 0.5 * (rect[i1] + rect[(i1 + 1) % 4])
-                        direction = mid1 - mid0
-                        dnorm = np.linalg.norm(direction)
-                        if dnorm > 1e-9:
-                            direction = direction / dnorm
-                            span = max(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1], dnorm) * 2.0 + 10.0
-                            p0 = mid0 - direction * span
-                            p1 = mid1 + direction * span
-                            from shapely.geometry import LineString
-                            center_candidate = LineString([tuple(p0), tuple(p1)])
-                            clipped = poly.intersection(center_candidate)
-                            if not clipped.is_empty:
-                                line_geom = None
-                                if clipped.geom_type == 'LineString':
-                                    line_geom = clipped
-                                elif clipped.geom_type == 'MultiLineString':
-                                    line_geom = max(list(clipped.geoms), key=lambda g: g.length)
-                                elif hasattr(clipped, 'boundary') and clipped.boundary.geom_type == 'MultiPoint':
-                                    pts2 = [np.array(g.coords[0], dtype=float) for g in clipped.boundary.geoms]
-                                    if len(pts2) >= 2:
-                                        from shapely.geometry import LineString
-                                        line_geom = LineString([tuple(pts2[0]), tuple(pts2[-1])])
-                                if line_geom is not None:
-                                    line_coords = np.asarray(line_geom.coords, dtype=float)
-                                    if line_coords.shape[0] >= 2:
-                                        out_path = np.column_stack([line_coords[:, 0], line_coords[:, 1], np.full(len(line_coords), z_val)])
-                                        if ref_pt is not None:
-                                            ref_xy = np.array(ref_pt[:2], dtype=float)
-                                            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-                                            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-                                            if dist_b < dist_a:
-                                                out_path = out_path[::-1]
-                                        return out_path, True
-        except Exception:
-            pass
 
         if len(coords) > 100:
             indices = np.linspace(0, len(coords)-1, 100).astype(int)
@@ -845,12 +797,14 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
+        # --- 방향 정렬 ---
+        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
         if ref_pt is not None:
             ref_xy = np.array(ref_pt[:2], dtype=float)
             dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
             dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
             if dist_b < dist_a:
-                out_path = out_path[::-1]
+                out_path = out_path[::-1]  # 뒤집기
 
         return out_path, True
 
@@ -1122,8 +1076,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             if not segments: continue
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
-            if not segment_jobs:
-                segment_jobs = [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
 
             g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
@@ -1136,31 +1088,22 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
                 # --- 얇은 두께 중심선 변환 로직 ---
                 if merged_thin_centerline:
-                    centerline_path = np.asarray(seg3d_no_dup, dtype=float)
-                    if np.linalg.norm(centerline_path[0, :2] - centerline_path[-1, :2]) <= 1e-9:
-                        centerline_path = ensure_open_ring(centerline_path)
-                    centerline_total = 0.0
-                    if len(centerline_path) >= 2:
-                        centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
-                    applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                    trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
-                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                    if len(simplified) < 2 and len(centerline_path) >= 2:
-                        simplified = simplify_segment(centerline_path, float(min_spacing))
+                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                    simplified = simplify_segment(closed_mid, float(min_spacing))
                     shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                    simplified = shifted
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                        r_val = float(st.session_state.get('fillet_r', 20.0))
+                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 else:
                     centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=float(thin_wall_centerline_threshold_mm), ref_pt=current_ref_pt)
 
                     if is_thin:
-                        centerline_total = 0.0
-                        if len(centerline_path) >= 2:
-                            centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
-                        applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                        trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
+                        trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
                         simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                        if len(simplified) < 2 and len(centerline_path) >= 2:
-                            simplified = simplify_segment(centerline_path, float(min_spacing))
                     else:
                         closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                         if enable_inward_offset and float(nozzle_width) > 0:
@@ -1306,57 +1249,24 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
                 if thickness_mm <= eps or thickness_mm > (float(max_thickness_mm) + 1e-6):
                     continue
 
-                center_geom = wall_region.buffer(-(thickness_mm / 2.0), join_style=2)
+                center_geom = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
                 if center_geom.is_empty:
-                    try:
-                        center_geom = wall_region.buffer(-(thickness_mm * 0.5 - 1e-6), join_style=2)
-                    except Exception:
-                        center_geom = center_geom
+                    continue
+                if center_geom.geom_type == "MultiPolygon":
+                    center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
+                if center_geom.geom_type != "Polygon":
+                    continue
 
-                centerline = None
-                if not center_geom.is_empty:
-                    if center_geom.geom_type == "MultiPolygon":
-                        center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
-                    if center_geom.geom_type == "Polygon":
-                        coords = np.asarray(center_geom.exterior.coords, dtype=float)
-                        if coords.shape[0] >= 4:
-                            z_val = outer_item["z"]
-                            centerline = np.column_stack([
-                                coords[:, 0],
-                                coords[:, 1],
-                                np.full(len(coords), z_val, dtype=float),
-                            ])
+                coords = np.asarray(center_geom.exterior.coords, dtype=float)
+                if coords.shape[0] < 4:
+                    continue
 
-                if centerline is None:
-                    try:
-                        center_poly = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
-                        if center_poly.is_empty:
-                            center_poly = outer_poly.buffer(-(thickness_mm * 0.5 - 1e-6), join_style=2)
-                        if not center_poly.is_empty:
-                            if center_poly.geom_type == "MultiPolygon":
-                                center_poly = max(list(center_poly.geoms), key=lambda g: g.area)
-                            if center_poly.geom_type == "Polygon":
-                                coords = np.asarray(center_poly.exterior.coords, dtype=float)
-                                if coords.shape[0] >= 4:
-                                    z_val = outer_item["z"]
-                                    centerline = np.column_stack([
-                                        coords[:, 0],
-                                        coords[:, 1],
-                                        np.full(len(coords), z_val, dtype=float),
-                                    ])
-                    except Exception:
-                        centerline = centerline
-
-                if centerline is None:
-                    centerline = np.asarray(outer_item["seg3d"], dtype=float)
-                    outer_item["used"] = True
-                    merged.append({
-                        "order_key": outer_item["idx"],
-                        "seg3d": centerline,
-                        "merged_centerline": False,
-                    })
-                    paired = True
-                    break
+                z_val = outer_item["z"]
+                centerline = np.column_stack([
+                    coords[:, 0],
+                    coords[:, 1],
+                    np.full(len(coords), z_val, dtype=float),
+                ])
 
                 outer_item["used"] = True
                 inner_item["used"] = True
@@ -1455,8 +1365,6 @@ def compute_slice_paths_with_travel(
                 continue
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
-            if not segment_jobs:
-                segment_jobs = [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
 
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
             current_ref_pt = ref_pt_layer.copy()
@@ -1469,31 +1377,22 @@ def compute_slice_paths_with_travel(
 
                 # --- 얇은 두께 중심선 변환 로직 ---
                 if merged_thin_centerline:
-                    centerline_path = np.asarray(seg3d_no_dup, dtype=float)
-                    if np.linalg.norm(centerline_path[0, :2] - centerline_path[-1, :2]) <= 1e-9:
-                        centerline_path = ensure_open_ring(centerline_path)
-                    centerline_total = 0.0
-                    if len(centerline_path) >= 2:
-                        centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
-                    applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                    trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
-                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                    if len(simplified) < 2 and len(centerline_path) >= 2:
-                        simplified = simplify_segment(centerline_path, float(min_spacing))
+                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
+                    simplified = simplify_segment(closed_mid, float(min_spacing))
                     shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                    simplified = shifted
+                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                        r_val = float(st.session_state.get('fillet_r', 20.0))
+                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                    simplified = trim_closed_ring_tail(shifted, trim_dist)
+                    simplified = simplify_segment(simplified, float(min_spacing))
                 else:
                     centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=float(thin_wall_centerline_threshold_mm), ref_pt=current_ref_pt)
 
                     if is_thin:
-                        centerline_total = 0.0
-                        if len(centerline_path) >= 2:
-                            centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
-                        applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                        trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
+                        trimmed_centerline = trim_open_line_tail(centerline_path, float(trim_dist))
                         simplified = simplify_segment(trimmed_centerline, float(min_spacing))
-                        if len(simplified) < 2 and len(centerline_path) >= 2:
-                            simplified = simplify_segment(centerline_path, float(min_spacing))
                     else:
                         closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
                         if enable_inward_offset and float(nozzle_width) > 0:
@@ -2113,7 +2012,7 @@ feed_mm_s = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
 feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
-thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=100.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
+thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=10.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 
 # [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
