@@ -768,6 +768,90 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     except Exception:
         return seg3d_closed, False
 
+    if inward.is_empty:
+        # Instead of just taking furthest points, we can compute the minimum rotated bounding box.
+        # And the centerline is the segment connecting the midpoints of the two shorter edges.
+        try:
+            from shapely.geometry import LineString, Polygon
+            import numpy as np
+
+            rect = poly.minimum_rotated_rectangle
+            coords = np.array(rect.exterior.coords)
+            # coords has 5 points (last == first)
+            if len(coords) < 5:
+                return seg3d_closed, False
+
+            # edges
+            edges = []
+            for i in range(4):
+                edges.append((coords[i], coords[i+1]))
+
+            lengths = [np.linalg.norm(e[0] - e[1]) for e in edges]
+
+            # The two shortest edges represent the "ends" (the width)
+            # Find the two shortest edges
+            sorted_indices = np.argsort(lengths)
+            idx1, idx2 = sorted_indices[0], sorted_indices[1]
+
+            # The width is lengths[idx1], length is lengths[sorted_indices[2]]
+            if lengths[idx1] > (max_thickness_mm + 1e-5):
+                # actually it's thicker than max_thickness
+                return seg3d_closed, False
+
+            # Midpoints of the two shortest edges
+            mid1 = (edges[idx1][0] + edges[idx1][1]) / 2.0
+            mid2 = (edges[idx2][0] + edges[idx2][1]) / 2.0
+
+            # Clip the line (mid1, mid2) to the original polygon just to be safe
+            center_line = LineString([mid1, mid2])
+            clipped = center_line.intersection(poly)
+
+            if clipped.is_empty:
+                # fallback
+                pts = np.array([mid1, mid2])
+            elif clipped.geom_type == 'LineString':
+                pts = np.array(clipped.coords)
+            elif clipped.geom_type == 'MultiLineString':
+                # take the longest
+                longest = max(list(clipped.geoms), key=lambda x: x.length)
+                pts = np.array(longest.coords)
+            else:
+                pts = np.array([mid1, mid2])
+
+            out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
+
+            if ref_pt is not None:
+                ref_xy = np.array(ref_pt[:2], dtype=float)
+                dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+                dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+                if dist_b < dist_a:
+                    out_path = out_path[::-1]
+
+            return out_path, True
+        except Exception as e:
+            return seg3d_closed, False
+
+    return seg3d_closed, False
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+
+    if poly.is_empty or not poly.is_valid:
+        return seg3d_closed, False
+
+    try:
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+
     # If the polygon completely disappears when shrunk by max_thickness/2, it is considered "thin".
     if inward.is_empty:
         coords = np.array(poly.exterior.coords)
@@ -2091,7 +2175,7 @@ feed_mm_s = st.sidebar.number_input("이송속도 (mm/s)", 1, 200, 200)
 feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
-thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=10.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
+thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f")
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 
 # [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
