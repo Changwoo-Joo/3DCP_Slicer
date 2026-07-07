@@ -1122,6 +1122,8 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             if not segments: continue
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
+            if not segment_jobs:
+                segment_jobs = [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
 
             g.append(f"\n; ---------- Z = {print_z:.2f} mm ----------")
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
@@ -1337,7 +1339,15 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
                         centerline = centerline
 
                 if centerline is None:
-                    continue
+                    centerline = np.asarray(outer_item["seg3d"], dtype=float)
+                    outer_item["used"] = True
+                    merged.append({
+                        "order_key": outer_item["idx"],
+                        "seg3d": centerline,
+                        "merged_centerline": False,
+                    })
+                    paired = True
+                    break
 
                 outer_item["used"] = True
                 inner_item["used"] = True
@@ -1436,6 +1446,8 @@ def compute_slice_paths_with_travel(
                 continue
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
+            if not segment_jobs:
+                segment_jobs = [{"seg3d": np.asarray(seg, dtype=float), "merged_centerline": False} for seg in segments]
 
             ref_pt_layer = prev_start_xy if (auto_start and prev_start_xy is not None) else np.array(ref_pt_user, dtype=float)
             current_ref_pt = ref_pt_layer.copy()
