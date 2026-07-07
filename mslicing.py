@@ -5,6 +5,7 @@ import math
 import json
 import trimesh
 from shapely.geometry import Polygon, MultiPolygon, LineString
+from shapely.ops import nearest_points
 import tempfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
@@ -778,7 +779,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
 
         # To avoid O(N^2) for very large polygons, subsample if too large
         if num_pts > 200:
-            import numpy as np
+
             indices = np.linspace(0, num_pts-1, 200).astype(int)
             sampled_coords = [exterior_coords[i] for i in indices]
         else:
@@ -808,8 +809,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         longer_line = line1 if line1.length > line2.length else line2
         shorter_line = line2 if line1.length > line2.length else line1
 
-        from shapely.ops import nearest_points
-        import numpy as np
+
 
         # Resample longer line proportionally to detail
         step = max(2.0, longer_line.length / 200.0) # at most ~200 points
