@@ -314,21 +314,22 @@ def _build_polygons_from_segments(segments):
     return []
 
 
-def _extrude_robust(poly, height):
-    import trimesh
+def _extrude_polygon_walls(poly, height):
     import numpy as np
+    import trimesh
 
-    # 먼저 완벽한 뚜껑(캡)이 있는 3D 생성을 시도합니다.
+    # 1순위: 만약 환경에 맵박스(mapbox-earcut) 등 엔진이 있다면 기본 익스트루드 사용
     try:
-        # 미세한 오류를 교정하기 위해 buffer(0) 적용
         clean_poly = poly.buffer(0)
         return trimesh.creation.extrude_polygon(clean_poly, height=height)
     except Exception:
         pass
 
-    # 만약 사용자의 환경에 triangulation 엔진이 없어서 실패하면, 뚜껑 없이 외벽만 세웁니다.
+    # 2순위: 엔진이 없을 경우, 수동으로 뚜껑(캡)과 외벽을 모두 생성하는 로직 (Scipy 기반)
     vertices = []
     faces = []
+
+    # 1. 수직 외벽 생성
     def _add_ring_walls(coords):
         n = len(coords)
         if n < 2: return
@@ -343,6 +344,42 @@ def _extrude_robust(poly, height):
     _add_ring_walls(list(poly.exterior.coords))
     for interior in poly.interiors:
         _add_ring_walls(list(interior.coords))
+
+    # 2. 위/아래 뚜껑 생성 (Scipy Delaunay 삼각분할 활용)
+    try:
+        from scipy.spatial import Delaunay
+        from shapely.geometry import Point
+
+        pts = list(poly.exterior.coords)
+        for interior in poly.interiors:
+            pts.extend(list(interior.coords))
+        pts = np.array(pts)
+
+        if len(pts) >= 3:
+            tri = Delaunay(pts)
+            cap_faces = []
+            for face in tri.simplices:
+                p1, p2, p3 = pts[face[0]], pts[face[1]], pts[face[2]]
+                centroid = Point((p1[0]+p2[0]+p3[0])/3.0, (p1[1]+p2[1]+p3[1])/3.0)
+                if poly.covers(centroid):  # 다각형 내부에 있는 삼각형만 추출
+                    cp = np.cross(p2 - p1, p3 - p1)
+                    if cp < 0:
+                        cap_faces.append([face[0], face[2], face[1]])
+                    else:
+                        cap_faces.append([face[0], face[1], face[2]])
+
+            if len(cap_faces) > 0:
+                # 바닥 뚜껑 (법선이 아래를 향하도록 순서 뒤집기)
+                start_bot = len(vertices)
+                for pt in pts: vertices.append([pt[0], pt[1], 0.0])
+                for f in cap_faces: faces.append([start_bot + f[0], start_bot + f[2], start_bot + f[1]])
+
+                # 천장 뚜껑 (법선이 위를 향함)
+                start_top = len(vertices)
+                for pt in pts: vertices.append([pt[0], pt[1], height])
+                for f in cap_faces: faces.append([start_top + f[0], start_top + f[1], start_top + f[2]])
+    except Exception:
+        pass
 
     if not vertices: return None
     return trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
@@ -2167,7 +2204,7 @@ if uploaded is not None:
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
                     for g in geoms:
                         if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = _extrude_robust(g, height=height)
+                            ex_mesh = _extrude_polygon_walls(g, height=height)
                             extruded_meshes.append(ex_mesh)
                 if extruded_meshes:
                     import trimesh.util
