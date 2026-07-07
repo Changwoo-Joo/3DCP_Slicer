@@ -314,10 +314,47 @@ def _build_polygons_from_segments(segments):
     return []
 
 
-def _extrude_polygon_walls(poly, height):
+def triangulate_polygon_with_scipy(poly):
+    import numpy as np
+    from scipy.spatial import Delaunay
+    from shapely.geometry import Point
+
+    # Extract all points
+    pts = list(poly.exterior.coords)
+    for interior in poly.interiors:
+        pts.extend(list(interior.coords))
+
+    pts = np.array(pts)
+    if len(pts) < 3:
+        return np.array([]), np.array([])
+
+    # Delaunay triangulation
+    tri = Delaunay(pts)
+
+    # Filter triangles that are outside the polygon or inside holes
+    faces = []
+    for face in tri.simplices:
+        p1, p2, p3 = pts[face[0]], pts[face[1]], pts[face[2]]
+        # Check centroid
+        centroid = Point((p1[0]+p2[0]+p3[0])/3.0, (p1[1]+p2[1]+p3[1])/3.0)
+
+        # covers() is slightly faster and more robust than contains()
+        if poly.covers(centroid):
+            # Ensure correct winding (counter-clockwise)
+            # Cross product
+            cp = np.cross(p2 - p1, p3 - p1)
+            if cp < 0:
+                faces.append([face[0], face[2], face[1]])
+            else:
+                faces.append([face[0], face[1], face[2]])
+
+    return pts, np.array(faces)
+
+def _extrude_polygon_walls_with_caps(poly, height):
     import numpy as np
     import trimesh
 
+    # Get vertical walls
     vertices = []
     faces = []
 
@@ -325,37 +362,43 @@ def _extrude_polygon_walls(poly, height):
         n = len(coords)
         if n < 2: return
         start_idx = len(vertices)
-
-        # Add all bottom vertices
-        for pt in coords:
-            vertices.append([pt[0], pt[1], 0.0])
-        # Add all top vertices
-        for pt in coords:
-            vertices.append([pt[0], pt[1], height])
-
-        # Create quad faces
+        for pt in coords: vertices.append([pt[0], pt[1], 0.0])
+        for pt in coords: vertices.append([pt[0], pt[1], height])
         for i in range(n - 1):
-            b1 = start_idx + i
-            b2 = start_idx + i + 1
-            t1 = start_idx + n + i
-            t2 = start_idx + n + i + 1
+            b1, b2 = start_idx + i, start_idx + i + 1
+            t1, t2 = start_idx + n + i, start_idx + n + i + 1
+            faces.extend([[b1, b2, t1], [t1, b2, t2]])
 
-            # Triangle 1
-            faces.append([b1, b2, t1])
-            # Triangle 2
-            faces.append([t1, b2, t2])
-
-    # Add exterior
     _add_ring_walls(list(poly.exterior.coords))
-
-    # Add interiors
     for interior in poly.interiors:
         _add_ring_walls(list(interior.coords))
 
-    if not vertices:
-        return None
+    # Get caps using Scipy Delaunay
+    try:
+        cap_pts, cap_faces = triangulate_polygon_with_scipy(poly)
+        if len(cap_faces) > 0:
+            start_cap = len(vertices)
 
+            # Bottom cap (z=0, winding reversed so normal points down)
+            for pt in cap_pts:
+                vertices.append([pt[0], pt[1], 0.0])
+            for f in cap_faces:
+                faces.append([start_cap + f[0], start_cap + f[2], start_cap + f[1]]) # Reverse winding
+
+            # Top cap (z=height, normal points up)
+            start_top_cap = len(vertices)
+            for pt in cap_pts:
+                vertices.append([pt[0], pt[1], height])
+            for f in cap_faces:
+                faces.append([start_top_cap + f[0], start_top_cap + f[1], start_top_cap + f[2]])
+
+    except Exception as e:
+        print("Cap triangulation failed:", e)
+        pass
+
+    if not vertices: return None
     return trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
+
 
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
@@ -1319,6 +1362,7 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
 # =========================
 # Slice path computation 
 # =========================
+
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
@@ -2170,14 +2214,30 @@ if uploaded is not None:
                     seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
                     segments.append(seg3d)
 
+
                 polys = _build_polygons_from_segments(segments)
+
+                # --- [수정] 여러 개의 독립된 다각형(CAD 파츠)들을 하나로 합침 ---
+                from shapely.ops import unary_union
+                try:
+                    inflated = [p.buffer(0.1, join_style=2) for p in polys if p.is_valid]
+                    unified_poly = unary_union(inflated).buffer(-0.1, join_style=2)
+                    if unified_poly.geom_type == 'Polygon':
+                        polys = [unified_poly]
+                    elif unified_poly.geom_type == 'MultiPolygon':
+                        polys = list(unified_poly.geoms)
+                except Exception:
+                    pass
+                # -----------------------------------------------------------------
+
                 extruded_meshes = []
+
                 for poly in polys:
                     buffered = poly.buffer(offset_val / 2.0, join_style=2)
                     geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
                     for g in geoms:
                         if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = _extrude_polygon_walls(g, height=height)
+                            ex_mesh = _extrude_polygon_walls_with_caps(g, height=height)
                             extruded_meshes.append(ex_mesh)
                 if extruded_meshes:
                     import trimesh.util
