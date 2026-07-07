@@ -1301,23 +1301,43 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
                         center_geom = wall_region.buffer(-(thickness_mm * 0.5 - 1e-6), join_style=2)
                     except Exception:
                         center_geom = center_geom
-                if center_geom.is_empty:
-                    continue
-                if center_geom.geom_type == "MultiPolygon":
-                    center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
-                if center_geom.geom_type != "Polygon":
-                    continue
 
-                coords = np.asarray(center_geom.exterior.coords, dtype=float)
-                if coords.shape[0] < 4:
-                    continue
+                centerline = None
+                if not center_geom.is_empty:
+                    if center_geom.geom_type == "MultiPolygon":
+                        center_geom = max(list(center_geom.geoms), key=lambda g: g.area)
+                    if center_geom.geom_type == "Polygon":
+                        coords = np.asarray(center_geom.exterior.coords, dtype=float)
+                        if coords.shape[0] >= 4:
+                            z_val = outer_item["z"]
+                            centerline = np.column_stack([
+                                coords[:, 0],
+                                coords[:, 1],
+                                np.full(len(coords), z_val, dtype=float),
+                            ])
 
-                z_val = outer_item["z"]
-                centerline = np.column_stack([
-                    coords[:, 0],
-                    coords[:, 1],
-                    np.full(len(coords), z_val, dtype=float),
-                ])
+                if centerline is None:
+                    try:
+                        center_poly = outer_poly.buffer(-(thickness_mm / 2.0), join_style=2)
+                        if center_poly.is_empty:
+                            center_poly = outer_poly.buffer(-(thickness_mm * 0.5 - 1e-6), join_style=2)
+                        if not center_poly.is_empty:
+                            if center_poly.geom_type == "MultiPolygon":
+                                center_poly = max(list(center_poly.geoms), key=lambda g: g.area)
+                            if center_poly.geom_type == "Polygon":
+                                coords = np.asarray(center_poly.exterior.coords, dtype=float)
+                                if coords.shape[0] >= 4:
+                                    z_val = outer_item["z"]
+                                    centerline = np.column_stack([
+                                        coords[:, 0],
+                                        coords[:, 1],
+                                        np.full(len(coords), z_val, dtype=float),
+                                    ])
+                    except Exception:
+                        centerline = centerline
+
+                if centerline is None:
+                    continue
 
                 outer_item["used"] = True
                 inner_item["used"] = True
