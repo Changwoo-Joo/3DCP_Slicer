@@ -282,6 +282,83 @@ def save_access_log():
 
 save_access_log()
 
+def _apply_stl_thickness_offset(segments, offset_mm, to3D, display_z):
+    if offset_mm == 0.0:
+        return segments
+
+    try:
+        from shapely.geometry import Polygon
+    except Exception:
+        return segments
+
+    prepared = []
+    for seg3d in segments:
+        xy = seg3d[:, :2]
+        if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+            xy = np.vstack([xy, xy[0]])
+        try:
+            poly = Polygon(xy)
+            if not poly.is_empty and poly.is_valid:
+                prepared.append(poly)
+        except Exception:
+            pass
+
+    if not prepared:
+        return segments
+
+    # Sort by area descending
+    prepared.sort(key=lambda p: p.area, reverse=True)
+
+    used = [False] * len(prepared)
+    new_polygons = []
+
+    eps = 1e-6
+    for i, outer in enumerate(prepared):
+        if used[i]: continue
+
+        holes = []
+        for j, inner in enumerate(prepared):
+            if i == j or used[j]: continue
+            if outer.area <= inner.area: continue
+            try:
+                if outer.buffer(eps).covers(inner):
+                    holes.append(inner)
+                    used[j] = True
+            except Exception:
+                pass
+
+        try:
+            full_poly = Polygon(shell=outer.exterior, holes=[h.exterior for h in holes])
+            buffered = full_poly.buffer(offset_mm, join_style=2)
+            if not buffered.is_empty:
+                geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
+                new_polygons.extend([g for g in geoms if g.geom_type == 'Polygon'])
+        except Exception:
+            pass
+
+        used[i] = True
+
+    if not new_polygons:
+        return segments
+
+    new_segments = []
+    for poly in new_polygons:
+        # Convert exterior
+        ext = np.array(poly.exterior.coords)
+        seg3d = (to3D @ np.hstack([ext, np.zeros((len(ext), 1)), np.ones((len(ext), 1))]).T).T[:, :3]
+        seg3d[:, 2] = display_z
+        new_segments.append(seg3d)
+
+        # Convert interiors
+        for interior in poly.interiors:
+            int_coords = np.array(interior.coords)
+            seg3d_int = (to3D @ np.hstack([int_coords, np.zeros((len(int_coords), 1)), np.ones((len(int_coords), 1))]).T).T[:, :3]
+            seg3d_int[:, 2] = display_z
+            new_segments.append(seg3d_int)
+
+    return new_segments
+
+
 def ensure_open_ring(segment: np.ndarray, tol: float = 1e-9) -> np.ndarray:
     seg = np.asarray(segment, dtype=float)
     if len(seg) >= 2 and np.linalg.norm(seg[0, :2] - seg[-1, :2]) <= tol:
@@ -1248,7 +1325,7 @@ def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
     auto_start=False, e_on=False, seq_print=False, seq_group_inner=True,
     nozzle_width=0.0, enable_inward_offset=False, skip_invalid_offset=True,
-    thin_wall_centerline_threshold_mm=0.1
+    thin_wall_centerline_threshold_mm=0.1, stl_thickness_offset_mm=0.0
 ) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
 
     all_items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]] = []
@@ -1313,6 +1390,12 @@ def compute_slice_paths_with_travel(
                 segments.append(seg3d)
             if not segments:
                 continue
+
+            # [수정] STL 두께 조절 적용
+            if stl_thickness_offset_mm != 0.0:
+                segments = _apply_stl_thickness_offset(segments, float(stl_thickness_offset_mm) / 2.0, to3D, display_z)
+                if not segments:
+                    continue
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
 
@@ -1964,6 +2047,13 @@ ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f", key="ui_thin_wall_threshold")
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
+
+# [수정] STL 두께 조절 옵션 추가
+if "stl_thickness_offset_mm" not in st.session_state:
+    st.session_state.stl_thickness_offset_mm = 0.0
+stl_thickness_offset_mm = st.sidebar.number_input("STL 두께 조절 (mm)", min_value=-100.0, max_value=100.0, value=float(st.session_state.stl_thickness_offset_mm), step=0.1, format="%.2f", key="ui_stl_offset")
+st.session_state.stl_thickness_offset_mm = float(stl_thickness_offset_mm)
+
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 
 # [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
@@ -2091,7 +2181,8 @@ if slice_clicked and st.session_state.mesh is not None:
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
-        thin_wall_centerline_threshold_mm=thin_wall_centerline_threshold_mm
+        thin_wall_centerline_threshold_mm=thin_wall_centerline_threshold_mm,
+        stl_thickness_offset_mm=stl_thickness_offset_mm
     )
     st.session_state.paths_items = items
     st.session_state.main_view = "슬라이싱 경로 (3D)"
@@ -2114,7 +2205,8 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         nozzle_width=float(st.session_state.get("nozzle_diameter_mm", 0.0)) * 0.5,
         enable_inward_offset=bool(st.session_state.get("enable_inward_offset", False)),
         skip_invalid_offset=bool(st.session_state.get("skip_invalid_offset", True)),
-        thin_wall_centerline_threshold_mm=thin_wall_centerline_threshold_mm
+        thin_wall_centerline_threshold_mm=thin_wall_centerline_threshold_mm,
+        stl_thickness_offset_mm=stl_thickness_offset_mm
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
