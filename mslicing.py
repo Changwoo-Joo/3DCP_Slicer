@@ -2101,6 +2101,7 @@ if uploaded is not None:
             dz=float(st.session_state.get("stl_move_z", 0.0)),
         )
 
+
     if bool(st.session_state.get("stl_apply_rot", False)):
         mesh = _apply_rotation_about_centroid(
             mesh,
@@ -2109,67 +2110,56 @@ if uploaded is not None:
             ry_deg=float(st.session_state.get("stl_rot_y", 0.0)),
         )
 
+    # --- 자동 두께 조절 ---
+    offset_val = float(st.session_state.get("stl_offset_val", 0.0))
+    if offset_val != 0.0:
+        try:
+            bounds = mesh.bounds
+            z_min = bounds[0][2]
+            z_max = bounds[1][2]
+            height = z_max - z_min
+            sec = mesh.section(plane_origin=[0, 0, z_min + min(1.0, height/2.0)], plane_normal=[0, 0, 1])
+            if sec is not None:
+                slice2D, to3D = sec.to_2D()
+                segments = []
+                for seg in slice2D.discrete:
+                    seg = np.array(seg)
+                    seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
+                    segments.append(seg3d)
+
+                polys = _build_polygons_from_segments(segments)
+                extruded_meshes = []
+                for poly in polys:
+                    buffered = poly.buffer(offset_val / 2.0, join_style=2)
+                    geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
+                    for g in geoms:
+                        if g.geom_type == 'Polygon' and not g.is_empty:
+                            ex_mesh = trimesh.creation.extrude_polygon(g, height=height)
+                            extruded_meshes.append(ex_mesh)
+                if extruded_meshes:
+                    import trimesh.util
+                    mesh = trimesh.util.concatenate(extruded_meshes)
+                    mesh.apply_translation([0, 0, z_min])
+                else:
+                    st.sidebar.error(f"조절량({offset_val}mm)이 원본 벽 두께보다 커서 형상이 소멸되었습니다.")
+        except Exception:
+            pass
+
     st.session_state.mesh = mesh
+
 
 
     with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
         st.markdown("⚠️ 주의: 수직(Z축)으로 일정한 2.5D 형상에만 권장합니다.")
-        stl_offset_val = st.number_input("조절량 (mm)", min_value=-100.0, max_value=100.0, value=0.0, step=0.1, help="양수: 굵게, 음수: 얇게")
-
-        col1, col2 = st.columns(2)
-        if col1.button("적용 및 미리보기", use_container_width=True):
-            if "mesh" in st.session_state and st.session_state.mesh is not None:
-                mesh = st.session_state.mesh
-                bounds = mesh.bounds
-                z_min = bounds[0][2]
-                z_max = bounds[1][2]
-                height = z_max - z_min
-
-                # Slice slightly above bottom
-                sec = mesh.section(plane_origin=[0, 0, z_min + min(1.0, height/2.0)], plane_normal=[0, 0, 1])
-                if sec is not None:
-                    slice2D, to3D = sec.to_2D()
-
-                    # Extract 3D segments
-                    segments = []
-                    for seg in slice2D.discrete:
-                        seg = np.array(seg)
-                        seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-                        segments.append(seg3d)
-
-                    # Build Polygons with holes
-                    polys = _build_polygons_from_segments(segments)
-
-                    # Offset and Extrude
-                    extruded_meshes = []
-                    for poly in polys:
-                        try:
-                            buffered = poly.buffer(stl_offset_val, join_style=2)
-                            geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
-                            for g in geoms:
-                                if g.geom_type == 'Polygon' and not g.is_empty:
-                                    ex_mesh = trimesh.creation.extrude_polygon(g, height=height)
-                                    extruded_meshes.append(ex_mesh)
-                        except Exception as e:
-                            pass
-
-                    if extruded_meshes:
-                        import trimesh.util
-                        new_mesh = trimesh.util.concatenate(extruded_meshes)
-
-                        # Move to original Z
-                        new_mesh.apply_translation([0, 0, z_min])
-                        st.session_state.mesh = new_mesh
-                        st.success("두께 조절 완료!")
-                    else:
-                        st.error("오프셋 결과물이 비어있거나 에러가 발생했습니다.")
-                else:
-                    st.error("단면을 추출할 수 없습니다.")
+        if "stl_offset_val" not in st.session_state:
+            st.session_state.stl_offset_val = 0.0
+        stl_offset_val = st.number_input("조절량 (mm)", min_value=-500.0, max_value=500.0, value=float(st.session_state.stl_offset_val), step=0.1, help="양수: 굵게, 음수: 얇게 (전체 두께 기준)")
+        st.session_state.stl_offset_val = stl_offset_val
 
         if "mesh" in st.session_state and st.session_state.mesh is not None:
             stl_bytes = trimesh.exchange.stl.export_stl(st.session_state.mesh)
-            col2.download_button(
-                label="STL 파일 저장",
+            st.download_button(
+                label="조절된 STL 파일 저장",
                 data=stl_bytes,
                 file_name="adjusted_model.stl",
                 mime="model/stl",
