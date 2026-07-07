@@ -1136,20 +1136,19 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
 
                 # --- 얇은 두께 중심선 변환 로직 ---
                 if merged_thin_centerline:
-                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                    simplified = simplify_segment(closed_mid, float(min_spacing))
-                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-                        r_val = float(st.session_state.get('fillet_r', 20.0))
-                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                    centerline_path = np.asarray(seg3d_no_dup, dtype=float)
+                    if np.linalg.norm(centerline_path[0, :2] - centerline_path[-1, :2]) <= 1e-9:
+                        centerline_path = ensure_open_ring(centerline_path)
                     centerline_total = 0.0
-                    if len(shifted) >= 2:
-                        centerline_total = float(np.sum(np.linalg.norm(np.diff(shifted[:, :2], axis=0), axis=1)))
+                    if len(centerline_path) >= 2:
+                        centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
                     applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                    simplified = trim_closed_ring_tail(shifted, applied_trim)
-                    simplified = simplify_segment(simplified, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
+                    if len(simplified) < 2 and len(centerline_path) >= 2:
+                        simplified = simplify_segment(centerline_path, float(min_spacing))
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                    simplified = shifted
                 else:
                     centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=float(thin_wall_centerline_threshold_mm), ref_pt=current_ref_pt)
 
@@ -1470,20 +1469,19 @@ def compute_slice_paths_with_travel(
 
                 # --- 얇은 두께 중심선 변환 로직 ---
                 if merged_thin_centerline:
-                    closed_mid = _make_seam_at_midpoint(seg3d_no_dup)
-                    simplified = simplify_segment(closed_mid, float(min_spacing))
-                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                    if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-                        r_val = float(st.session_state.get('fillet_r', 20.0))
-                        shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                        rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                        shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                    centerline_path = np.asarray(seg3d_no_dup, dtype=float)
+                    if np.linalg.norm(centerline_path[0, :2] - centerline_path[-1, :2]) <= 1e-9:
+                        centerline_path = ensure_open_ring(centerline_path)
                     centerline_total = 0.0
-                    if len(shifted) >= 2:
-                        centerline_total = float(np.sum(np.linalg.norm(np.diff(shifted[:, :2], axis=0), axis=1)))
+                    if len(centerline_path) >= 2:
+                        centerline_total = float(np.sum(np.linalg.norm(np.diff(centerline_path[:, :2], axis=0), axis=1)))
                     applied_trim = float(trim_dist) if centerline_total > float(trim_dist) + 1e-9 else 0.0
-                    simplified = trim_closed_ring_tail(shifted, applied_trim)
-                    simplified = simplify_segment(simplified, float(min_spacing))
+                    trimmed_centerline = trim_open_line_tail(centerline_path, applied_trim)
+                    simplified = simplify_segment(trimmed_centerline, float(min_spacing))
+                    if len(simplified) < 2 and len(centerline_path) >= 2:
+                        simplified = simplify_segment(centerline_path, float(min_spacing))
+                    shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                    simplified = shifted
                 else:
                     centerline_path, is_thin = _extract_centerline_if_thin(seg3d_no_dup, max_thickness_mm=float(thin_wall_centerline_threshold_mm), ref_pt=current_ref_pt)
 
