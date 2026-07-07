@@ -752,7 +752,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     xy = seg3d_closed[:, :2]
     z_val = float(np.mean(seg3d_closed[:, 2]))
 
-    # Close the ring if it's open
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -771,17 +770,15 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     except Exception:
         return seg3d_closed, False
 
-    # If inward is empty, it means the polygon is thinner than max_thickness_mm, so we should convert it.
     if inward.is_empty:
         exterior_coords = list(poly.exterior.coords)
-
-        # 1. Find the two furthest points on the exterior boundary
         max_dist = -1.0
         idx_start, idx_end = 0, 0
         num_pts = len(exterior_coords)
 
-        # To avoid O(N^2) for very large polygons, we can subsample if it's too large
+        # To avoid O(N^2) for very large polygons, subsample if too large
         if num_pts > 200:
+            import numpy as np
             indices = np.linspace(0, num_pts-1, 200).astype(int)
             sampled_coords = [exterior_coords[i] for i in indices]
         else:
@@ -796,10 +793,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
                     max_dist = d
                     idx_start, idx_end = indices[i], indices[j]
 
-        p_start = exterior_coords[idx_start]
-        p_end = exterior_coords[idx_end]
-
-        # 2. Split the exterior ring into two opposite walls/paths
         if idx_start > idx_end:
             idx_start, idx_end = idx_end, idx_start
 
@@ -809,24 +802,26 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         if len(path1_coords) < 2 or len(path2_coords) < 2:
             return seg3d_closed, False
 
-        # IMPORTANT: path2 must be reversed to go in the same parametric direction as path1
-        # from p_start to p_end
-        # Wait, if path1 goes from idx_start to idx_end, 
-        # path2 goes from idx_end to idx_start. 
-        # So we MUST reverse path2 so they both start at p_start and end at p_end!
-        path2_coords = path2_coords[::-1]
-
         line1 = LineString(path1_coords)
         line2 = LineString(path2_coords)
 
-        # 3. Sample corresponding matching points along both sides to compute midpoints
-        num_samples = max(20, int(max_dist / 2.0))
-        centerline_pts = []
+        longer_line = line1 if line1.length > line2.length else line2
+        shorter_line = line2 if line1.length > line2.length else line1
 
-        for i in range(num_samples + 1):
-            frac = i / float(num_samples)
-            pt1 = line1.interpolate(frac, normalized=True)
-            pt2 = line2.interpolate(frac, normalized=True)
+        from shapely.ops import nearest_points
+        import numpy as np
+
+        # Resample longer line proportionally to detail
+        step = max(2.0, longer_line.length / 200.0) # at most ~200 points
+        distances = np.arange(0, longer_line.length, step)
+        if distances[-1] != longer_line.length:
+            distances = np.append(distances, longer_line.length)
+
+        centerline_pts = []
+        for d in distances:
+            pt1 = longer_line.interpolate(d)
+            # Find nearest point on the shorter wall
+            _, pt2 = nearest_points(pt1, shorter_line)
 
             mid_x = (pt1.x + pt2.x) / 2.0
             mid_y = (pt1.y + pt2.y) / 2.0
@@ -856,400 +851,6 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return out_path, True
 
     return seg3d_closed, False
-
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-
-    try:
-        from shapely.geometry import Polygon
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-
-    if poly.is_empty or not poly.is_valid:
-        return seg3d_closed, False
-
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-
-    if inward.is_empty:
-        # Instead of just taking furthest points, we can compute the minimum rotated bounding box.
-        # And the centerline is the segment connecting the midpoints of the two shorter edges.
-        try:
-            from shapely.geometry import LineString, Polygon
-
-
-            rect = poly.minimum_rotated_rectangle
-            coords = np.array(rect.exterior.coords)
-            # coords has 5 points (last == first)
-            if len(coords) < 5:
-                return seg3d_closed, False
-
-            # edges
-            edges = []
-            for i in range(4):
-                edges.append((coords[i], coords[i+1]))
-
-            lengths = [np.linalg.norm(e[0] - e[1]) for e in edges]
-
-            # The two shortest edges represent the "ends" (the width)
-            # Find the two shortest edges
-            sorted_indices = np.argsort(lengths)
-            idx1, idx2 = sorted_indices[0], sorted_indices[1]
-
-            # The width is lengths[idx1], length is lengths[sorted_indices[2]]
-            if lengths[idx1] > (max_thickness_mm + 1e-5):
-                # actually it's thicker than max_thickness
-                return seg3d_closed, False
-
-            # Midpoints of the two shortest edges
-            mid1 = (edges[idx1][0] + edges[idx1][1]) / 2.0
-            mid2 = (edges[idx2][0] + edges[idx2][1]) / 2.0
-
-            # Clip the line (mid1, mid2) to the original polygon just to be safe
-            center_line = LineString([mid1, mid2])
-            clipped = center_line.intersection(poly)
-
-            if clipped.is_empty:
-                # fallback
-                pts = np.array([mid1, mid2])
-            elif clipped.geom_type == 'LineString':
-                pts = np.array(clipped.coords)
-            elif clipped.geom_type == 'MultiLineString':
-                # take the longest
-                longest = max(list(clipped.geoms), key=lambda x: x.length)
-                pts = np.array(longest.coords)
-            else:
-                pts = np.array([mid1, mid2])
-
-            out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
-
-            if ref_pt is not None:
-                ref_xy = np.array(ref_pt[:2], dtype=float)
-                dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-                dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-                if dist_b < dist_a:
-                    out_path = out_path[::-1]
-
-            return out_path, True
-        except Exception as e:
-            return seg3d_closed, False
-
-    return seg3d_closed, False
-
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-
-    try:
-        from shapely.geometry import Polygon
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-
-    if poly.is_empty or not poly.is_valid:
-        return seg3d_closed, False
-
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-
-    # If the polygon completely disappears when shrunk by max_thickness/2, it is considered "thin".
-    if inward.is_empty:
-        coords = np.array(poly.exterior.coords)
-        if len(coords) < 2:
-            return seg3d_closed, False
-
-        # Find the two furthest points
-        if len(coords) > 100:
-            indices = np.linspace(0, len(coords)-1, 100).astype(int)
-            pts = coords[indices]
-        else:
-            pts = coords
-
-        from scipy.spatial.distance import pdist, squareform
-        D = squareform(pdist(pts))
-        i, j = np.unravel_index(np.argmax(D), D.shape)
-        p_start, p_end = pts[i], pts[j]
-
-        dist_start = np.linalg.norm(coords - p_start, axis=1)
-        dist_end = np.linalg.norm(coords - p_end, axis=1)
-        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
-
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
-
-        path1 = coords[idx_start:idx_end+1]
-        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
-
-        # We want path2 to go from p_start to p_end as well, so we reverse it
-        path2 = path2[::-1]
-
-        # Resample both paths to the same number of points to average them
-        from shapely.geometry import LineString
-        line1 = LineString(path1)
-        line2 = LineString(path2)
-
-        num_points = max(len(path1), len(path2), 10)
-        distances = np.linspace(0, 1, num_points)
-
-        center_path = []
-        for d in distances:
-            pt1 = line1.interpolate(d, normalized=True)
-            pt2 = line2.interpolate(d, normalized=True)
-            center_path.append([(pt1.x + pt2.x) / 2.0, (pt1.y + pt2.y) / 2.0])
-
-        center_path = np.array(center_path)
-        out_path = np.column_stack([center_path[:, 0], center_path[:, 1], np.full(len(center_path), z_val)])
-
-        # --- 방향 정렬 ---
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]
-
-        return out_path, True
-
-    return seg3d_closed, False
-
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-
-    try:
-        from shapely.geometry import Polygon
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-
-    if poly.is_empty or not poly.is_valid:
-        return seg3d_closed, False
-
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-
-    if inward.is_empty:
-        coords = np.array(poly.exterior.coords)
-        if len(coords) < 2:
-            return seg3d_closed, False
-
-        if len(coords) > 100:
-            indices = np.linspace(0, len(coords)-1, 100).astype(int)
-            pts = coords[indices]
-        else:
-            pts = coords
-
-        from scipy.spatial.distance import pdist, squareform
-        D = squareform(pdist(pts))
-        i, j = np.unravel_index(np.argmax(D), D.shape)
-        p_start, p_end = pts[i], pts[j]
-
-        dist_start = np.linalg.norm(coords - p_start, axis=1)
-        dist_end = np.linalg.norm(coords - p_end, axis=1)
-        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
-
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
-
-        path1 = coords[idx_start:idx_end+1]
-        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
-
-        chosen_path = path1 if len(path1) > len(path2) else path2
-        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
-
-        # --- 방향 정렬 ---
-        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]  # 뒤집기
-
-        return out_path, True
-
-    return seg3d_closed, False
-
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-
-    try:
-        from shapely.geometry import Polygon
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-
-    if poly.is_empty or not poly.is_valid:
-        return seg3d_closed, False
-
-    try:
-        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-
-    if inward.is_empty:
-        coords = np.array(poly.exterior.coords)
-        if len(coords) < 2:
-            return seg3d_closed, False
-
-        if len(coords) > 100:
-            indices = np.linspace(0, len(coords)-1, 100).astype(int)
-            pts = coords[indices]
-        else:
-            pts = coords
-
-        from scipy.spatial.distance import pdist, squareform
-        D = squareform(pdist(pts))
-        i, j = np.unravel_index(np.argmax(D), D.shape)
-        p_start, p_end = pts[i], pts[j]
-
-        dist_start = np.linalg.norm(coords - p_start, axis=1)
-        dist_end = np.linalg.norm(coords - p_end, axis=1)
-        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
-
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
-
-        path1 = coords[idx_start:idx_end+1]
-        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
-
-        chosen_path = path1 if len(path1) > len(path2) else path2
-        out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
-
-        return out_path, True
-
-    return seg3d_closed, False
-
-def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_mm: float):
-    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
-    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 4 or offset_mm <= 0:
-        return seg3d_closed, False
-    if seg3d_closed.shape[1] < 3:
-        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
-    xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
-    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-        xy = np.vstack([xy, xy[0]])
-    try:
-        poly = Polygon(xy)
-    except Exception:
-        return seg3d_closed, False
-    if poly.is_empty or (not poly.is_valid) or poly.area <= 1e-9:
-        return seg3d_closed, False
-    try:
-        inward = poly.buffer(-float(offset_mm), join_style=2)
-    except Exception:
-        return seg3d_closed, False
-    if inward.is_empty:
-        return seg3d_closed, True
-    if isinstance(inward, MultiPolygon):
-        inward = max(list(inward.geoms), key=lambda g: g.area if not g.is_empty else -1.0)
-    if inward.is_empty or inward.area <= 1e-9:
-        return seg3d_closed, True
-    try:
-        coords = np.asarray(inward.exterior.coords, dtype=float)
-    except Exception:
-        return seg3d_closed, True
-    if len(coords) < 4:
-        return seg3d_closed, True
-    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)])
-    return out, False
-
-def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2:
-        return pts
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
-        pts = pts[:-1]
-
-    n = len(pts)
-    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
-    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
-    max_idx = int(np.argmax(lens))
-
-    p1 = pts[max_idx]
-    p2 = pts[(max_idx + 1) % n]
-    mid = (p1 + p2) / 2.0
-
-    out = [mid]
-    for i in range(1, n + 1):
-        out.append(pts[(max_idx + i) % n].copy())
-    out.append(mid.copy())
-    return np.asarray(out, dtype=float)
-
-def _shift_ring_start_along_path(segment: np.ndarray, shift_dist: float) -> np.ndarray:
-    """폐곡선의 시작점을 둘레를 따라 shift_dist 만큼 이동시킵니다. (코너에서 시작하는 것을 방지)"""
-    pts = np.asarray(segment, dtype=float)
-    if len(pts) < 2 or shift_dist <= 0:
-        return pts
-    
-    # 닫힌 루프 확인 및 중복 끝점 제거
-    if np.linalg.norm(pts[0, :2] - pts[-1, :2]) < 1e-9:
-        pts = pts[:-1]
-        
-    n = len(pts)
-    lens = np.linalg.norm(pts[1:, :2] - pts[:-1, :2], axis=1)
-    lens = np.append(lens, np.linalg.norm(pts[0, :2] - pts[-1, :2]))
-    total = float(np.sum(lens))
-    
-    shift_dist = shift_dist % total
-    if shift_dist < 1e-5:
-        return np.vstack([pts, pts[0]]) # 닫아서 반환
-        
-    acc = 0.0
-    i = 0
-    while i < n and acc + lens[i] < shift_dist:
-        acc += lens[i]
-        i += 1
-        
-    p = pts[i]
-    q = pts[(i + 1) % n]
-    d = lens[i]
-    
-    cut = p + ((shift_dist - acc) / d) * (q - p) if d > 0 else p.copy()
-    
-    out = [cut]
-    for j in range(1, n + 1):
-        idx = (i + j) % n
-        out.append(pts[idx].copy())
-        
-    out.append(cut.copy())
-    return np.asarray(out, dtype=float)
-
-# =========================
-# Plotly: STL (정적)
-# =========================
-def _apply_translation_to_mesh(mesh: trimesh.Trimesh, dx: float, dy: float, dz: float = 0.0) -> trimesh.Trimesh:
-    m = mesh.copy()
-    m.apply_translation([float(dx), float(dy), float(dz)])
-    return m
-
-
-def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, rx_deg: float = 0.0, ry_deg: float = 0.0) -> trimesh.Trimesh:
-    m = mesh.copy()
-    c = np.asarray(m.bounding_box.centroid, dtype=float)
-    T1 = trimesh.transformations.translation_matrix(-c)
-    T2 = trimesh.transformations.translation_matrix(c)
-    Rz = trimesh.transformations.rotation_matrix(np.deg2rad(float(rz_deg)), [0, 0, 1])
-    Rx = trimesh.transformations.rotation_matrix(np.deg2rad(float(rx_deg)), [1, 0, 0])
-    Ry = trimesh.transformations.rotation_matrix(np.deg2rad(float(ry_deg)), [0, 1, 0])
-    M = T2 @ (Rz @ Rx @ Ry) @ T1
-    m.apply_transform(M)
-    return m
-
 
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
@@ -2284,6 +1885,7 @@ feed = feed_mm_s * 60
 ref_x = st.sidebar.number_input("시작기준좌표(X)", value=0.0)
 ref_y = st.sidebar.number_input("시작기준좌표(Y)", value=0.0)
 thin_wall_centerline_threshold_mm = st.sidebar.number_input("센터라인 변환 두께 이하 (mm)", min_value=0.0, max_value=1000.0, value=float(st.session_state.thin_wall_centerline_threshold_mm), step=0.01, format="%.2f", key="ui_thin_wall_threshold")
+st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 st.session_state.thin_wall_centerline_threshold_mm = float(thin_wall_centerline_threshold_mm)
 
 # [수정] 시작기준좌표 하단에 '시작점 고정' 옵션 배치
