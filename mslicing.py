@@ -768,6 +768,85 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
     except Exception:
         return seg3d_closed, False
 
+    # If the polygon completely disappears when shrunk by max_thickness/2, it is considered "thin".
+    if inward.is_empty:
+        coords = np.array(poly.exterior.coords)
+        if len(coords) < 2:
+            return seg3d_closed, False
+
+        # Find the two furthest points
+        if len(coords) > 100:
+            indices = np.linspace(0, len(coords)-1, 100).astype(int)
+            pts = coords[indices]
+        else:
+            pts = coords
+
+        from scipy.spatial.distance import pdist, squareform
+        D = squareform(pdist(pts))
+        i, j = np.unravel_index(np.argmax(D), D.shape)
+        p_start, p_end = pts[i], pts[j]
+
+        dist_start = np.linalg.norm(coords - p_start, axis=1)
+        dist_end = np.linalg.norm(coords - p_end, axis=1)
+        idx_start, idx_end = int(np.argmin(dist_start)), int(np.argmin(dist_end))
+
+        if idx_start > idx_end:
+            idx_start, idx_end = idx_end, idx_start
+
+        path1 = coords[idx_start:idx_end+1]
+        path2 = np.vstack([coords[idx_end:], coords[:idx_start+1]])
+
+        # We want path2 to go from p_start to p_end as well, so we reverse it
+        path2 = path2[::-1]
+
+        # Resample both paths to the same number of points to average them
+        from shapely.geometry import LineString
+        line1 = LineString(path1)
+        line2 = LineString(path2)
+
+        num_points = max(len(path1), len(path2), 10)
+        distances = np.linspace(0, 1, num_points)
+
+        center_path = []
+        for d in distances:
+            pt1 = line1.interpolate(d, normalized=True)
+            pt2 = line2.interpolate(d, normalized=True)
+            center_path.append([(pt1.x + pt2.x) / 2.0, (pt1.y + pt2.y) / 2.0])
+
+        center_path = np.array(center_path)
+        out_path = np.column_stack([center_path[:, 0], center_path[:, 1], np.full(len(center_path), z_val)])
+
+        # --- 방향 정렬 ---
+        if ref_pt is not None:
+            ref_xy = np.array(ref_pt[:2], dtype=float)
+            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+            if dist_b < dist_a:
+                out_path = out_path[::-1]
+
+        return out_path, True
+
+    return seg3d_closed, False
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(np.mean(seg3d_closed[:, 2]))
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon(xy)
+    except Exception:
+        return seg3d_closed, False
+
+    if poly.is_empty or not poly.is_valid:
+        return seg3d_closed, False
+
+    try:
+        inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
+    except Exception:
+        return seg3d_closed, False
+
     if inward.is_empty:
         coords = np.array(poly.exterior.coords)
         if len(coords) < 2:
