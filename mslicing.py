@@ -750,7 +750,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     xy = seg3d_closed[:, :2]
-    z_val = float(np.mean(seg3d_closed[:, 2]))
+    z_val = float(seg3d_closed[0, 2])
     if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
         xy = np.vstack([xy, xy[0]])
 
@@ -772,6 +772,54 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         coords = np.array(poly.exterior.coords)
         if len(coords) < 2:
             return seg3d_closed, False
+
+        try:
+            rect = np.asarray(poly.minimum_rotated_rectangle.exterior.coords[:-1], dtype=float)
+            if rect.shape[0] == 4:
+                edges = np.roll(rect, -1, axis=0) - rect
+                lengths = np.linalg.norm(edges, axis=1)
+                if np.max(lengths) > 1e-9:
+                    short_len = float(np.min(lengths))
+                    short_idx = [k for k, L in enumerate(lengths) if abs(L - short_len) <= max(1e-6, short_len * 1e-6)]
+                    if len(short_idx) >= 2:
+                        i0 = short_idx[0]
+                        i1 = next((k for k in short_idx[1:] if (k - i0) % 4 == 2), short_idx[1])
+                        mid0 = 0.5 * (rect[i0] + rect[(i0 + 1) % 4])
+                        mid1 = 0.5 * (rect[i1] + rect[(i1 + 1) % 4])
+                        direction = mid1 - mid0
+                        dnorm = np.linalg.norm(direction)
+                        if dnorm > 1e-9:
+                            direction = direction / dnorm
+                            span = max(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1], dnorm) * 2.0 + 10.0
+                            p0 = mid0 - direction * span
+                            p1 = mid1 + direction * span
+                            from shapely.geometry import LineString
+                            center_candidate = LineString([tuple(p0), tuple(p1)])
+                            clipped = poly.intersection(center_candidate)
+                            if not clipped.is_empty:
+                                line_geom = None
+                                if clipped.geom_type == 'LineString':
+                                    line_geom = clipped
+                                elif clipped.geom_type == 'MultiLineString':
+                                    line_geom = max(list(clipped.geoms), key=lambda g: g.length)
+                                elif hasattr(clipped, 'boundary') and clipped.boundary.geom_type == 'MultiPoint':
+                                    pts2 = [np.array(g.coords[0], dtype=float) for g in clipped.boundary.geoms]
+                                    if len(pts2) >= 2:
+                                        from shapely.geometry import LineString
+                                        line_geom = LineString([tuple(pts2[0]), tuple(pts2[-1])])
+                                if line_geom is not None:
+                                    line_coords = np.asarray(line_geom.coords, dtype=float)
+                                    if line_coords.shape[0] >= 2:
+                                        out_path = np.column_stack([line_coords[:, 0], line_coords[:, 1], np.full(len(line_coords), z_val)])
+                                        if ref_pt is not None:
+                                            ref_xy = np.array(ref_pt[:2], dtype=float)
+                                            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+                                            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+                                            if dist_b < dist_a:
+                                                out_path = out_path[::-1]
+                                        return out_path, True
+        except Exception:
+            pass
 
         if len(coords) > 100:
             indices = np.linspace(0, len(coords)-1, 100).astype(int)
@@ -797,14 +845,12 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         chosen_path = path1 if len(path1) > len(path2) else path2
         out_path = np.column_stack([chosen_path[:, 0], chosen_path[:, 1], np.full(len(chosen_path), z_val)])
 
-        # --- 방향 정렬 ---
-        # 경로의 시작점이 ref_pt와 더 가까워지도록 정렬
         if ref_pt is not None:
             ref_xy = np.array(ref_pt[:2], dtype=float)
             dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
             dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
             if dist_b < dist_a:
-                out_path = out_path[::-1]  # 뒤집기
+                out_path = out_path[::-1]
 
         return out_path, True
 
