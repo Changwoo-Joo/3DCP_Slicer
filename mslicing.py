@@ -1319,52 +1319,6 @@ def _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm: float = 0.
 # =========================
 # Slice path computation 
 # =========================
-def _weld_segments(segments, to3D, display_z):
-    from shapely.geometry import Polygon
-    from shapely.ops import unary_union
-    import numpy as np
-
-    prepared = []
-    for seg3d in segments:
-        xy = seg3d[:, :2]
-        if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
-            xy = np.vstack([xy, xy[0]])
-        try:
-            poly = Polygon(xy)
-            if not poly.is_empty and poly.is_valid and poly.area > 1e-9:
-                prepared.append(poly)
-        except Exception:
-            pass
-
-    if not prepared: return segments
-
-    # 0.1mm 부풀려서 미세한 간격을 강제로 용접한 후 다시 0.1mm 줄여 원래 크기 복원
-    try:
-        inflated = [p.buffer(0.1, join_style=2) for p in prepared]
-        unified = unary_union(inflated).buffer(-0.1, join_style=2)
-
-        polys = [unified] if unified.geom_type == 'Polygon' else list(unified.geoms)
-
-        new_segments = []
-        for poly in polys:
-            if poly.geom_type != 'Polygon' or poly.is_empty: continue
-
-            # Exterior
-            ext = np.array(poly.exterior.coords)
-            seg3d = (to3D @ np.hstack([ext, np.zeros((len(ext), 1)), np.ones((len(ext), 1))]).T).T[:, :3]
-            seg3d[:, 2] = display_z
-            new_segments.append(seg3d)
-
-            # Interiors
-            for interior in poly.interiors:
-                int_coords = np.array(interior.coords)
-                seg3d_int = (to3D @ np.hstack([int_coords, np.zeros((len(int_coords), 1)), np.ones((len(int_coords), 1))]).T).T[:, :3]
-                seg3d_int[:, 2] = display_z
-                new_segments.append(seg3d_int)
-
-        return new_segments
-    except Exception:
-        return segments
 
 def compute_slice_paths_with_travel(
     mesh, z_int=30.0, ref_pt_user=(0.0, 0.0), trim_dist=30.0, min_spacing=5.0,
@@ -1435,9 +1389,6 @@ def compute_slice_paths_with_travel(
                 segments.append(seg3d)
             if not segments:
                 continue
-
-            # [핵심] 미세한 간격으로 끊어진 CAD 파츠들을 하나의 통뼈로 강제 용접
-            segments = _weld_segments(segments, to3D, display_z)
 
             segment_jobs = _merge_thin_wall_pairs_to_centerlines(segments, max_thickness_mm=float(thin_wall_centerline_threshold_mm))
 
