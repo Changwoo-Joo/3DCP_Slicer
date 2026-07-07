@@ -757,7 +757,7 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         xy = np.vstack([xy, xy[0]])
 
     try:
-        from shapely.geometry import Polygon, LineString
+        from shapely.geometry import Polygon
         poly = Polygon(xy)
     except Exception:
         return seg3d_closed, False
@@ -766,86 +766,78 @@ def _extract_centerline_if_thin(seg3d_closed: np.ndarray, max_thickness_mm: floa
         return seg3d_closed, False
 
     try:
+        # Check if it's thinner than max_thickness
         inward = poly.buffer(-(max_thickness_mm / 2.0), join_style=2)
     except Exception:
         return seg3d_closed, False
 
     if inward.is_empty:
-        exterior_coords = list(poly.exterior.coords)
-        max_dist = -1.0
-        idx_start, idx_end = 0, 0
-        num_pts = len(exterior_coords)
-
-        # Subsample if too large to find ends
-        if num_pts > 200:
-            indices = np.linspace(0, num_pts-1, 200).astype(int)
-            sampled_coords = [exterior_coords[i] for i in indices]
-        else:
-            indices = list(range(num_pts))
-            sampled_coords = exterior_coords
-
-        for i in range(len(sampled_coords) - 1):
-            for j in range(i + 1, len(sampled_coords)):
-                d = math.hypot(sampled_coords[i][0] - sampled_coords[j][0], 
-                               sampled_coords[i][1] - sampled_coords[j][1])
-                if d > max_dist:
-                    max_dist = d
-                    idx_start, idx_end = indices[i], indices[j]
-
-        if idx_start > idx_end:
-            idx_start, idx_end = idx_end, idx_start
-
-        path1_coords = exterior_coords[idx_start : idx_end + 1]
-        path2_coords = exterior_coords[idx_end:] + exterior_coords[: idx_start + 1]
-
-        if len(path1_coords) < 2 or len(path2_coords) < 2:
-            return seg3d_closed, False
-
-        line1 = LineString(path1_coords)
-        line2 = LineString(path2_coords)
-
-        longer_line = line1 if line1.length > line2.length else line2
-
-        # Area / Length gives a highly accurate average thickness for ribbons
-        thickness = poly.area / longer_line.length
-
-        # Offset the longer contour line inward by exactly half thickness
         try:
-            offset1 = longer_line.parallel_offset(thickness / 2.0, 'left', join_style=2)
-            offset2 = longer_line.parallel_offset(thickness / 2.0, 'right', join_style=2)
+            # It's a thin polygon. Find its actual thickness
+            thickness = poly.area / (poly.exterior.length / 2.0)
 
-            len1 = offset1.intersection(poly).length
-            len2 = offset2.intersection(poly).length
+            # Create a very thin sliver polygon exactly at the center
+            sliver = poly.buffer(-(thickness / 2.0) + 0.05, join_style=2)
 
-            centerline = offset1 if len1 > len2 else offset2
+            if sliver.is_empty:
+                sliver = poly.buffer(-(thickness / 2.0) + 0.1, join_style=2)
 
-            from shapely.ops import linemerge
-            if centerline.geom_type == 'MultiLineString':
-                centerline = linemerge(centerline)
-                if centerline.geom_type == 'MultiLineString':
-                    centerline = max(list(centerline.geoms), key=lambda x: x.length)
+            if sliver.is_empty:
+                return seg3d_closed, False
 
-            pts = np.array(centerline.coords)
+            if sliver.geom_type == 'MultiPolygon':
+                sliver = max(list(sliver.geoms), key=lambda x: x.area)
+            elif sliver.geom_type != 'Polygon':
+                return seg3d_closed, False
 
+            coords = list(sliver.exterior.coords)
+            num_pts = len(coords)
+
+            if num_pts < 4:
+                return seg3d_closed, False
+
+            max_dist = -1.0
+            idx_start, idx_end = 0, 0
+
+            if num_pts > 200:
+                indices = np.linspace(0, num_pts-1, 200).astype(int)
+                sampled = [coords[i] for i in indices]
+            else:
+                indices = list(range(num_pts))
+                sampled = coords
+
+            for i in range(len(sampled) - 1):
+                for j in range(i + 1, len(sampled)):
+                    d = math.hypot(sampled[i][0] - sampled[j][0], sampled[i][1] - sampled[j][1])
+                    if d > max_dist:
+                        max_dist = d
+                        idx_start, idx_end = indices[i], indices[j]
+
+            if idx_start > idx_end:
+                idx_start, idx_end = idx_end, idx_start
+
+            path1 = coords[idx_start : idx_end + 1]
+            path2 = coords[idx_end:] + coords[: idx_start + 1]
+
+            pts = path1 if len(path1) > len(path2) else path2
+            pts = np.array(pts, dtype=float)
+
+            out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
+
+            # --- 방향 정렬 ---
+            if ref_pt is not None:
+                ref_xy = np.array(ref_pt[:2], dtype=float)
+                dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
+                dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
+                if dist_b < dist_a:
+                    out_path = out_path[::-1]
+
+            return out_path, True
         except Exception:
             return seg3d_closed, False
 
-        if len(pts) < 2:
-            return seg3d_closed, False
-
-        out_path = np.column_stack([pts[:, 0], pts[:, 1], np.full(len(pts), z_val)])
-
-        # --- 방향 정렬 ---
-        if ref_pt is not None:
-            ref_xy = np.array(ref_pt[:2], dtype=float)
-            dist_a = np.linalg.norm(out_path[0, :2] - ref_xy)
-            dist_b = np.linalg.norm(out_path[-1, :2] - ref_xy)
-            if dist_b < dist_a:
-                out_path = out_path[::-1]
-
-        return out_path, True
-
     return seg3d_closed, False
+
 
 def _make_seam_at_midpoint(segment: np.ndarray) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
