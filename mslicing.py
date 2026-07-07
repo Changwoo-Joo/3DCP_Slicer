@@ -391,9 +391,9 @@ def _extrude_robust_dense(poly, height):
                         cap_vertices.append([pt[0], pt[1]])
                     face_idx.append(vertex_map[pt_tuple])
 
-                # 법선 계산을 위한 외적
-                p1, p2, p3 = np.array(cap_vertices[face_idx[0]]), np.array(cap_vertices[face_idx[1]]), np.array(cap_vertices[face_idx[2]])
-                cp = np.cross(p2 - p1, p3 - p1)
+                # 법선 계산을 위한 2D 외적 (Numpy 2.0 호환성 해결)
+                p1, p2, p3 = cap_vertices[face_idx[0]], cap_vertices[face_idx[1]], cap_vertices[face_idx[2]]
+                cp = (p2[0] - p1[0]) * (p3[1] - p1[1]) - (p2[1] - p1[1]) * (p3[0] - p1[0])
 
                 if cp < 0:
                     cap_faces.append([face_idx[0], face_idx[2], face_idx[1]])
