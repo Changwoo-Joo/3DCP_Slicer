@@ -1293,8 +1293,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             g.append(f"G00 X{px:.1f} Y{py:.1f} Z{mv['safe_z']:.1f}")
 
         if mv["is_start"] or i == 0:
-            if i > 0 and not mv["is_start"]:
-                pass
             g.append(f"G01 F{feed}")
             if start_e_on:
                 g.append(f"G01 X{px:.1f} Y{py:.1f} Z{pz:.1f} E{start_e_val:.5f}")
@@ -2107,6 +2105,22 @@ if "singularity_z_trigger" not in st.session_state:
     st.session_state.singularity_z_trigger = 0.0
 if "singularity_lift_z" not in st.session_state:
     st.session_state.singularity_lift_z = 300.0
+if "stl_cur_dim_x" not in st.session_state:
+    st.session_state.stl_cur_dim_x = 0.0
+if "stl_cur_dim_y" not in st.session_state:
+    st.session_state.stl_cur_dim_y = 0.0
+if "stl_cur_dim_z" not in st.session_state:
+    st.session_state.stl_cur_dim_z = 0.0
+if "stl_target_dim_x" not in st.session_state:
+    st.session_state.stl_target_dim_x = 0.0
+if "stl_target_dim_y" not in st.session_state:
+    st.session_state.stl_target_dim_y = 0.0
+if "stl_target_dim_z" not in st.session_state:
+    st.session_state.stl_target_dim_z = 0.0
+if "stl_apply_dims" not in st.session_state:
+    st.session_state.stl_apply_dims = False
+if "stl_lock_ratio" not in st.session_state:
+    st.session_state.stl_lock_ratio = False
 if "use_point_range" not in st.session_state:
     st.session_state.use_point_range = False
 if "custom_pt_start" not in st.session_state:
@@ -2140,6 +2154,28 @@ def check_key_valid(k: str):
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
+with st.sidebar.expander("STL 치수(X, Y, Z 크기) 수정", expanded=True):
+    cur_dx = float(st.session_state.get("stl_cur_dim_x", 0.0))
+    cur_dy = float(st.session_state.get("stl_cur_dim_y", 0.0))
+    cur_dz = float(st.session_state.get("stl_cur_dim_z", 0.0))
+    if cur_dx > 0 or cur_dy > 0 or cur_dz > 0:
+        st.markdown(f"**현재 치수(mm):** `X: {cur_dx:.2f}` × `Y: {cur_dy:.2f}` × `Z: {cur_dz:.2f}`")
+    else:
+        st.caption("STL 업로드 시 현재 치수(mm)가 자동 표시됩니다.")
+
+    dim_x = st.number_input("수정 X 치수 (mm)", value=float(st.session_state.get("stl_target_dim_x", cur_dx if cur_dx > 0 else 100.0)), step=10.0, format="%.2f", key="input_dim_x")
+    dim_y = st.number_input("수정 Y 치수 (mm)", value=float(st.session_state.get("stl_target_dim_y", cur_dy if cur_dy > 0 else 100.0)), step=10.0, format="%.2f", key="input_dim_y")
+    dim_z = st.number_input("수정 Z 치수 (mm)", value=float(st.session_state.get("stl_target_dim_z", cur_dz if cur_dz > 0 else 50.0)), step=10.0, format="%.2f", key="input_dim_z")
+    lock_ratio = st.checkbox("비율 고정 (X 변경 시 Y, Z 동일 비율 변경)", value=bool(st.session_state.get("stl_lock_ratio", False)), key="stl_lock_ratio")
+
+    if st.button("치수 적용", use_container_width=True, key="apply_stl_dims"):
+        st.session_state["stl_target_dim_x"] = float(dim_x)
+        st.session_state["stl_target_dim_y"] = float(dim_y)
+        st.session_state["stl_target_dim_z"] = float(dim_z)
+        st.session_state["stl_apply_dims"] = True
+        st.sidebar.success("STL 치수(크기)를 적용했습니다.")
+        st.rerun()
+
 with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
     move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
     move_y = st.number_input("이동 Y(mm)", value=float(st.session_state.get("stl_move_y", 0.0)), step=10.0, format="%.3f")
@@ -2272,6 +2308,36 @@ if uploaded is not None:
     scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
     if scale_to_mm != 1.0:
         mesh.apply_scale(scale_to_mm)
+        extents = np.asarray(mesh.extents, dtype=float)
+
+    if is_new_upload or st.session_state.get("stl_cur_dim_x", 0.0) == 0.0:
+        st.session_state["stl_cur_dim_x"] = float(extents[0]) if len(extents) > 0 else 0.0
+        st.session_state["stl_cur_dim_y"] = float(extents[1]) if len(extents) > 1 else 0.0
+        st.session_state["stl_cur_dim_z"] = float(extents[2]) if len(extents) > 2 else 0.0
+        st.session_state["stl_target_dim_x"] = float(extents[0]) if len(extents) > 0 else 100.0
+        st.session_state["stl_target_dim_y"] = float(extents[1]) if len(extents) > 1 else 100.0
+        st.session_state["stl_target_dim_z"] = float(extents[2]) if len(extents) > 2 else 50.0
+        st.session_state["stl_apply_dims"] = False
+
+    if bool(st.session_state.get("stl_apply_dims", False)):
+        t_x = float(st.session_state.get("stl_target_dim_x", extents[0]))
+        t_y = float(st.session_state.get("stl_target_dim_y", extents[1]))
+        t_z = float(st.session_state.get("stl_target_dim_z", extents[2]))
+        if bool(st.session_state.get("stl_lock_ratio", False)) and extents[0] > 1e-6:
+            r = t_x / extents[0]
+            t_y = extents[1] * r
+            t_z = extents[2] * r
+            st.session_state["stl_target_dim_y"] = t_y
+            st.session_state["stl_target_dim_z"] = t_z
+        sx = t_x / extents[0] if extents[0] > 1e-6 else 1.0
+        sy = t_y / extents[1] if extents[1] > 1e-6 else 1.0
+        sz = t_z / extents[2] if extents[2] > 1e-6 else 1.0
+        mesh.apply_scale([sx, sy, sz])
+        extents = np.asarray(mesh.extents, dtype=float)
+        st.session_state["stl_cur_dim_x"] = float(extents[0])
+        st.session_state["stl_cur_dim_y"] = float(extents[1])
+        st.session_state["stl_cur_dim_z"] = float(extents[2])
+
     scale_matrix = np.eye(4)
     scale_matrix[2, 2] = 1.0000001
     mesh.apply_transform(scale_matrix)
