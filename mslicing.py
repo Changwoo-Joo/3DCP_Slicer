@@ -2957,31 +2957,31 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     help="체크 시 입력한 X, Y, Z에 맞춰 앞서 설정한 A1~A4 매핑 규칙 및 등속 옵션을 동일하게 적용하여 축 값을 자동 계산합니다. 해제 시 A1~A4를 직접 수동 입력합니다."
                 )
 
-                st.markdown("**시작 위치 (Start)**")
-                sc1, sc2, sc3 = st.columns(3)
-                st.session_state.rapid_start_x = sc1.number_input("Start X", value=float(st.session_state.get("rapid_start_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_x")
-                st.session_state.rapid_start_y = sc2.number_input("Start Y", value=float(st.session_state.get("rapid_start_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_y")
-                st.session_state.rapid_start_z = sc3.number_input("Start Z", value=float(st.session_state.get("rapid_start_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_start_z")
+                st.markdown("---")
+                st.markdown("#### 시작 위치 (Start)")
+                st.session_state.rapid_start_x = st.number_input("START X (mm)", value=float(st.session_state.get("rapid_start_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_x")
+                st.session_state.rapid_start_y = st.number_input("START Y (mm)", value=float(st.session_state.get("rapid_start_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_y")
+                st.session_state.rapid_start_z = st.number_input("START Z (mm)", value=float(st.session_state.get("rapid_start_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_start_z")
 
                 if not st.session_state.rapid_endpoints_auto_ext:
-                    sa_cols = st.columns(4)
-                    st.session_state.rapid_start_a1 = sa_cols[0].number_input("Start A1", value=float(st.session_state.get("rapid_start_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a1")
-                    st.session_state.rapid_start_a2 = sa_cols[1].number_input("Start A2", value=float(st.session_state.get("rapid_start_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a2")
-                    st.session_state.rapid_start_a3 = sa_cols[2].number_input("Start A3", value=float(st.session_state.get("rapid_start_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a3")
-                    st.session_state.rapid_start_a4 = sa_cols[3].number_input("Start A4", value=float(st.session_state.get("rapid_start_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a4")
+                    st.caption("시작 축 직접 입력")
+                    st.session_state.rapid_start_a1 = st.number_input("START A1", value=float(st.session_state.get("rapid_start_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a1")
+                    st.session_state.rapid_start_a2 = st.number_input("START A2", value=float(st.session_state.get("rapid_start_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a2")
+                    st.session_state.rapid_start_a3 = st.number_input("START A3", value=float(st.session_state.get("rapid_start_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a3")
+                    st.session_state.rapid_start_a4 = st.number_input("START A4", value=float(st.session_state.get("rapid_start_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a4")
 
-                st.markdown("**종료 위치 (End)**")
-                ec1, ec2, ec3 = st.columns(3)
-                st.session_state.rapid_end_x = ec1.number_input("End X", value=float(st.session_state.get("rapid_end_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_x")
-                st.session_state.rapid_end_y = ec2.number_input("End Y", value=float(st.session_state.get("rapid_end_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_y")
-                st.session_state.rapid_end_z = ec3.number_input("End Z", value=float(st.session_state.get("rapid_end_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_end_z")
+                st.markdown("---")
+                st.markdown("#### 종료 위치 (End)")
+                st.session_state.rapid_end_x = st.number_input("END X (mm)", value=float(st.session_state.get("rapid_end_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_x")
+                st.session_state.rapid_end_y = st.number_input("END Y (mm)", value=float(st.session_state.get("rapid_end_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_y")
+                st.session_state.rapid_end_z = st.number_input("END Z (mm)", value=float(st.session_state.get("rapid_end_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_end_z")
 
                 if not st.session_state.rapid_endpoints_auto_ext:
-                    ea_cols = st.columns(4)
-                    st.session_state.rapid_end_a1 = ea_cols[0].number_input("End A1", value=float(st.session_state.get("rapid_end_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a1")
-                    st.session_state.rapid_end_a2 = ea_cols[1].number_input("End A2", value=float(st.session_state.get("rapid_end_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a2")
-                    st.session_state.rapid_end_a3 = ea_cols[2].number_input("End A3", value=float(st.session_state.get("rapid_end_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a3")
-                    st.session_state.rapid_end_a4 = ea_cols[3].number_input("End A4", value=float(st.session_state.get("rapid_end_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a4")
+                    st.caption("종료 축 직접 입력")
+                    st.session_state.rapid_end_a1 = st.number_input("END A1", value=float(st.session_state.get("rapid_end_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a1")
+                    st.session_state.rapid_end_a2 = st.number_input("END A2", value=float(st.session_state.get("rapid_end_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a2")
+                    st.session_state.rapid_end_a3 = st.number_input("END A3", value=float(st.session_state.get("rapid_end_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a3")
+                    st.session_state.rapid_end_a4 = st.number_input("END A4", value=float(st.session_state.get("rapid_end_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a4")
 
         use_endpoints = bool(st.session_state.get("rapid_use_custom_endpoints", False))
         max_slice_limit = 63998 if use_endpoints else MAX_LINES
