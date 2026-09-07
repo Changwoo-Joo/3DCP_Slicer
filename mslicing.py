@@ -2129,12 +2129,22 @@ if "custom_pt_end" not in st.session_state:
     st.session_state.custom_pt_end = 64000
 if "rapid_use_custom_endpoints" not in st.session_state:
     st.session_state.rapid_use_custom_endpoints = False
+if "rapid_endpoints_auto_ext" not in st.session_state:
+    st.session_state.rapid_endpoints_auto_ext = True
 if "rapid_start_x" not in st.session_state: st.session_state.rapid_start_x = 0.0
 if "rapid_start_y" not in st.session_state: st.session_state.rapid_start_y = 0.0
 if "rapid_start_z" not in st.session_state: st.session_state.rapid_start_z = 200.0
+if "rapid_start_a1" not in st.session_state: st.session_state.rapid_start_a1 = 0.0
+if "rapid_start_a2" not in st.session_state: st.session_state.rapid_start_a2 = 0.0
+if "rapid_start_a3" not in st.session_state: st.session_state.rapid_start_a3 = 0.0
+if "rapid_start_a4" not in st.session_state: st.session_state.rapid_start_a4 = 0.0
 if "rapid_end_x" not in st.session_state: st.session_state.rapid_end_x = 0.0
 if "rapid_end_y" not in st.session_state: st.session_state.rapid_end_y = 0.0
 if "rapid_end_z" not in st.session_state: st.session_state.rapid_end_z = 200.0
+if "rapid_end_a1" not in st.session_state: st.session_state.rapid_end_a1 = 0.0
+if "rapid_end_a2" not in st.session_state: st.session_state.rapid_end_a2 = 0.0
+if "rapid_end_a3" not in st.session_state: st.session_state.rapid_end_a3 = 0.0
+if "rapid_end_a4" not in st.session_state: st.session_state.rapid_end_a4 = 0.0
 ensure_anim_buffers()
 
 # =========================
@@ -2645,8 +2655,9 @@ def convert_gcode_to_rapid(
     speed_mm_s: float = 200.0, boundary_eps_mm: float = 0.5, apply_print_only: bool = False,
     travel_interp: bool = True, singularity_avoid: bool = False, singularity_z_trigger: float = 0.0, singularity_lift_z: float = 300.0,
     use_custom_endpoints: bool = False,
-    start_xyz: tuple = (0.0, 0.0, 200.0),
-    end_xyz: tuple = (0.0, 0.0, 200.0),
+    start_pt: Dict[str, float] = None,
+    end_pt: Dict[str, float] = None,
+    auto_ext: bool = True,
 ) -> str:
     slice_max_lines = (MAX_LINES - 2) if use_custom_endpoints else MAX_LINES
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
@@ -2751,10 +2762,60 @@ def convert_gcode_to_rapid(
         _apply_const_speed_profile_on_nodes(nodes, "a2", "raw_y", y_min, y_max, a2_at_ymin, a2_at_ymax, speed_mm_s, 11.0, boundary_eps_mm, apply_print_only, travel_interp,
                                             float(st.session_state.get("extconsta2stepmm", 0.0)) if use_step else 0.0)
 
+    def _calc_endpoint_axes(pt_dict: Dict[str, float]):
+        if pt_dict is None: return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        raw_x = float(pt_dict.get("x", 0.0))
+        raw_y = float(pt_dict.get("y", 0.0))
+        raw_z = float(pt_dict.get("z", 0.0))
+        if auto_ext:
+            # 1) A4 및 Z 계산 (A4 매핑 연동)
+            a4_nom = _linmap(raw_z, z0, z1, a4_0, a4_1) if bool(enable_a4) else 0.0
+            a4_val = a4_nom
+            calc_z = raw_z - a4_val
+            # 2) A3 및 X/Y 계산 (A3 매핑 연동)
+            calc_x, calc_y = raw_x, raw_y
+            if key == "0" and a3_on_x:
+                a3_val = _linmap(raw_x, x0, x1, a3x_0, a3x_1)
+                calc_x = raw_x - a3_val
+            elif key == "90" and a3_on_y:
+                a3_val = _linmap(raw_y, y0, y1, a3y_0, a3y_1)
+                calc_y = raw_y - a3_val
+            elif key == "-90" and a3_on_y:
+                a3_val = _linmap(raw_y, y0, y1, a3y_0, a3y_1)
+                calc_y = raw_y + a3_val
+            else:
+                a3_val = 0.0
+            # 3) A1 계산 (A1 등속/위치 매핑 연동)
+            if bool(enable_a1_const):
+                span1 = abs(float(x_max) - float(x_min))
+                if span1 <= 1e-9: a1_val = float(a1_at_xmin)
+                else:
+                    t1 = (raw_x - float(x_min)) / span1
+                    t1 = 0.0 if t1 < 0.0 else (1.0 if t1 > 1.0 else t1)
+                    a1_val = float(a1_at_xmin) + t1 * (float(a1_at_xmax) - float(a1_at_xmin))
+            else:
+                a1_val = float(pt_dict.get("a1", 0.0))
+            # 4) A2 계산 (A2 등속/위치 매핑 연동)
+            if bool(enable_a2_const):
+                span2 = abs(float(y_max) - float(y_min))
+                if span2 <= 1e-9: a2_val = float(a2_at_ymin)
+                else:
+                    t2 = (raw_y - float(y_min)) / span2
+                    t2 = 0.0 if t2 < 0.0 else (1.0 if t2 > 1.0 else t2)
+                    a2_val = float(a2_at_ymin) + t2 * (float(a2_at_ymax) - float(a2_at_ymin))
+            else:
+                a2_val = float(pt_dict.get("a2", 0.0))
+            return calc_x, calc_y, calc_z, a1_val, a2_val, a3_val, a4_val
+        else:
+            return raw_x, raw_y, raw_z, float(pt_dict.get("a1", 0.0)), float(pt_dict.get("a2", 0.0)), float(pt_dict.get("a3", 0.0)), float(pt_dict.get("a4", 0.0))
+
     lines_out = []
-    if use_custom_endpoints:
-        sx, sy, sz = _fmt_pos(start_xyz[0]), _fmt_pos(start_xyz[1]), _fmt_pos(start_xyz[2])
-        lines_out.append(f"{sx},{sy},{sz},{frx},{fry},{frz},0000.0,000.0,000.0,0000.0,000,{int(speed_mm_s):03d}")
+    # [1] 시작 이동점 추가 (A1~A4 옵션 적용)
+    if use_custom_endpoints and start_pt is not None:
+        sx, sy, sz, sa1, sa2, sa3, sa4 = _calc_endpoint_axes(start_pt)
+        sa3_v, sa4_v = (sa4, sa3) if swap_a3_a4 else (sa3, sa4)
+        s_line = f"{_fmt_pos(sx)},{_fmt_pos(sy)},{_fmt_pos(sz)},{frx},{fry},{frz},{_fmt_ext(sa1, 4)},{_fmt_ext(sa2, 3)},{_fmt_ext(sa3_v, 3)},{_fmt_ext(sa4_v, 4)},000,{int(speed_mm_s):03d}"
+        lines_out.append(s_line)
 
     max_body_lines = (MAX_LINES - 1) if use_custom_endpoints else MAX_LINES
     for nd in nodes:
@@ -2766,9 +2827,12 @@ def convert_gcode_to_rapid(
         spd_val = f"{int(speed_mm_s):03d}"
         lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
 
-    if use_custom_endpoints:
-        ex, ey, ez = _fmt_pos(end_xyz[0]), _fmt_pos(end_xyz[1]), _fmt_pos(end_xyz[2])
-        lines_out.append(f"{ex},{ey},{ez},{frx},{fry},{frz},0000.0,000.0,000.0,0000.0,000,{int(speed_mm_s):03d}")
+    # [2] 종료 이동점 추가 (A1~A4 옵션 적용)
+    if use_custom_endpoints and end_pt is not None:
+        ex, ey, ez, ea1, ea2, ea3, ea4 = _calc_endpoint_axes(end_pt)
+        ea3_v, ea4_v = (ea4, ea3) if swap_a3_a4 else (ea3, ea4)
+        e_line = f"{_fmt_pos(ex)},{_fmt_pos(ey)},{_fmt_pos(ez)},{frx},{fry},{frz},{_fmt_ext(ea1, 4)},{_fmt_ext(ea2, 3)},{_fmt_ext(ea3_v, 3)},{_fmt_ext(ea4_v, 4)},000,{int(speed_mm_s):03d}"
+        lines_out.append(e_line)
 
     while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
@@ -2887,17 +2951,37 @@ if KEY_OK and st.session_state.show_rapid_panel:
                 help="체크 시 맨 처음과 맨 끝에 지정한 안전 위치로 이동하는 코드가 1줄씩 추가됩니다."
             )
             if st.session_state.rapid_use_custom_endpoints:
+                st.session_state.rapid_endpoints_auto_ext = st.checkbox(
+                    "A1~A4 축 설정 자동 연동(권장)",
+                    value=bool(st.session_state.get("rapid_endpoints_auto_ext", True)),
+                    help="체크 시 입력한 X, Y, Z에 맞춰 앞서 설정한 A1~A4 매핑 규칙 및 등속 옵션을 동일하게 적용하여 축 값을 자동 계산합니다. 해제 시 A1~A4를 직접 수동 입력합니다."
+                )
+
                 st.markdown("**시작 위치 (Start)**")
                 sc1, sc2, sc3 = st.columns(3)
-                st.session_state.rapid_start_x = sc1.number_input("Start X", value=float(st.session_state.rapid_start_x), step=10.0, format="%.1f")
-                st.session_state.rapid_start_y = sc2.number_input("Start Y", value=float(st.session_state.rapid_start_y), step=10.0, format="%.1f")
-                st.session_state.rapid_start_z = sc3.number_input("Start Z", value=float(st.session_state.rapid_start_z), step=10.0, format="%.1f")
+                st.session_state.rapid_start_x = sc1.number_input("Start X", value=float(st.session_state.get("rapid_start_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_x")
+                st.session_state.rapid_start_y = sc2.number_input("Start Y", value=float(st.session_state.get("rapid_start_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_y")
+                st.session_state.rapid_start_z = sc3.number_input("Start Z", value=float(st.session_state.get("rapid_start_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_start_z")
+
+                if not st.session_state.rapid_endpoints_auto_ext:
+                    sa_cols = st.columns(4)
+                    st.session_state.rapid_start_a1 = sa_cols[0].number_input("Start A1", value=float(st.session_state.get("rapid_start_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a1")
+                    st.session_state.rapid_start_a2 = sa_cols[1].number_input("Start A2", value=float(st.session_state.get("rapid_start_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a2")
+                    st.session_state.rapid_start_a3 = sa_cols[2].number_input("Start A3", value=float(st.session_state.get("rapid_start_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a3")
+                    st.session_state.rapid_start_a4 = sa_cols[3].number_input("Start A4", value=float(st.session_state.get("rapid_start_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_start_a4")
 
                 st.markdown("**종료 위치 (End)**")
                 ec1, ec2, ec3 = st.columns(3)
-                st.session_state.rapid_end_x = ec1.number_input("End X", value=float(st.session_state.rapid_end_x), step=10.0, format="%.1f")
-                st.session_state.rapid_end_y = ec2.number_input("End Y", value=float(st.session_state.rapid_end_y), step=10.0, format="%.1f")
-                st.session_state.rapid_end_z = ec3.number_input("End Z", value=float(st.session_state.rapid_end_z), step=10.0, format="%.1f")
+                st.session_state.rapid_end_x = ec1.number_input("End X", value=float(st.session_state.get("rapid_end_x", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_x")
+                st.session_state.rapid_end_y = ec2.number_input("End Y", value=float(st.session_state.get("rapid_end_y", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_y")
+                st.session_state.rapid_end_z = ec3.number_input("End Z", value=float(st.session_state.get("rapid_end_z", 200.0)), step=10.0, format="%.1f", key="ui_rapid_end_z")
+
+                if not st.session_state.rapid_endpoints_auto_ext:
+                    ea_cols = st.columns(4)
+                    st.session_state.rapid_end_a1 = ea_cols[0].number_input("End A1", value=float(st.session_state.get("rapid_end_a1", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a1")
+                    st.session_state.rapid_end_a2 = ea_cols[1].number_input("End A2", value=float(st.session_state.get("rapid_end_a2", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a2")
+                    st.session_state.rapid_end_a3 = ea_cols[2].number_input("End A3", value=float(st.session_state.get("rapid_end_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a3")
+                    st.session_state.rapid_end_a4 = ea_cols[3].number_input("End A4", value=float(st.session_state.get("rapid_end_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a4")
 
         use_endpoints = bool(st.session_state.get("rapid_use_custom_endpoints", False))
         max_slice_limit = 63998 if use_endpoints else MAX_LINES
@@ -2915,6 +2999,24 @@ if KEY_OK and st.session_state.show_rapid_panel:
             st.sidebar.error(f"G-code가 {max_slice_limit:,}줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
         elif save_rapid_clicked:
             try:
+                st_pt_dict = {
+                    "x": float(st.session_state.get("rapid_start_x", 0.0)),
+                    "y": float(st.session_state.get("rapid_start_y", 0.0)),
+                    "z": float(st.session_state.get("rapid_start_z", 200.0)),
+                    "a1": float(st.session_state.get("rapid_start_a1", 0.0)),
+                    "a2": float(st.session_state.get("rapid_start_a2", 0.0)),
+                    "a3": float(st.session_state.get("rapid_start_a3", 0.0)),
+                    "a4": float(st.session_state.get("rapid_start_a4", 0.0)),
+                }
+                ed_pt_dict = {
+                    "x": float(st.session_state.get("rapid_end_x", 0.0)),
+                    "y": float(st.session_state.get("rapid_end_y", 0.0)),
+                    "z": float(st.session_state.get("rapid_end_z", 200.0)),
+                    "a1": float(st.session_state.get("rapid_end_a1", 0.0)),
+                    "a2": float(st.session_state.get("rapid_end_a2", 0.0)),
+                    "a3": float(st.session_state.get("rapid_end_a3", 0.0)),
+                    "a4": float(st.session_state.get("rapid_end_a4", 0.0)),
+                }
                 st.session_state.rapid_text = convert_gcode_to_rapid(
                     gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
                     preset=st.session_state.mapping_preset, swap_a3_a4=False,
@@ -2930,8 +3032,9 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
                     singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
                     use_custom_endpoints=use_endpoints,
-                    start_xyz=(float(st.session_state.rapid_start_x), float(st.session_state.rapid_start_y), float(st.session_state.rapid_start_z)),
-                    end_xyz=(float(st.session_state.rapid_end_x), float(st.session_state.rapid_end_y), float(st.session_state.rapid_end_z)),
+                    start_pt=st_pt_dict,
+                    end_pt=ed_pt_dict,
+                    auto_ext=bool(st.session_state.get("rapid_endpoints_auto_ext", True)),
                 )
                 st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
             except ValueError as e:
