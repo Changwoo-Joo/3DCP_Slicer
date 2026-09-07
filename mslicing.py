@@ -2127,6 +2127,14 @@ if "custom_pt_start" not in st.session_state:
     st.session_state.custom_pt_start = 1
 if "custom_pt_end" not in st.session_state:
     st.session_state.custom_pt_end = 64000
+if "rapid_use_custom_endpoints" not in st.session_state:
+    st.session_state.rapid_use_custom_endpoints = False
+if "rapid_start_x" not in st.session_state: st.session_state.rapid_start_x = 0.0
+if "rapid_start_y" not in st.session_state: st.session_state.rapid_start_y = 0.0
+if "rapid_start_z" not in st.session_state: st.session_state.rapid_start_z = 200.0
+if "rapid_end_x" not in st.session_state: st.session_state.rapid_end_x = 0.0
+if "rapid_end_y" not in st.session_state: st.session_state.rapid_end_y = 0.0
+if "rapid_end_z" not in st.session_state: st.session_state.rapid_end_z = 200.0
 ensure_anim_buffers()
 
 # =========================
@@ -2288,7 +2296,8 @@ with st.sidebar.expander("G-code 포인트(좌표) 범위 지정", expanded=Fals
     use_point_range = st.checkbox("포인트 범위 직접 지정", value=bool(st.session_state.get("use_point_range", False)), key="use_point_range")
     col_pt1, col_pt2 = st.columns(2)
     pt_start_num = col_pt1.number_input("시작 번호", min_value=1, max_value=100000, value=int(st.session_state.get("custom_pt_start", 1)), step=1, disabled=not use_point_range, key="custom_pt_start")
-    pt_end_num = col_pt2.number_input("끝 번호", min_value=1, max_value=100000, value=int(st.session_state.get("custom_pt_end", 64000)), step=1, disabled=not use_point_range, key="custom_pt_end")
+    default_end_val = 63998 if st.session_state.get("rapid_use_custom_endpoints", False) else 64000
+    pt_end_num = col_pt2.number_input("끝 번호", min_value=1, max_value=100000, value=int(st.session_state.get("custom_pt_end", default_end_val)), step=1, disabled=not use_point_range, key="custom_pt_end")
 
 gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
 if gen_clicked and not KEY_OK:
@@ -2635,7 +2644,11 @@ def convert_gcode_to_rapid(
     y_min: float = 0.0, y_max: float = 1000.0, a2_at_ymin: float = 0.0, a2_at_ymax: float = 4000.0,
     speed_mm_s: float = 200.0, boundary_eps_mm: float = 0.5, apply_print_only: bool = False,
     travel_interp: bool = True, singularity_avoid: bool = False, singularity_z_trigger: float = 0.0, singularity_lift_z: float = 300.0,
+    use_custom_endpoints: bool = False,
+    start_xyz: tuple = (0.0, 0.0, 200.0),
+    end_xyz: tuple = (0.0, 0.0, 200.0),
 ) -> str:
+    slice_max_lines = (MAX_LINES - 2) if use_custom_endpoints else MAX_LINES
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
     P = preset.get(key, {}) if key is not None else {}
 
@@ -2719,7 +2732,7 @@ def convert_gcode_to_rapid(
         a1_list.append(0.0); a2_list.append(0.0); a3_list.append(float(cur_a3)); a4_list.append(float(a4_abs))
         is_extruding_list.append(bool(is_extruding))
 
-        if len(xs_out) >= MAX_LINES: break
+        if len(xs_out) >= slice_max_lines: break
         prev_x, prev_y, prev_z = cx, cy, cz
 
     if len(xs_out) == 0:
@@ -2739,14 +2752,23 @@ def convert_gcode_to_rapid(
                                             float(st.session_state.get("extconsta2stepmm", 0.0)) if use_step else 0.0)
 
     lines_out = []
+    if use_custom_endpoints:
+        sx, sy, sz = _fmt_pos(start_xyz[0]), _fmt_pos(start_xyz[1]), _fmt_pos(start_xyz[2])
+        lines_out.append(f"{sx},{sy},{sz},{frx},{fry},{frz},0000.0,000.0,000.0,0000.0,000,{int(speed_mm_s):03d}")
+
+    max_body_lines = (MAX_LINES - 1) if use_custom_endpoints else MAX_LINES
     for nd in nodes:
-        if len(lines_out) >= MAX_LINES: break
+        if len(lines_out) >= max_body_lines: break
         x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
         a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
         mat_val = "001" if nd["extr"] else "000"
         spd_val = f"{int(speed_mm_s):03d}"
         lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
+
+    if use_custom_endpoints:
+        ex, ey, ez = _fmt_pos(end_xyz[0]), _fmt_pos(end_xyz[1]), _fmt_pos(end_xyz[2])
+        lines_out.append(f"{ex},{ey},{ez},{frx},{fry},{frz},0000.0,000.0,000.0,0000.0,000,{int(speed_mm_s):03d}")
 
     while len(lines_out) < MAX_LINES: lines_out.append(PAD_LINE)
 
@@ -2858,38 +2880,63 @@ if KEY_OK and st.session_state.show_rapid_panel:
             st.session_state.singularity_lift_z = st.number_input("강제 상승/하강 거리 (mm)", value=float(st.session_state.get("singularity_lift_z", 300.0)), step=10.0, format="%.3f", disabled=not (a4_enabled_now and st.session_state.singularity_avoid_enable))
             if not a4_enabled_now: st.info("A4 사용을 켜야 싱귤러리티 회피 옵션이 적용됩니다.")
 
-            gtxt = st.session_state.get("gcode_text")
-            over = False
-            if gtxt is not None:
-                xyz_count = _extract_xyz_lines_count(gtxt)
-                over = (xyz_count > MAX_LINES)
+        with st.sidebar.expander("시작/종료 홈 위치(대기점) 설정", expanded=False):
+            st.session_state.rapid_use_custom_endpoints = st.checkbox(
+                "시작/끝 이동점 추가 (슬라이싱 최대 63,998줄)",
+                value=bool(st.session_state.get("rapid_use_custom_endpoints", False)),
+                help="체크 시 맨 처음과 맨 끝에 지정한 안전 위치로 이동하는 코드가 1줄씩 추가됩니다."
+            )
+            if st.session_state.rapid_use_custom_endpoints:
+                st.markdown("**시작 위치 (Start)**")
+                sc1, sc2, sc3 = st.columns(3)
+                st.session_state.rapid_start_x = sc1.number_input("Start X", value=float(st.session_state.rapid_start_x), step=10.0, format="%.1f")
+                st.session_state.rapid_start_y = sc2.number_input("Start Y", value=float(st.session_state.rapid_start_y), step=10.0, format="%.1f")
+                st.session_state.rapid_start_z = sc3.number_input("Start Z", value=float(st.session_state.rapid_start_z), step=10.0, format="%.1f")
 
-            save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
-            if gtxt is None:
-                st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
-            elif over:
-                st.sidebar.error("G-code가 64,000줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-            elif save_rapid_clicked:
-                try:
-                    st.session_state.rapid_text = convert_gcode_to_rapid(
-                        gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
-                        preset=st.session_state.mapping_preset, swap_a3_a4=False,
-                        enable_a1_const=bool(st.session_state.ext_const_enable_a1), enable_a2_const=bool(st.session_state.ext_const_enable_a2),
-                        enable_a3=bool(st.session_state.get("ext_use_a3", False)), enable_a4=bool(st.session_state.get("ext_use_a4", False)),
-                        x_min=float(st.session_state.ext_const_xmin), x_max=float(st.session_state.ext_const_xmax),
-                        a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
-                        y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
-                        a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
-                        speed_mm_s=float(feed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
-                        apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
-                        singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
-                        singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
-                        singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
-                    )
-                    st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
-                except ValueError as e:
-                    st.session_state.rapid_text = None
-                    st.sidebar.warning(str(e), icon="⚠️")
+                st.markdown("**종료 위치 (End)**")
+                ec1, ec2, ec3 = st.columns(3)
+                st.session_state.rapid_end_x = ec1.number_input("End X", value=float(st.session_state.rapid_end_x), step=10.0, format="%.1f")
+                st.session_state.rapid_end_y = ec2.number_input("End Y", value=float(st.session_state.rapid_end_y), step=10.0, format="%.1f")
+                st.session_state.rapid_end_z = ec3.number_input("End Z", value=float(st.session_state.rapid_end_z), step=10.0, format="%.1f")
+
+        use_endpoints = bool(st.session_state.get("rapid_use_custom_endpoints", False))
+        max_slice_limit = 63998 if use_endpoints else MAX_LINES
+
+        gtxt = st.session_state.get("gcode_text")
+        over = False
+        if gtxt is not None:
+            xyz_count = _extract_xyz_lines_count(gtxt)
+            over = (xyz_count > max_slice_limit)
+
+        save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
+        if gtxt is None:
+            st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
+        elif over:
+            st.sidebar.error(f"G-code가 {max_slice_limit:,}줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
+        elif save_rapid_clicked:
+            try:
+                st.session_state.rapid_text = convert_gcode_to_rapid(
+                    gtxt, rx=st.session_state.rapid_rx, ry=st.session_state.rapid_ry, rz=st.session_state.rapid_rz,
+                    preset=st.session_state.mapping_preset, swap_a3_a4=False,
+                    enable_a1_const=bool(st.session_state.ext_const_enable_a1), enable_a2_const=bool(st.session_state.ext_const_enable_a2),
+                    enable_a3=bool(st.session_state.get("ext_use_a3", False)), enable_a4=bool(st.session_state.get("ext_use_a4", False)),
+                    x_min=float(st.session_state.ext_const_xmin), x_max=float(st.session_state.ext_const_xmax),
+                    a1_at_xmin=float(st.session_state.ext_const_a1_at_xmin), a1_at_xmax=float(st.session_state.ext_const_a1_at_xmax),
+                    y_min=float(st.session_state.ext_const_ymin), y_max=float(st.session_state.ext_const_ymax),
+                    a2_at_ymin=float(st.session_state.ext_const_a2_at_ymin), a2_at_ymax=float(st.session_state.ext_const_a2_at_ymax),
+                    speed_mm_s=float(feed_mm_s), boundary_eps_mm=float(st.session_state.ext_const_eps_mm),
+                    apply_print_only=bool(st.session_state.ext_const_apply_print_only), travel_interp=bool(st.session_state.ext_const_travel_interp),
+                    singularity_avoid=bool(st.session_state.get("singularity_avoid_enable", False)),
+                    singularity_z_trigger=float(st.session_state.get("singularity_z_trigger", 0.0)),
+                    singularity_lift_z=float(st.session_state.get("singularity_lift_z", 300.0)),
+                    use_custom_endpoints=use_endpoints,
+                    start_xyz=(float(st.session_state.rapid_start_x), float(st.session_state.rapid_start_y), float(st.session_state.rapid_start_z)),
+                    end_xyz=(float(st.session_state.rapid_end_x), float(st.session_state.rapid_end_y), float(st.session_state.rapid_end_z)),
+                )
+                st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
+            except ValueError as e:
+                st.session_state.rapid_text = None
+                st.sidebar.warning(str(e), icon="⚠️")
 
             if st.session_state.get("rapid_text"):
                 base = st.session_state.get("base_name", "output")
