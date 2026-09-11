@@ -2172,6 +2172,130 @@ def check_key_valid(k: str):
 
 KEY_OK, EXP_DATE, REMAINING, STATUS_TXT = check_key_valid(st.session_state.get("access_key", ""))
 uploaded = st.sidebar.file_uploader("STL 업로드", type=["stl"], help="최대 업로드 용량: 200MB")
+if uploaded is not None:
+    is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
+    if is_new_upload:
+        st.session_state["raw_stl_bytes"] = uploaded.read()
+        st.session_state["selected_mesh_idx"] = 0
+        st.session_state["stl_cur_dim_x"] = 0.0
+        st.session_state["stl_cur_dim_y"] = 0.0
+        st.session_state["stl_cur_dim_z"] = 0.0
+    elif "raw_stl_bytes" not in st.session_state:
+        st.session_state["raw_stl_bytes"] = uploaded.read()
+
+    # 캐시 또는 세션에서 raw_submeshes_cache 불러오기
+    if is_new_upload or "stl_discrete_objects" not in st.session_state:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+            tmp.write(st.session_state["raw_stl_bytes"])
+            tmp_path = tmp.name
+
+        loaded_geom = trimesh.load(tmp_path)
+        raw_submeshes = []
+        if isinstance(loaded_geom, trimesh.Scene):
+            for g in loaded_geom.geometry.values():
+                if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0:
+                    raw_submeshes.append(g)
+        elif isinstance(loaded_geom, trimesh.Trimesh):
+            raw_submeshes.append(loaded_geom)
+        else:
+            st.error("지원하지 않는 3D 모델 형식입니다.")
+            st.stop()
+
+        # 정점 병합 및 메시 클리닝 (떨어진 미세 틈새/경계 정점 합치기)
+        cleaned_submeshes = []
+        for m in raw_submeshes:
+            mc = m.copy()
+            try:
+                mc.merge_vertices(merge_tex=True, merge_norm=True)
+                mc.remove_duplicate_faces()
+                mc.remove_degenerate_faces()
+            except Exception:
+                pass
+            cleaned_submeshes.append(mc)
+
+        # 연결된 컴포넌트 단위로 분할
+        discrete_candidates = []
+        for m in cleaned_submeshes:
+            split_parts = m.split(only_watertight=False)
+            if isinstance(split_parts, (list, np.ndarray)) and len(split_parts) > 0:
+                discrete_candidates.extend([p for p in split_parts if len(p.faces) > 0])
+            else:
+                discrete_candidates.append(m)
+
+        # 1~2개 미세 면, 노이즈 파편 필터링 (최소 면 8개 이상)
+        valid_parts = [p for p in discrete_candidates if len(p.faces) >= 8]
+        if not valid_parts:
+            valid_parts = discrete_candidates
+
+        # AABB(바운딩 박스) 접촉/중첩 판정을 통한 '통으로 간주' 그룹화
+        def do_boxes_touch_or_intersect(b1, b2, tol=0.5):
+            return not (b1[1][0] < b2[0][0] - tol or b1[0][0] > b2[1][0] + tol or
+                        b1[1][1] < b2[0][1] - tol or b1[0][1] > b2[1][1] + tol or
+                        b1[1][2] < b2[0][2] - tol or b1[0][2] > b2[1][2] + tol)
+
+        num_parts = len(valid_parts)
+        adj = [[] for _ in range(num_parts)]
+        for i in range(num_parts):
+            b1 = valid_parts[i].bounds
+            for j in range(i + 1, num_parts):
+                b2 = valid_parts[j].bounds
+                if do_boxes_touch_or_intersect(b1, b2, tol=0.5):
+                    adj[i].append(j)
+                    adj[j].append(i)
+
+        visited = [False] * num_parts
+        discrete_objects = []
+        for i in range(num_parts):
+            if visited[i]:
+                continue
+            group = []
+            queue = [i]
+            visited[i] = True
+            while queue:
+                curr = queue.pop(0)
+                group.append(valid_parts[curr])
+                for neighbor in adj[curr]:
+                    if not visited[neighbor]:
+                        visited[neighbor] = True
+                        queue.append(neighbor)
+            if len(group) == 1:
+                discrete_objects.append(group[0])
+            else:
+                try:
+                    discrete_objects.append(trimesh.util.concatenate(group))
+                except Exception:
+                    discrete_objects.extend(group)
+
+        if not discrete_objects:
+            st.error("유효한 메시 형상을 추출할 수 없습니다.")
+            st.stop()
+
+        discrete_objects.sort(key=lambda o: len(o.faces), reverse=True)
+        st.session_state["stl_discrete_objects"] = discrete_objects
+
+    discrete_objects = st.session_state.get("stl_discrete_objects", [])
+
+    # STL 업로드 바로 아래에 객체 선택 UI 배치
+    if len(discrete_objects) > 1:
+        options = ["전체 객체 (통합)"] + [
+            f"객체 {i+1} (면: {len(obj.faces)}개, W:{obj.extents[0]:.1f} H:{obj.extents[1]:.1f} Z:{obj.extents[2]:.1f})"
+            for i, obj in enumerate(discrete_objects)
+        ]
+        curr_choice = int(st.session_state.get("selected_mesh_idx", 0))
+        if curr_choice >= len(options):
+            curr_choice = 0
+
+        selected_label = st.sidebar.selectbox(
+            f"📦 STL 객체 선택 (총 {len(discrete_objects)}개 분리 객체)",
+            options=options,
+            index=curr_choice,
+            key="mesh_select_box"
+        )
+        selected_idx = options.index(selected_label)
+        if selected_idx != st.session_state.get("selected_mesh_idx", 0):
+            st.session_state["selected_mesh_idx"] = selected_idx
+            st.session_state["stl_cur_dim_x"] = 0.0  # 객체 변경 시 치수 재계산 유도
+            st.rerun()
 with st.sidebar.expander("STL 치수(X, Y, Z 크기) 수정", expanded=True):
     cur_dx = float(st.session_state.get("stl_cur_dim_x", 0.0))
     cur_dy = float(st.session_state.get("stl_cur_dim_y", 0.0))
@@ -2315,133 +2439,20 @@ if gen_clicked and not KEY_OK:
 
 if uploaded is not None:
     is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
-        tmp.write(uploaded.read())
-        tmp_path = tmp.name
-    loaded_geom = trimesh.load(tmp_path)
-    raw_submeshes = []
-    if isinstance(loaded_geom, trimesh.Scene):
-        for g in loaded_geom.geometry.values():
-            if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0:
-                raw_submeshes.append(g)
-    elif isinstance(loaded_geom, trimesh.Trimesh):
-        raw_submeshes.append(loaded_geom)
-    else:
-        st.error("지원하지 않는 3D 모델 형식입니다.")
-        st.stop()
-
-    # 정점 병합 및 메시 클리닝 (떨어진 미세 틈새/경계 정점 합치기)
-    cleaned_submeshes = []
-    for m in raw_submeshes:
-        mc = m.copy()
-        try:
-            mc.merge_vertices(merge_tex=True, merge_norm=True)
-            mc.remove_duplicate_faces()
-            mc.remove_degenerate_faces()
-        except Exception:
-            pass
-        cleaned_submeshes.append(mc)
-
-    # 연결된 컴포넌트 단위로 분할
-    discrete_candidates = []
-    for m in cleaned_submeshes:
-        split_parts = m.split(only_watertight=False)
-        if isinstance(split_parts, (list, np.ndarray)) and len(split_parts) > 0:
-            discrete_candidates.extend([p for p in split_parts if len(p.faces) > 0])
-        else:
-            discrete_candidates.append(m)
-
-    # 1~2개 미세 면, 노이즈 파편 필터링 (최소 면 12개 이상 및 의미 있는 볼륨/크기)
-    # 또한 바운딩 박스가 서로 겹치거나 맞닿아 있는 경우 하나의 통 객체로 군집화(클러스터링)
-    valid_parts = []
-    stray_parts = []
-    for p in discrete_candidates:
-        # 면 수가 너무 적은 파편(1~4개 삼각면 등)은 메인 객체 후보에서 제외
-        if len(p.faces) < 8:
-            stray_parts.append(p)
-            continue
-        valid_parts.append(p)
-
-    if not valid_parts:
-        # 필터링 후 아무것도 안 남으면 원래 후보 유지
-        valid_parts = discrete_candidates
-
-    # AABB(바운딩 박스) 접촉/중첩 판정을 통한 '통으로 간주' 그룹화 (Connected Component on BBox adjacency)
-    def do_boxes_touch_or_intersect(b1, b2, tol=1.0):
-        # b1, b2: [min_xyz, max_xyz]
-        return not (b1[1][0] < b2[0][0] - tol or b1[0][0] > b2[1][0] + tol or
-                    b1[1][1] < b2[0][1] - tol or b1[0][1] > b2[1][1] + tol or
-                    b1[1][2] < b2[0][2] - tol or b1[0][2] > b2[1][2] + tol)
-
-    # 그룹 그래프 생성
-    num_parts = len(valid_parts)
-    adj = [[] for _ in range(num_parts)]
-    for i in range(num_parts):
-        b1 = valid_parts[i].bounds
-        for j in range(i + 1, num_parts):
-            b2 = valid_parts[j].bounds
-            if do_boxes_touch_or_intersect(b1, b2, tol=0.5):
-                adj[i].append(j)
-                adj[j].append(i)
-
-    visited = [False] * num_parts
-    discrete_objects = []
-    for i in range(num_parts):
-        if visited[i]:
-            continue
-        group = []
-        queue = [i]
-        visited[i] = True
-        while queue:
-            curr = queue.pop(0)
-            group.append(valid_parts[curr])
-            for neighbor in adj[curr]:
-                if not visited[neighbor]:
-                    visited[neighbor] = True
-                    queue.append(neighbor)
-        if len(group) == 1:
-            discrete_objects.append(group[0])
-        else:
-            try:
-                discrete_objects.append(trimesh.util.concatenate(group))
-            except Exception:
-                discrete_objects.extend(group)
-
-    if not discrete_objects:
-        st.error("유효한 메시 형상을 추출할 수 없습니다.")
-        st.stop()
-
-    # 크기(면 개수 또는 부피) 기준 내림차순 정렬하여 중요한 덩어리가 먼저 오도록 정렬
-    discrete_objects.sort(key=lambda o: len(o.faces), reverse=True)
-
+    discrete_objects = st.session_state.get("stl_discrete_objects", [])
+    selected_idx = int(st.session_state.get("selected_mesh_idx", 0))
     if len(discrete_objects) > 1:
-        st.sidebar.subheader("📦 STL 객체 선택")
-        options = ["전체 객체 (통합)"] + [
-            f"객체 {i+1} (면: {len(obj.faces)}개, W:{obj.extents[0]:.1f} H:{obj.extents[1]:.1f} Z:{obj.extents[2]:.1f})"
-            for i, obj in enumerate(discrete_objects)
-        ]
-        if is_new_upload or "selected_mesh_idx" not in st.session_state:
-            st.session_state["selected_mesh_idx"] = 0
-
-        current_idx = int(st.session_state.get("selected_mesh_idx", 0))
-        if current_idx >= len(options):
-            current_idx = 0
-
-        selected_label = st.sidebar.selectbox(
-            f"총 {len(discrete_objects)}개 분리 객체 감지됨",
-            options=options,
-            index=current_idx,
-            key="mesh_select_box"
-        )
-        selected_idx = options.index(selected_label)
-        st.session_state["selected_mesh_idx"] = selected_idx
-
         if selected_idx == 0:
             mesh = trimesh.util.concatenate(discrete_objects)
-        else:
+        elif selected_idx - 1 < len(discrete_objects):
             mesh = discrete_objects[selected_idx - 1].copy()
+        else:
+            mesh = discrete_objects[0].copy()
+    elif len(discrete_objects) == 1:
+        mesh = discrete_objects[0].copy()
     else:
-        mesh = discrete_objects[0]
+        st.error("유효한 메시 형상을 찾을 수 없습니다.")
+        st.stop()
     extents = np.asarray(mesh.extents, dtype=float)
     max_extent = float(np.max(extents)) if extents.size else 0.0
     scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
