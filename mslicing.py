@@ -1105,6 +1105,59 @@ def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, r
     return m
 
 
+def _mesh_component_label(component: trimesh.Trimesh, index: int) -> str:
+    """STL 내부의 분리된 연결 객체 정보를 선택 목록에 표시합니다."""
+    ext = np.asarray(component.extents, dtype=float)
+    center = np.asarray(component.bounding_box.centroid, dtype=float)
+    return (
+        f"객체 {index + 1} | "
+        f"X={ext[0]:.1f}, Y={ext[1]:.1f}, Z={ext[2]:.1f} mm | "
+        f"중심=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
+        f"Face={len(component.faces):,}"
+    )
+
+
+def _split_stl_objects(mesh: trimesh.Trimesh) -> List[trimesh.Trimesh]:
+    """연결되지 않은 삼각형 집합을 독립 STL 객체로 분리합니다."""
+    try:
+        components = list(mesh.split(only_watertight=False))
+    except Exception:
+        components = []
+
+    components = [
+        m.copy() for m in components
+        if isinstance(m, trimesh.Trimesh) and len(m.vertices) > 0 and len(m.faces) > 0
+    ]
+    if not components:
+        components = [mesh.copy()]
+
+    # 업로드/재실행마다 목록 순서가 안정적으로 유지되도록 공간 중심으로 정렬
+    components.sort(
+        key=lambda m: (
+            float(m.bounding_box.centroid[0]),
+            float(m.bounding_box.centroid[1]),
+            float(m.bounding_box.centroid[2]),
+        )
+    )
+    return components
+
+
+def _combine_selected_objects(
+    components: List[trimesh.Trimesh], selected_indices: List[int]
+) -> Optional[trimesh.Trimesh]:
+    """선택된 객체만 복사하여 하나의 작업용 메쉬로 결합합니다."""
+    selected = [
+        components[int(i)].copy()
+        for i in selected_indices
+        if 0 <= int(i) < len(components)
+    ]
+    if not selected:
+        return None
+    if len(selected) == 1:
+        return selected[0]
+    return trimesh.util.concatenate(selected)
+
+
 def plot_trimesh(mesh: trimesh.Trimesh, height=820) -> go.Figure:
     v = mesh.vertices
     f = mesh.faces
@@ -1998,6 +2051,13 @@ def _fmt_dims_block_html(title, bbox, z_single: Optional[float]) -> str:
 # =========================
 if "mesh" not in st.session_state:
     st.session_state.mesh = None
+if "stl_all_components" not in st.session_state:
+    st.session_state.stl_all_components = []
+if "stl_selected_component_indices" not in st.session_state:
+    st.session_state.stl_selected_component_indices = []
+if "stl_component_source_signature" not in st.session_state:
+    st.session_state.stl_component_source_signature = None
+
 if "paths_items" not in st.session_state:
     st.session_state.paths_items = None
 if "gcode_text" not in st.session_state:
@@ -2314,139 +2374,247 @@ if gen_clicked and not KEY_OK:
     st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
 
 if uploaded is not None:
-    is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
-        tmp.write(uploaded.read())
-        tmp_path = tmp.name
-    mesh = trimesh.load_mesh(tmp_path)
-    if not isinstance(mesh, trimesh.Trimesh):
-        st.error("STL 파일에는 단일 메시만 포함되어야 합니다.")
-        st.stop()
-    extents = np.asarray(mesh.extents, dtype=float)
-    max_extent = float(np.max(extents)) if extents.size else 0.0
-    scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
-    if scale_to_mm != 1.0:
-        mesh.apply_scale(scale_to_mm)
-        extents = np.asarray(mesh.extents, dtype=float)
+    # 파일명뿐 아니라 파일 크기까지 포함해, 동일 이름의 다른 STL도 새 업로드로 인식합니다.
+    uploaded_name = getattr(uploaded, "name", "uploaded.stl")
+    uploaded_size = int(getattr(uploaded, "size", 0) or 0)
+    upload_signature = f"{uploaded_name}:{uploaded_size}"
+    is_new_upload = (
+        st.session_state.get("stl_component_source_signature") != upload_signature
+        or not st.session_state.get("stl_all_components")
+    )
 
-    if is_new_upload or st.session_state.get("stl_cur_dim_x", 0.0) == 0.0:
-        st.session_state["stl_cur_dim_x"] = float(extents[0]) if len(extents) > 0 else 0.0
-        st.session_state["stl_cur_dim_y"] = float(extents[1]) if len(extents) > 1 else 0.0
-        st.session_state["stl_cur_dim_z"] = float(extents[2]) if len(extents) > 2 else 0.0
-        st.session_state["stl_target_dim_x"] = float(extents[0]) if len(extents) > 0 else 100.0
-        st.session_state["stl_target_dim_y"] = float(extents[1]) if len(extents) > 1 else 100.0
-        st.session_state["stl_target_dim_z"] = float(extents[2]) if len(extents) > 2 else 50.0
-        st.session_state["stl_apply_dims"] = False
+    # 새 STL에서만 원본 메쉬를 읽어 연결 객체 단위로 분리합니다.
+    # getvalue()를 사용하므로 Streamlit 재실행 시 UploadedFile 스트림이 소진되지 않습니다.
+    if is_new_upload:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
 
-    if bool(st.session_state.get("stl_apply_dims", False)):
-        t_x = float(st.session_state.get("stl_target_dim_x", extents[0]))
-        t_y = float(st.session_state.get("stl_target_dim_y", extents[1]))
-        t_z = float(st.session_state.get("stl_target_dim_z", extents[2]))
-        if bool(st.session_state.get("stl_lock_ratio", False)) and extents[0] > 1e-6:
-            r = t_x / extents[0]
-            t_y = extents[1] * r
-            t_z = extents[2] * r
-            st.session_state["stl_target_dim_y"] = t_y
-            st.session_state["stl_target_dim_z"] = t_z
-        sx = t_x / extents[0] if extents[0] > 1e-6 else 1.0
-        sy = t_y / extents[1] if extents[1] > 1e-6 else 1.0
-        sz = t_z / extents[2] if extents[2] > 1e-6 else 1.0
-        mesh.apply_scale([sx, sy, sz])
-        extents = np.asarray(mesh.extents, dtype=float)
-        st.session_state["stl_cur_dim_x"] = float(extents[0])
-        st.session_state["stl_cur_dim_y"] = float(extents[1])
-        st.session_state["stl_cur_dim_z"] = float(extents[2])
-
-    scale_matrix = np.eye(4)
-    scale_matrix[2, 2] = 1.0000001
-    mesh.apply_transform(scale_matrix)
-
-    if bool(st.session_state.get("stl_apply_move", False)):
-        mesh = _apply_translation_to_mesh(
-            mesh,
-            dx=float(st.session_state.get("stl_move_x", 0.0)),
-            dy=float(st.session_state.get("stl_move_y", 0.0)),
-            dz=float(st.session_state.get("stl_move_z", 0.0)),
-        )
-
-
-    if bool(st.session_state.get("stl_apply_rot", False)):
-        mesh = _apply_rotation_about_centroid(
-            mesh,
-            rz_deg=float(st.session_state.get("stl_rot_z", 0.0)),
-            rx_deg=float(st.session_state.get("stl_rot_x", 0.0)),
-            ry_deg=float(st.session_state.get("stl_rot_y", 0.0)),
-        )
-
-    # --- 자동 두께 조절 ---
-    offset_val = float(st.session_state.get("applied_offset_val", 0.0))
-    if offset_val != 0.0:
         try:
-            bounds = mesh.bounds
-            z_min = bounds[0][2]
-            z_max = bounds[1][2]
-            height = z_max - z_min
-            sec = mesh.section(plane_origin=[0, 0, z_min + min(1.0, height/2.0)], plane_normal=[0, 0, 1])
-            if sec is not None:
-                slice2D, to3D = sec.to_2D()
-                segments = []
-                for seg in slice2D.discrete:
-                    seg = np.array(seg)
-                    seg3d = (to3D @ np.hstack([seg, np.zeros((len(seg), 1)), np.ones((len(seg), 1))]).T).T[:, :3]
-                    segments.append(seg3d)
+            loaded = trimesh.load_mesh(tmp_path)
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
-                polys = _build_polygons_from_segments(segments)
-                extruded_meshes = []
-                for poly in polys:
-                    buffered = poly.buffer(offset_val / 2.0, join_style=2)
-                    geoms = [buffered] if buffered.geom_type == 'Polygon' else list(buffered.geoms)
-                    for g in geoms:
-                        if g.geom_type == 'Polygon' and not g.is_empty:
-                            ex_mesh = _extrude_robust_dense(g, height=height)
-                            extruded_meshes.append(ex_mesh)
-                if extruded_meshes:
-                    import trimesh.util
-                    mesh = trimesh.util.concatenate(extruded_meshes)
-                    mesh.apply_translation([0, 0, z_min])
-                else:
-                    st.sidebar.error(f"조절량({offset_val}mm)이 원본 벽 두께보다 커서 형상이 소멸되었습니다.")
-        except Exception:
-            pass
+        if isinstance(loaded, trimesh.Scene):
+            scene_meshes = [
+                g for g in loaded.geometry.values()
+                if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0
+            ]
+            if not scene_meshes:
+                st.error("STL 파일에서 유효한 삼각형 메시를 찾지 못했습니다.")
+                st.stop()
+            loaded = trimesh.util.concatenate(scene_meshes)
 
-    st.session_state.mesh = mesh
+        if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
+            st.error("STL 파일을 읽지 못했거나 유효한 메시가 없습니다.")
+            st.stop()
 
+        # 기존 단위 정책 유지: 최대 치수가 20 이하이면 m 단위로 간주해 mm로 변환.
+        original_extents = np.asarray(loaded.extents, dtype=float)
+        max_extent = float(np.max(original_extents)) if original_extents.size else 0.0
+        scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
+        if scale_to_mm != 1.0:
+            loaded.apply_scale(scale_to_mm)
 
+        st.session_state.stl_all_components = _split_stl_objects(loaded)
+        st.session_state.stl_selected_component_indices = list(
+            range(len(st.session_state.stl_all_components))
+        )
+        st.session_state.stl_component_source_signature = upload_signature
+        st.session_state.paths_items = None
+        st.session_state.gcode_text = None
+        st.session_state.paths_scrub = 0
+        reset_anim_buffers()
 
-    with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
-        st.markdown("⚠️ 주의: 수직(Z축)으로 일정한 2.5D 형상에만 권장합니다.")
+        # 새 파일은 이전 적용값을 승계하지 않도록 초기화합니다.
+        st.session_state.stl_apply_dims = False
+        st.session_state.stl_apply_move = False
+        st.session_state.stl_apply_rot = False
+        st.session_state.applied_offset_val = 0.0
 
-        target_offset_val = st.number_input("조절량 (mm)", min_value=-500.0, max_value=500.0, value=float(st.session_state.get("ui_target_offset", 0.0)), step=0.1, help="양수: 굵게, 음수: 얇게 (전체 두께 기준)", key="ui_target_offset")
+    components = st.session_state.get("stl_all_components", [])
+    if not components:
+        st.error("선택 가능한 STL 객체를 찾지 못했습니다.")
+        st.stop()
 
-        col1, col2 = st.columns(2)
-        if col1.button("적용 및 미리보기", use_container_width=True):
-            st.session_state.applied_offset_val = target_offset_val
-            st.session_state.main_view = "STL 미리보기"  # 클릭 즉시 미리보기 화면으로 강제 전환
+    # 다중 객체 선택 UI: 선택된 객체만 이후의 변환·미리보기·슬라이싱에 사용됩니다.
+    with st.sidebar.expander("STL 객체 선택", expanded=(len(components) > 1)):
+        st.caption(
+            "서로 연결되지 않은 형상을 개별 객체로 분리했습니다. "
+            "선택한 객체만 미리보기, 슬라이싱 및 G-code 생성에 사용됩니다."
+        )
+
+        component_options = list(range(len(components)))
+        stored_selected = [
+            int(i) for i in st.session_state.get("stl_selected_component_indices", component_options)
+            if int(i) in component_options
+        ]
+        if not stored_selected:
+            stored_selected = component_options.copy()
+
+        # 새 업로드 시 이전 위젯 상태가 남지 않도록 동기화합니다.
+        if is_new_upload or "stl_component_picker" not in st.session_state:
+            st.session_state.stl_component_picker = stored_selected
+
+        selected_indices = st.multiselect(
+            "사용할 객체",
+            options=component_options,
+            default=stored_selected,
+            format_func=lambda i: _mesh_component_label(components[i], i),
+            key="stl_component_picker",
+            help="복수 선택이 가능합니다. 선택한 객체만 작업 대상에 포함됩니다.",
+        )
+
+        select_col, clear_col = st.columns(2)
+        if select_col.button("전체 선택", use_container_width=True, key="select_all_stl_components"):
+            st.session_state.stl_selected_component_indices = component_options.copy()
+            st.session_state.stl_component_picker = component_options.copy()
+            st.rerun()
+        if clear_col.button("전체 해제", use_container_width=True, key="clear_all_stl_components"):
+            st.session_state.stl_selected_component_indices = []
+            st.session_state.stl_component_picker = []
             st.rerun()
 
-        if "mesh" in st.session_state and st.session_state.mesh is not None:
-            stl_bytes = trimesh.exchange.stl.export_stl(st.session_state.mesh)
-            col2.download_button(
-                label="조절된 STL 저장",
-                data=stl_bytes,
-                file_name="adjusted_model.stl",
-                mime="model/stl",
-                use_container_width=True
+        selected_indices = [int(i) for i in selected_indices]
+        st.session_state.stl_selected_component_indices = selected_indices
+        selected_face_count = sum(len(components[i].faces) for i in selected_indices)
+        st.caption(
+            f"전체 {len(components)}개 중 {len(selected_indices)}개 선택 | "
+            f"선택 Face: {selected_face_count:,}"
+        )
+
+    mesh = _combine_selected_objects(components, selected_indices)
+    if mesh is None:
+        st.session_state.mesh = None
+        st.warning("STL 객체를 최소 1개 이상 선택하세요.")
+    else:
+        extents = np.asarray(mesh.extents, dtype=float)
+
+        if is_new_upload or st.session_state.get("stl_cur_dim_x", 0.0) == 0.0:
+            st.session_state.stl_cur_dim_x = float(extents[0]) if len(extents) > 0 else 0.0
+            st.session_state.stl_cur_dim_y = float(extents[1]) if len(extents) > 1 else 0.0
+            st.session_state.stl_cur_dim_z = float(extents[2]) if len(extents) > 2 else 0.0
+            st.session_state.stl_target_dim_x = float(extents[0]) if len(extents) > 0 else 100.0
+            st.session_state.stl_target_dim_y = float(extents[1]) if len(extents) > 1 else 100.0
+            st.session_state.stl_target_dim_z = float(extents[2]) if len(extents) > 2 else 50.0
+            st.session_state.stl_apply_dims = False
+
+        if bool(st.session_state.get("stl_apply_dims", False)):
+            t_x = float(st.session_state.get("stl_target_dim_x", extents[0]))
+            t_y = float(st.session_state.get("stl_target_dim_y", extents[1]))
+            t_z = float(st.session_state.get("stl_target_dim_z", extents[2]))
+            if bool(st.session_state.get("stl_lock_ratio", False)) and extents[0] > 1e-6:
+                r = t_x / extents[0]
+                t_y = extents[1] * r
+                t_z = extents[2] * r
+                st.session_state.stl_target_dim_y = t_y
+                st.session_state.stl_target_dim_z = t_z
+            sx = t_x / extents[0] if extents[0] > 1e-6 else 1.0
+            sy = t_y / extents[1] if extents[1] > 1e-6 else 1.0
+            sz = t_z / extents[2] if extents[2] > 1e-6 else 1.0
+            mesh.apply_scale([sx, sy, sz])
+            extents = np.asarray(mesh.extents, dtype=float)
+            st.session_state.stl_cur_dim_x = float(extents[0])
+            st.session_state.stl_cur_dim_y = float(extents[1])
+            st.session_state.stl_cur_dim_z = float(extents[2])
+        else:
+            # 객체 선택을 변경한 경우 현재 선택 집합의 치수를 사이드바에 반영합니다.
+            st.session_state.stl_cur_dim_x = float(extents[0]) if len(extents) > 0 else 0.0
+            st.session_state.stl_cur_dim_y = float(extents[1]) if len(extents) > 1 else 0.0
+            st.session_state.stl_cur_dim_z = float(extents[2]) if len(extents) > 2 else 0.0
+
+        # Z=0 평면과 완전히 겹치는 문제를 방지하는 기존 보정 유지
+        scale_matrix = np.eye(4)
+        scale_matrix[2, 2] = 1.0000001
+        mesh.apply_transform(scale_matrix)
+
+        if bool(st.session_state.get("stl_apply_move", False)):
+            mesh = _apply_translation_to_mesh(
+                mesh,
+                dx=float(st.session_state.get("stl_move_x", 0.0)),
+                dy=float(st.session_state.get("stl_move_y", 0.0)),
+                dz=float(st.session_state.get("stl_move_z", 0.0)),
             )
 
+        if bool(st.session_state.get("stl_apply_rot", False)):
+            mesh = _apply_rotation_about_centroid(
+                mesh,
+                rz_deg=float(st.session_state.get("stl_rot_z", 0.0)),
+                rx_deg=float(st.session_state.get("stl_rot_x", 0.0)),
+                ry_deg=float(st.session_state.get("stl_rot_y", 0.0)),
+            )
 
-    if uploaded is not None and hasattr(uploaded, "name"):
-        st.session_state.base_name = Path(uploaded.name).stem or "output"
-        st.session_state.last_uploaded_name = uploaded.name
-    elif "last_uploaded_name" in st.session_state:
-        st.session_state.base_name = Path(st.session_state.last_uploaded_name).stem or "output"
-    else:
-        st.session_state.base_name = "output"
+        # --- 자동 두께 조절 ---
+        offset_val = float(st.session_state.get("applied_offset_val", 0.0))
+        if offset_val != 0.0:
+            try:
+                bounds = mesh.bounds
+                z_min = bounds[0][2]
+                z_max = bounds[1][2]
+                height = z_max - z_min
+                sec = mesh.section(
+                    plane_origin=[0, 0, z_min + min(1.0, height / 2.0)],
+                    plane_normal=[0, 0, 1],
+                )
+                if sec is not None:
+                    slice2D, to3D = sec.to_2D()
+                    segments = []
+                    for seg in slice2D.discrete:
+                        seg = np.array(seg)
+                        seg3d = (
+                            to3D @ np.hstack([
+                                seg,
+                                np.zeros((len(seg), 1)),
+                                np.ones((len(seg), 1)),
+                            ]).T
+                        ).T[:, :3]
+                        segments.append(seg3d)
 
+                    polys = _build_polygons_from_segments(segments)
+                    extruded_meshes = []
+                    for poly in polys:
+                        buffered = poly.buffer(offset_val / 2.0, join_style=2)
+                        geoms = [buffered] if buffered.geom_type == "Polygon" else list(buffered.geoms)
+                        for geom in geoms:
+                            if geom.geom_type == "Polygon" and not geom.is_empty:
+                                ex_mesh = _extrude_robust_dense(geom, height=height)
+                                if ex_mesh is not None:
+                                    extruded_meshes.append(ex_mesh)
+                    if extruded_meshes:
+                        mesh = trimesh.util.concatenate(extruded_meshes)
+                        mesh.apply_translation([0, 0, z_min])
+                    else:
+                        st.sidebar.error(
+                            f"조절량({offset_val} mm)이 원본 벽 두께보다 커서 형상이 소멸되었습니다."
+                        )
+            except Exception:
+                pass
+
+        st.session_state.mesh = mesh
+
+        with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
+            st.markdown("⚠️ 주의: 수직(Z축)으로 일정한 2.5D 형상에만 권장합니다.")
+            target_offset_val = st.number_input(
+                "조절량 (mm)", min_value=-500.0, max_value=500.0,
+                value=float(st.session_state.get("ui_target_offset", 0.0)), step=0.1,
+                help="양수: 굵게, 음수: 얇게 (전체 두께 기준)", key="ui_target_offset",
+            )
+            col1, col2 = st.columns(2)
+            if col1.button("적용 및 미리보기", use_container_width=True):
+                st.session_state.applied_offset_val = target_offset_val
+                st.session_state.main_view = "STL 미리보기"
+                st.rerun()
+            stl_bytes = trimesh.exchange.stl.export_stl(st.session_state.mesh)
+            col2.download_button(
+                label="조절된 STL 저장", data=stl_bytes,
+                file_name="adjusted_model.stl", mime="model/stl", use_container_width=True,
+            )
+
+    st.session_state.base_name = Path(uploaded_name).stem or "output"
+    st.session_state.last_uploaded_name = uploaded_name
     if is_new_upload:
         st.session_state.main_view = "STL 미리보기"
 
@@ -2494,6 +2662,7 @@ if st.session_state.get("gcode_text"):
     st.sidebar.download_button("G-code 저장", st.session_state.gcode_text,
                                file_name=f"{base}.gcode", mime="text/plain",
                                use_container_width=True)
+
 # =========================
 # Rapid(MODX) - Mapping Presets + Converter
 # =========================
