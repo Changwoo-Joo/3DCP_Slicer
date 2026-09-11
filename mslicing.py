@@ -2330,22 +2330,95 @@ if uploaded is not None:
         st.error("지원하지 않는 3D 모델 형식입니다.")
         st.stop()
 
-    discrete_objects = []
+    # 정점 병합 및 메시 클리닝 (떨어진 미세 틈새/경계 정점 합치기)
+    cleaned_submeshes = []
     for m in raw_submeshes:
+        mc = m.copy()
+        try:
+            mc.merge_vertices(merge_tex=True, merge_norm=True)
+            mc.remove_duplicate_faces()
+            mc.remove_degenerate_faces()
+        except Exception:
+            pass
+        cleaned_submeshes.append(mc)
+
+    # 연결된 컴포넌트 단위로 분할
+    discrete_candidates = []
+    for m in cleaned_submeshes:
         split_parts = m.split(only_watertight=False)
         if isinstance(split_parts, (list, np.ndarray)) and len(split_parts) > 0:
-            discrete_objects.extend([p for p in split_parts if len(p.faces) > 0])
+            discrete_candidates.extend([p for p in split_parts if len(p.faces) > 0])
         else:
-            discrete_objects.append(m)
+            discrete_candidates.append(m)
+
+    # 1~2개 미세 면, 노이즈 파편 필터링 (최소 면 12개 이상 및 의미 있는 볼륨/크기)
+    # 또한 바운딩 박스가 서로 겹치거나 맞닿아 있는 경우 하나의 통 객체로 군집화(클러스터링)
+    valid_parts = []
+    stray_parts = []
+    for p in discrete_candidates:
+        # 면 수가 너무 적은 파편(1~4개 삼각면 등)은 메인 객체 후보에서 제외
+        if len(p.faces) < 8:
+            stray_parts.append(p)
+            continue
+        valid_parts.append(p)
+
+    if not valid_parts:
+        # 필터링 후 아무것도 안 남으면 원래 후보 유지
+        valid_parts = discrete_candidates
+
+    # AABB(바운딩 박스) 접촉/중첩 판정을 통한 '통으로 간주' 그룹화 (Connected Component on BBox adjacency)
+    def do_boxes_touch_or_intersect(b1, b2, tol=1.0):
+        # b1, b2: [min_xyz, max_xyz]
+        return not (b1[1][0] < b2[0][0] - tol or b1[0][0] > b2[1][0] + tol or
+                    b1[1][1] < b2[0][1] - tol or b1[0][1] > b2[1][1] + tol or
+                    b1[1][2] < b2[0][2] - tol or b1[0][2] > b2[1][2] + tol)
+
+    # 그룹 그래프 생성
+    num_parts = len(valid_parts)
+    adj = [[] for _ in range(num_parts)]
+    for i in range(num_parts):
+        b1 = valid_parts[i].bounds
+        for j in range(i + 1, num_parts):
+            b2 = valid_parts[j].bounds
+            if do_boxes_touch_or_intersect(b1, b2, tol=0.5):
+                adj[i].append(j)
+                adj[j].append(i)
+
+    visited = [False] * num_parts
+    discrete_objects = []
+    for i in range(num_parts):
+        if visited[i]:
+            continue
+        group = []
+        queue = [i]
+        visited[i] = True
+        while queue:
+            curr = queue.pop(0)
+            group.append(valid_parts[curr])
+            for neighbor in adj[curr]:
+                if not visited[neighbor]:
+                    visited[neighbor] = True
+                    queue.append(neighbor)
+        if len(group) == 1:
+            discrete_objects.append(group[0])
+        else:
+            try:
+                discrete_objects.append(trimesh.util.concatenate(group))
+            except Exception:
+                discrete_objects.extend(group)
 
     if not discrete_objects:
         st.error("유효한 메시 형상을 추출할 수 없습니다.")
         st.stop()
 
+    # 크기(면 개수 또는 부피) 기준 내림차순 정렬하여 중요한 덩어리가 먼저 오도록 정렬
+    discrete_objects.sort(key=lambda o: len(o.faces), reverse=True)
+
     if len(discrete_objects) > 1:
         st.sidebar.subheader("📦 STL 객체 선택")
         options = ["전체 객체 (통합)"] + [
-            f"객체 {i+1} (면: {len(obj.faces)}개)" for i, obj in enumerate(discrete_objects)
+            f"객체 {i+1} (면: {len(obj.faces)}개, W:{obj.extents[0]:.1f} H:{obj.extents[1]:.1f} Z:{obj.extents[2]:.1f})"
+            for i, obj in enumerate(discrete_objects)
         ]
         if is_new_upload or "selected_mesh_idx" not in st.session_state:
             st.session_state["selected_mesh_idx"] = 0
