@@ -851,6 +851,63 @@ def _apply_fillet_to_path(seg3d_closed: np.ndarray, r_mm: float = 20.0, spacing_
 
 
 
+def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_dist: float) -> Tuple[np.ndarray, bool]:
+    """
+    폐곡선을 안쪽으로 offset_dist(노즐 반지름 등)만큼 오프셋합니다.
+    오프셋 결과가 소멸되거나 형상이 역전(무효화)된 경우, (seg3d_closed, True)를 반환합니다.
+    성공 시 (오프셋_경로, False)를 반환합니다.
+    """
+    seg3d_closed = np.asarray(seg3d_closed, dtype=float)
+    if seg3d_closed.ndim != 2 or seg3d_closed.shape[0] < 3:
+        return seg3d_closed, True
+    if seg3d_closed.shape[1] < 3:
+        seg3d_closed = np.c_[seg3d_closed[:, :2], np.zeros(len(seg3d_closed))]
+
+    xy = seg3d_closed[:, :2]
+    z_val = float(seg3d_closed[0, 2]) if len(seg3d_closed) > 0 else 0.0
+
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+
+    try:
+        poly = Polygon(xy)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+    except Exception:
+        return seg3d_closed, True
+
+    if poly.is_empty or poly.area <= 1e-9:
+        return seg3d_closed, True
+
+    d = float(offset_dist)
+    if d <= 1e-9:
+        return seg3d_closed, False
+
+    try:
+        # 다각형 안쪽 오프셋 (음수 버퍼)
+        offset_poly = poly.buffer(-d)
+    except Exception:
+        return seg3d_closed, True
+
+    if offset_poly.is_empty or offset_poly.area <= 1e-9:
+        return seg3d_closed, True
+
+    if isinstance(offset_poly, MultiPolygon):
+        valid_geoms = [g for g in offset_poly.geoms if not g.is_empty and g.area > 1e-9]
+        if not valid_geoms:
+            return seg3d_closed, True
+        offset_poly = max(valid_geoms, key=lambda g: g.area)
+
+    coords = np.asarray(offset_poly.exterior.coords, dtype=float)
+    if len(coords) < 3:
+        return seg3d_closed, True
+
+    out = np.column_stack([coords[:, 0], coords[:, 1], np.full(len(coords), z_val, dtype=float)])
+    if np.linalg.norm(out[0, :2] - out[-1, :2]) > 1e-9:
+        out = np.vstack([out, out[0]])
+    return out, False
+
+
 def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
