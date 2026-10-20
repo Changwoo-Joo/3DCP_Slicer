@@ -489,10 +489,10 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 
 def simplify_segment(segment: np.ndarray, mindist: float, corner_angle_thresh_deg: float = 25.0) -> np.ndarray:
     """
-    [곡률 적응형 정밀 3DCP 세그먼트 리샘플러]
-    - 직선 구간: 꼭짓점 간격이 아무리 길어도 중간에 강제로 포인트를 추가하지 않고 양 끝점만 보존합니다.
-    - 곡선 구간: 설정한 mindist(5mm, 10mm, 20mm 등)에 정확히 맞춰 등간격으로 선분을 정밀 분할(Subdivide)합니다.
-    - 코너 모서리: 급격한 방향 전환점(>= 25도)은 형태 왜곡 방지를 위해 100% 원형 그대로 보존합니다.
+    [3DCP 적응형 세그먼트 생성기]
+    - 곡선 구간: 설정한 간격(mindist = 5mm, 10mm, 20mm 등)에 맞춰 정밀하게 등간격 분할 (코드 수 정확히 비례 제어)
+    - 직선 구간: 꼭짓점 간격이 아무리 길어도 중간에 점을 찍지 않고 양 끝점만 유지
+    - 코너 모서리: 급격한 각도 변화점(>=25도)은 100% 원형 보존
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or mindist <= 0:
@@ -512,12 +512,12 @@ def simplify_segment(segment: np.ndarray, mindist: float, corner_angle_thresh_de
             cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
             angles[i] = np.degrees(np.arccos(cos_a))
 
-    # 2. 형상 분기점(코너 및 직선-곡선 경계) 검출
+    # 2. 형상 분기점(코너 및 직선/곡선 경계) 식별
     break_indices = [0]
     for i in range(1, n - 1):
         if angles[i] >= corner_angle_thresh_deg:
             break_indices.append(i)
-        elif (angles[i] < 0.8 and angles[i - 1] >= 0.8) or (angles[i] >= 0.8 and angles[i - 1] < 0.8):
+        elif (angles[i] < 0.5 and angles[i - 1] >= 0.5) or (angles[i] >= 0.5 and angles[i - 1] < 0.5):
             break_indices.append(i)
     break_indices.append(n - 1)
     break_indices = sorted(list(set(break_indices)))
@@ -540,15 +540,15 @@ def simplify_segment(segment: np.ndarray, mindist: float, corner_angle_thresh_de
                 resampled_pts.append(sub[0])
             continue
 
-        # 직선 구간 판정: 현의 길이와 실제 경로 길이가 0.5% 이내로 일치하는 경우
-        is_straight = (chord_len > 1e-6 and abs(total_sub_len - chord_len) / chord_len < 0.005)
+        # 직선 판정: 현의 길이와 실제 경로 길이가 0.3% 이내로 일치하는 경우
+        is_straight = (chord_len > 1e-6 and abs(total_sub_len - chord_len) / chord_len < 0.003)
 
         if is_straight:
-            # [직선 구간]: 중간에 강제로 점을 찍지 않고 시작점만 보존
+            # [직선 구간]: 중간에 점을 강제로 찍지 않고 시작점만 보존
             if not resampled_pts or np.linalg.norm(resampled_pts[-1][:2] - sub[0][:2]) > 1e-6:
                 resampled_pts.append(sub[0])
         else:
-            # [곡선 구간]: mindist 간격으로 정밀 등간격 분할 (5mm, 10mm, 20mm 정확히 비례 제어)
+            # [곡선 구간]: mindist로 정밀 등간격 분할 (5mm, 10mm, 20mm 정확히 분할)
             num_segs = max(1, int(np.round(total_sub_len / mindist)))
             target_s = np.linspace(0.0, total_sub_len, num_segs + 1)
             cum_s = np.concatenate([[0.0], np.cumsum(sub_lens)])
