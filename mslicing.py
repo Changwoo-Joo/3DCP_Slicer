@@ -490,19 +490,15 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     """
     [3DCP 기하 적응형 세그먼트 생성기]
-    - 원형/곡선 구간(Model 5 원통, S-Curve 등):
-      설정한 간격(mindist = 5mm, 10mm, 20mm)에 맞춰 정밀하게 등간격으로 곡선을 분할합니다.
-      (5mm -> 227점, 10mm -> 114점, 20mm -> 58점으로 정확히 4:2:1 비율 제어)
-    - 직선 구간(1,000mm 직진 벽체, 사각 기둥 등):
-      꼭짓점 간격이 아무리 길어도 중간에 강제로 점을 찍지 않고 양 끝점만 보존합니다.
-    - 코너 모서리(L-코너, 별 모양 등):
-      급격한 방향 전환각(>= 25도)은 형태 왜곡 없이 100% 원형 그대로 보존합니다.
+    - 곡선 구간: 설정한 간격(mindist = 5mm, 10mm, 20mm)에 맞춰 정밀하게 등간격 분할
+    - 직선 구간: 꼭짓점 간격이 아무리 길어도 중간에 점을 추가하지 않고 양 끝점만 보존
+    - 코너 모서리: 급격한 방향 전환점(>= 25도)은 100% 원형 보존
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or mindist <= 0:
         return pts
 
-    is_closed = (np.linalg.norm(pts[0][:2] - pts[-1][:2]) < 1e-4)
+    is_closed = bool(np.linalg.norm(pts[0][:2] - pts[-1][:2]) < 1e-4)
     if is_closed and len(pts) > 2:
         ring = pts[:-1]
     else:
@@ -512,6 +508,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     if N < 3:
         return pts
 
+    # 각 정점에서의 2D 방향 전환 각도(도) 계산
     angles = []
     for i in range(N):
         p_prev = ring[(i - 1) % N] if is_closed else (ring[i - 1] if i > 0 else ring[i])
@@ -528,12 +525,12 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         else:
             ang = 0.0
         angles.append(ang)
-    angles = np.array(angles)
+    angles = np.asarray(angles)
 
     is_corner = (angles >= 25.0)
     is_curve = (angles >= 0.8) & (angles < 25.0)
 
-    # 1. 전체가 곡선 형태인 경우 (예: Model 5 원형 가변 실린더, S-Curve 곡면):
+    # 1. 전체가 곡선 형태인 경우 (예: Model 5 원통, S-Curve 곡면):
     if np.sum(is_curve) > 0.6 * N:
         diffs = pts[1:] - pts[:-1]
         lens = np.linalg.norm(diffs[:, :2], axis=1)
@@ -550,12 +547,12 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
                 k += 1
             ratio = (s - cum[k]) / lens[k] if lens[k] > 1e-9 else 0.0
             out.append(pts[k] + np.clip(ratio, 0.0, 1.0) * (pts[k + 1] - pts[k]))
-        out = np.array(out)
+        out = np.asarray(out, dtype=float)
         if is_closed:
             out[-1] = out[0]
         return out
 
-    # 2. 직선과 코너가 섞인 일반 형상 (L-Corner, Square, Star 등):
+    # 2. 직선과 코너가 섞인 형상 (L-Corner, Square, Star 등):
     anchors = [0]
     for i in range(1, N):
         if is_corner[i] or (is_curve[i] != is_curve[i - 1]):
@@ -564,13 +561,14 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         anchors.append(N - 1)
     anchors = sorted(list(set(anchors)))
 
+    num_loops = len(anchors) if is_closed else (len(anchors) - 1)
+    if num_loops <= 0:
+        return pts
+
     resampled = []
-    for a in range(len(anchors)):
+    for a in range(num_loops):
         idx1 = anchors[a]
         idx2 = anchors[(a + 1) % len(anchors)] if is_closed else anchors[a + 1]
-
-        if not is_closed and a == len(anchors) - 1:
-            break
 
         if idx2 > idx1:
             sub = pts[idx1:idx2 + 1]
@@ -585,7 +583,6 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         has_curve = np.any((sub_angles >= 0.8) & (sub_angles < 25.0))
 
         if has_curve:
-            # 곡선 구간만 mindist로 등간격 분할
             n_sub_segs = max(1, int(np.round(sub_total / mindist)))
             t_s = np.linspace(0.0, sub_total, n_sub_segs + 1)
             c_s = np.concatenate([[0.0], np.cumsum(sub_lens)])
@@ -598,7 +595,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
                 if not resampled or np.linalg.norm(resampled[-1][:2] - p[:2]) > 1e-6:
                     resampled.append(p)
         else:
-            # [직선 구간]: 절대로 강제 분할하지 않고 시작 꼭짓점만 보존!
+            # 직선 구간: 강제 분할하지 않고 시작점만 보존
             if not resampled or np.linalg.norm(resampled[-1][:2] - sub[0][:2]) > 1e-6:
                 resampled.append(sub[0])
 
@@ -606,7 +603,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         resampled.append(resampled[0])
     else:
         resampled.append(pts[-1])
-    return np.array(resampled)
+    return np.asarray(resampled, dtype=float)
 
 
 def shift_to_nearest_start(segment, ref_point):
