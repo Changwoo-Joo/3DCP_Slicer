@@ -489,16 +489,25 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 
 def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     """
-    [3DCP 기하 적응형 세그먼트 생성기]
-    - 곡선 구간: 설정한 간격(mindist = 5mm, 10mm, 20mm)에 맞춰 정밀하게 등간격 분할
-    - 직선 구간: 꼭짓점 간격이 아무리 길어도 중간에 점을 추가하지 않고 양 끝점만 보존
-    - 코너 모서리: 급격한 방향 전환점(>= 25도)은 100% 원형 보존
+    [3DCP 정밀 기하 적응형 세그먼트 생성기]
+    - 곡선 구간: 설정한 간격(mindist = 5mm, 10mm, 20mm)에 맞춰 물리적 등간격 분할
+    - 직선 구간: 꼭짓점 간격이 길어도 중간에 점을 추가하지 않고 양 끝점만 보존
+    - 코너 모서리: 급격한 각도 변화점(>= 25도)은 100% 원형 보존
+    - 0.3mm 미만 미세 중복점 완벽 필터링 (0.0mm 덜컥거림 제거)
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or mindist <= 0:
         return pts
 
-    is_closed = bool(np.linalg.norm(pts[0][:2] - pts[-1][:2]) < 1e-4)
+    cleaned = [pts[0]]
+    for p in pts[1:]:
+        if np.linalg.norm(p[:2] - cleaned[-1][:2]) > 0.3:
+            cleaned.append(p)
+    pts = np.asarray(cleaned, dtype=float)
+    if len(pts) <= 2:
+        return pts
+
+    is_closed = bool(np.linalg.norm(pts[0][:2] - pts[-1][:2]) < 1e-3)
     if is_closed and len(pts) > 2:
         ring = pts[:-1]
     else:
@@ -508,7 +517,6 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     if N < 3:
         return pts
 
-    # 각 정점에서의 2D 방향 전환 각도(도) 계산
     angles = []
     for i in range(N):
         p_prev = ring[(i - 1) % N] if is_closed else (ring[i - 1] if i > 0 else ring[i])
@@ -530,8 +538,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     is_corner = (angles >= 25.0)
     is_curve = (angles >= 0.8) & (angles < 25.0)
 
-    # 1. 전체가 곡선 형태인 경우 (예: Model 5 원통, S-Curve 곡면):
-    if np.sum(is_curve) > 0.6 * N:
+    if np.sum(is_curve) > 0.55 * N:
         diffs = pts[1:] - pts[:-1]
         lens = np.linalg.norm(diffs[:, :2], axis=1)
         total_len = float(np.sum(lens))
@@ -552,7 +559,6 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
             out[-1] = out[0]
         return out
 
-    # 2. 직선과 코너가 섞인 형상 (L-Corner, Square, Star 등):
     anchors = [0]
     for i in range(1, N):
         if is_corner[i] or (is_curve[i] != is_curve[i - 1]):
@@ -565,7 +571,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     if num_loops <= 0:
         return pts
 
-    resampled = []
+    resampled = [pts[anchors[0]]]
     for a in range(num_loops):
         idx1 = anchors[a]
         idx2 = anchors[(a + 1) % len(anchors)] if is_closed else anchors[a + 1]
@@ -587,22 +593,20 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
             t_s = np.linspace(0.0, sub_total, n_sub_segs + 1)
             c_s = np.concatenate([[0.0], np.cumsum(sub_lens)])
             cur_k = 0
-            for s in t_s[:-1]:
+            for s in t_s[1:]:
                 while cur_k < len(sub_lens) - 1 and c_s[cur_k + 1] < s:
                     cur_k += 1
                 r = (s - c_s[cur_k]) / sub_lens[cur_k] if sub_lens[cur_k] > 1e-9 else 0.0
                 p = sub[cur_k] + np.clip(r, 0.0, 1.0) * (sub[cur_k + 1] - sub[cur_k])
-                if not resampled or np.linalg.norm(resampled[-1][:2] - p[:2]) > 1e-6:
+                if np.linalg.norm(resampled[-1][:2] - p[:2]) > 0.3:
                     resampled.append(p)
         else:
-            # 직선 구간: 강제 분할하지 않고 시작점만 보존
-            if not resampled or np.linalg.norm(resampled[-1][:2] - sub[0][:2]) > 1e-6:
-                resampled.append(sub[0])
+            end_pt = sub[-1]
+            if np.linalg.norm(resampled[-1][:2] - end_pt[:2]) > 0.3:
+                resampled.append(end_pt)
 
     if is_closed:
-        resampled.append(resampled[0])
-    else:
-        resampled.append(pts[-1])
+        resampled[-1] = resampled[0]
     return np.asarray(resampled, dtype=float)
 
 
