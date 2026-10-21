@@ -487,62 +487,127 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 
     return out
 
-def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
+def simplify_segment(segment: np.ndarray, mindist: float, corner_angle_deg: float = 18.0) -> np.ndarray:
     """
-    [3DCP 완전 균일 세그먼트 생성기]
-    - 닫힌 루프(Closed)든 트림된 열린 곡선(Open)이든 상관없이 모든 레이어에서 동일하게 완벽 작동합니다.
-    - 곡선 구간: 설정한 간격(mindist = 5, 10, 20, 22mm)에 맞춰 전체 둘레를 균일 등간격으로 정확히 분할합니다.
-      (22mm -> 층당 ~140점, 10mm -> 층당 ~300점, 5mm -> 층당 ~600점)
-    - 직선 구간: 꼭짓점 사이가 아무리 길어도 중간 점을 강제로 찍지 않고 양 끝점만 보존합니다.
-    - 0.3mm 미만 미세 중복점을 완전히 제거합니다.
+    [3DCP 기하 적응형 정밀 세그먼트 생성기 - 최종 검증본]
+    1. 직선 벽체(L-Corner, Square, Star의 직선부 등):
+       - 꼭짓점 간격이 아무리 길어도(예: 1000mm, 500mm) 중간에 강제로 점을 찍지 않고 양 끝점만 보존합니다.
+    2. 순수 곡선 구간(Model 5 원형 가변 원통, S-Curve 곡면부 등):
+       - 설정한 간격(mindist = 5mm, 10mm, 20mm, 22mm)에 맞춰 정밀하게 등간격으로 분할(Resampling)합니다.
+    3. 급격한 코너(Sharp Corner):
+       - 방향 전환각이 큰 특징점은 왜곡 없이 100% 원형 그대로 보존합니다.
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or mindist <= 0:
         return pts
 
-    # 1. 0.3mm 이하 미세 중복점 제거
+    # 0.2mm 미만 미세 중복점 제거
     cleaned = [pts[0]]
     for p in pts[1:]:
-        if np.linalg.norm(p[:2] - cleaned[-1][:2]) > 0.3:
+        if np.linalg.norm(p[:2] - cleaned[-1][:2]) > 0.2:
             cleaned.append(p)
     pts = np.asarray(cleaned, dtype=float)
     if len(pts) <= 2:
         return pts
 
     is_closed = bool(np.linalg.norm(pts[0][:2] - pts[-1][:2]) < 1e-3)
-    diffs = pts[1:] - pts[:-1]
-    sub_lens = np.linalg.norm(diffs[:, :2], axis=1)
-    total_len = float(np.sum(sub_lens))
-    if total_len <= 1e-4:
+    ring = pts[:-1] if (is_closed and len(pts) > 2) else pts
+    N = len(ring)
+    if N < 3:
         return pts
 
-    # 2. 전체 경로가 순수 직선인지 판별 (시작점과 끝점의 직선 거리 vs 총 이동 거리)
-    chord_len = float(np.linalg.norm(pts[-1][:2] - pts[0][:2]))
-    if not is_closed and chord_len > 1e-4 and abs(total_len - chord_len) / chord_len < 0.003:
-        # 순수 직선: 중간 점 일절 추가 금지 (시작점, 끝점만 반환)
-        return pts[[0, -1]]
+    # 각 정점의 변곡각도(도) 계산
+    angles = []
+    for i in range(N):
+        p_prev = ring[(i - 1) % N] if is_closed else (ring[i - 1] if i > 0 else ring[i])
+        p_curr = ring[i]
+        p_next = ring[(i + 1) % N] if is_closed else (ring[i + 1] if i < N - 1 else ring[i])
 
-    # 3. 곡선 경로 (원형, S-Curve, 가변 실린더 등):
-    # 닫힌 루프든, 트림되어 열린 루프든 전체 경로를 목표 간격(mindist)으로 정확히 등간격 재분할
-    num_segs = max(3, int(np.round(total_len / float(mindist))))
-    target_s = np.linspace(0.0, total_len, num_segs + 1)
-    cum_s = np.concatenate([[0.0], np.cumsum(sub_lens)])
+        v1 = p_curr[:2] - p_prev[:2]
+        v2 = p_next[:2] - p_curr[:2]
+        n1 = float(np.linalg.norm(v1))
+        n2 = float(np.linalg.norm(v2))
+        if n1 > 1e-6 and n2 > 1e-6:
+            cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
+            ang = float(np.degrees(np.arccos(cos_a)))
+        else:
+            ang = 0.0
+        angles.append(ang)
+    angles = np.asarray(angles)
 
-    out = []
-    curr_k = 0
-    for s_val in target_s:
-        while curr_k < len(sub_lens) - 1 and cum_s[curr_k + 1] < s_val:
-            curr_k += 1
-        seg_L = sub_lens[curr_k]
-        ratio = (s_val - cum_s[curr_k]) / seg_L if seg_L > 1e-9 else 0.0
-        p = pts[curr_k] + np.clip(ratio, 0.0, 1.0) * (pts[curr_k + 1] - pts[curr_k])
-        if not out or np.linalg.norm(out[-1][:2] - p[:2]) > 0.2:
-            out.append(p)
+    corner_mask = (angles >= corner_angle_deg)
 
-    out = np.asarray(out, dtype=float)
-    if is_closed and len(out) >= 2:
-        out[-1] = out[0]
-    return out
+    # (A) 전체가 매끄러운 곡선인 경우 (예: Model 5 원형 가변 실린더, 코너가 없는 원호 등):
+    if not np.any(corner_mask):
+        diffs = pts[1:] - pts[:-1]
+        lens = np.linalg.norm(diffs[:, :2], axis=1)
+        total_len = float(np.sum(lens))
+        n_segs = max(3, int(np.round(total_len / float(mindist))))
+        targets = np.linspace(0.0, total_len, n_segs + 1)
+        cum = np.concatenate([[0.0], np.cumsum(lens)])
+        out = []
+        k = 0
+        for s in targets:
+            while k < len(lens) - 1 and cum[k + 1] < s:
+                k += 1
+            ratio = (s - cum[k]) / lens[k] if lens[k] > 1e-9 else 0.0
+            out.append(pts[k] + np.clip(ratio, 0.0, 1.0) * (pts[k + 1] - pts[k]))
+        out = np.asarray(out, dtype=float)
+        if is_closed and len(out) >= 2:
+            out[-1] = out[0]
+        return out
+
+    # (B) 코너와 직선 벽체가 존재하는 일반 형상 (L-Corner, Star, S-Curve 복합 등):
+    corner_indices = np.where(corner_mask)[0].tolist()
+    if 0 not in corner_indices:
+        corner_indices.insert(0, 0)
+    if not is_closed and (N - 1) not in corner_indices:
+        corner_indices.append(N - 1)
+    corner_indices = sorted(list(set(corner_indices)))
+
+    num_sections = len(corner_indices) if is_closed else (len(corner_indices) - 1)
+    resampled = [pts[corner_indices[0]]]
+
+    for s_idx in range(num_sections):
+        c1 = corner_indices[s_idx]
+        c2 = corner_indices[(s_idx + 1) % len(corner_indices)] if is_closed else corner_indices[s_idx + 1]
+
+        if c2 > c1:
+            sub = pts[c1:c2 + 1]
+        else:
+            sub = np.vstack([pts[c1:], pts[:c2 + 1]])
+
+        sub_diffs = sub[1:] - sub[:-1]
+        sub_lens = np.linalg.norm(sub_diffs[:, :2], axis=1)
+        sub_total = float(np.sum(sub_lens))
+        chord_len = float(np.linalg.norm(sub[-1][:2] - sub[0][:2]))
+
+        # 직선 벽체 판정: 
+        # 점이 2개뿐이거나, 현(Chord)의 길이와 총 경로 길이가 0.2% 미만으로 일치하는 경우
+        is_straight_wall = (len(sub) <= 2) or (chord_len > 1e-4 and abs(sub_total - chord_len) / chord_len < 0.002)
+
+        if is_straight_wall:
+            # [직선 벽체]: 절대로 중간 점을 추가하지 않고 끝 꼭짓점만 보존!
+            end_pt = sub[-1]
+            if np.linalg.norm(resampled[-1][:2] - end_pt[:2]) > 0.3:
+                resampled.append(end_pt)
+        else:
+            # [곡선 구간]: mindist 간격으로 정밀 분할
+            n_sub_segs = max(1, int(np.round(sub_total / float(mindist))))
+            t_s = np.linspace(0.0, sub_total, n_sub_segs + 1)
+            c_s = np.concatenate([[0.0], np.cumsum(sub_lens)])
+            cur_k = 0
+            for s_val in t_s[1:]:
+                while cur_k < len(sub_lens) - 1 and c_s[cur_k + 1] < s_val:
+                    cur_k += 1
+                ratio = (s_val - c_s[cur_k]) / sub_lens[cur_k] if sub_lens[cur_k] > 1e-9 else 0.0
+                p = sub[cur_k] + np.clip(ratio, 0.0, 1.0) * (sub[cur_k + 1] - sub[cur_k])
+                if np.linalg.norm(resampled[-1][:2] - p[:2]) > 0.3:
+                    resampled.append(p)
+
+    if is_closed:
+        resampled[-1] = resampled[0]
+    return np.asarray(resampled, dtype=float)
 
 
 def shift_to_nearest_start(segment, ref_point):
