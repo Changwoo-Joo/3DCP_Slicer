@@ -489,9 +489,9 @@ def resample_closed_segment_uniform(segment: np.ndarray, spacing: float) -> np.n
 
 def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     """
-    1. 직선 구간(모서리 사이): 중간점을 일체 추가하지 않고 양 끝점(모서리)만 유지.
-    2. 곡선 구간: 사용자가 지정한 간격(mindist) 단위로 정확히 샘플링하되,
-       어떠한 경우에도 포인트 간격이 mindist 미만이 되지 않도록 보장함.
+    1. 직선 구간: 중간점을 일체 추가하지 않고 양 끝점(모서리)만 유지.
+    2. 곡선 구간: 시작 모서리부터 호를 따라 정확히 mindist mm 간격으로 점을 생성.
+    3. 어떠한 경우에도 포인트 간격이 mindist 미만이 되지 않도록 보장.
     """
     pts = np.asarray(segment, dtype=float)
     if len(pts) <= 2 or mindist <= 0:
@@ -508,7 +508,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         v2 = p_next[:2] - p_curr[:2]
         n1 = float(np.linalg.norm(v1))
         n2 = float(np.linalg.norm(v2))
-        if n1 < 1e-6 or n2 < 1e-6:
+        if n1 < 1e-7 or n2 < 1e-7:
             continue
         cross = abs(v1[0] * v2[1] - v1[1] * v2[0]) / (n1 * n2)
         if cross > 1e-4:
@@ -527,7 +527,7 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         v2 = pts_comp[i + 1][:2] - pts_comp[i][:2]
         n1 = float(np.linalg.norm(v1))
         n2 = float(np.linalg.norm(v2))
-        if n1 > 1e-6 and n2 > 1e-6:
+        if n1 > 1e-7 and n2 > 1e-7:
             cos_a = np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0)
             angle_deg = float(np.degrees(np.arccos(cos_a)))
             if angle_deg >= 20.0:
@@ -536,7 +536,8 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
     corners = sorted(list(set(corners)))
 
     # 3. 각 모서리 구간별 처리
-    out = []
+    out = [pts_comp[corners[0]]]
+
     for c_idx in range(len(corners) - 1):
         idx_start = corners[c_idx]
         idx_end = corners[c_idx + 1]
@@ -546,41 +547,36 @@ def simplify_segment(segment: np.ndarray, mindist: float) -> np.ndarray:
         diffs = np.linalg.norm(np.diff(sub[:, :2], axis=0), axis=1)
         arclen = float(np.sum(diffs))
 
-        # 시작 모서리 점 등록
-        if not out:
-            out.append(sub[0])
-
-        # 직선 구간 (chord와 arclen의 차이가 매우 작음)
+        # 직선 구간 판별 (현과 호 길이 차이가 0.2mm 미만)
         if abs(arclen - chord) < 0.2:
-            # 직선 구간은 중간 점 없이 바로 다음 모서리로 건너뜀
+            # 직선 구간: 중간점 없이 끝 모서리만 추가
             pass
         else:
-            # 곡선 구간: 정확히 mindist 간격으로 점을 생성
-            # 단, 마지막 모서리와의 거리가 mindist 미만이 되지 않도록 floor 분할
+            # 곡선 구간: 정확히 mindist mm 간격으로 걸어가며 점 샘플링
             cum_s = np.concatenate([[0.0], np.cumsum(diffs)])
-            num_steps = int(np.floor(arclen / mindist))
-            if num_steps > 1:
-                # actual_step은 항상 >= mindist
-                actual_step = arclen / num_steps
-                target_s = [k * actual_step for k in range(1, num_steps)]
-                curr_j = 0
-                for ts in target_s:
-                    while curr_j < len(cum_s) - 2 and cum_s[curr_j + 1] < ts:
-                        curr_j += 1
-                    denom = max(1e-6, cum_s[curr_j + 1] - cum_s[curr_j])
-                    t = (ts - cum_s[curr_j]) / denom
-                    interp_pt = sub[curr_j] + t * (sub[curr_j + 1] - sub[curr_j])
-                    out.append(interp_pt)
+            cur_dist = mindist
+            while cur_dist < arclen:
+                # 다음 모서리(sub[-1])까지 남은 거리가 mindist 미만이면 점을 찍지 않고 건너뜀 (5mm 미만 자투리 방지)
+                if arclen - cur_dist < mindist:
+                    break
+
+                # cur_dist 위치에 해당하는 좌표 보간
+                j = np.searchsorted(cum_s, cur_dist) - 1
+                j = max(0, min(j, len(cum_s) - 2))
+                denom = max(1e-7, cum_s[j + 1] - cum_s[j])
+                t = (cur_dist - cum_s[j]) / denom
+                pt_interp = sub[j] + t * (sub[j + 1] - sub[j])
+                out.append(pt_interp)
+                cur_dist += mindist
 
         # 끝 모서리 점 추가
-        out.append(sub[-1])
+        end_pt = sub[-1]
+        # 만약 바로 직전 점과의 거리가 mindist 미만이면 직전 점 제거
+        if len(out) > 1 and np.linalg.norm(end_pt[:2] - out[-1][:2]) < (mindist - 1e-4):
+            out.pop()
+        out.append(end_pt)
 
-    # 4. 폐곡선 닫힘 및 미세 연속 중복점 정리
-    res = [out[0]]
-    for p in out[1:]:
-        if np.linalg.norm(p[:2] - res[-1][:2]) >= 1e-4:
-            res.append(p)
-    return np.asarray(res, dtype=float)
+    return np.asarray(out, dtype=float)
 
 
 def shift_to_nearest_start(segment, ref_point):
