@@ -1293,7 +1293,7 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
     normals_out = np.zeros((n, 3), dtype=float)
     normals_out[:, 2] = 1.0
     if floor_mesh is None or n == 0:
-        return z_out, normals_out
+        return z_out, normals_out, 0
 
     z_top = float(floor_mesh.bounds[1, 2]) + 100.0
     origins = np.column_stack([xy[:, 0], xy[:, 1], np.full(n, z_top, dtype=float)])
@@ -1307,12 +1307,11 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
             multiple_hits=True
         )
     except Exception:
-        return z_out, normals_out
+        return z_out, normals_out, 0
 
     if len(idx_ray) == 0:
-        return z_out, normals_out
+        return z_out, normals_out, 0
 
-    # 동일 XY에 여러 교점이 있으면 가장 높은 Z(상면) 선택
     best_z = np.full(n, -np.inf, dtype=float)
     best_tri = np.full(n, -1, dtype=int)
     for loc, r_i, t_i in zip(locs, idx_ray, idx_tri):
@@ -1321,17 +1320,17 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
             best_tri[r_i] = int(t_i)
 
     hit_mask = best_tri >= 0
+    hit_count = int(np.sum(hit_mask))
     z_out[hit_mask] = best_z[hit_mask]
     face_normals = np.asarray(floor_mesh.face_normals, dtype=float)
     hit_normals = face_normals[best_tri[hit_mask]].copy()
-    # 상향 법선(+Z) 보장
     flip_mask = hit_normals[:, 2] < 0.0
     hit_normals[flip_mask] *= -1.0
     norms = np.linalg.norm(hit_normals, axis=1, keepdims=True)
     norms = np.where(norms < 1e-12, 1.0, norms)
     hit_normals /= norms
     normals_out[hit_mask] = hit_normals
-    return z_out, normals_out
+    return z_out, normals_out, hit_count
 
 
 def _resample_poly_xy_for_floor(poly: np.ndarray, max_step_mm: float = 15.0) -> np.ndarray:
@@ -1352,19 +1351,37 @@ def _resample_poly_xy_for_floor(poly: np.ndarray, max_step_mm: float = 15.0) -> 
     return np.asarray(out, dtype=float)
 
 
+def align_floor_mesh_xy_to_items(floor_mesh: trimesh.Trimesh, items) -> trimesh.Trimesh:
+    """바닥면 STL의 XY 중심을 슬라이싱 경로의 XY 중심에 자동 정렬한 복사본을 반환합니다."""
+    if floor_mesh is None or not items:
+        return floor_mesh
+    pts_list = [np.asarray(poly, dtype=float)[:, :2] for poly, _, _ in items if poly is not None and len(poly) > 0]
+    if not pts_list:
+        return floor_mesh
+    all_xy = np.vstack(pts_list)
+    path_center_xy = 0.5 * (all_xy.min(axis=0) + all_xy.max(axis=0))
+    floor_center_xy = 0.5 * (floor_mesh.bounds[0, :2] + floor_mesh.bounds[1, :2])
+    shift = path_center_xy - floor_center_xy
+    m = floor_mesh.copy()
+    m.apply_translation([float(shift[0]), float(shift[1]), 0.0])
+    return m
+
+
 def deform_items_by_floor(
     items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
     floor_mesh: trimesh.Trimesh,
     z_offset_mm: float = 0.0,
     resample_step_mm: float = 15.0,
-) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
+) -> Tuple[List[Tuple[np.ndarray, Optional[np.ndarray], bool]], int, int]:
     """
     슬라이싱된 items의 모든 경로를 바닥면 STL 상면에 전체 추종(Conformal) 변형합니다.
-    Z_new = Z_slice + Z_floor(X, Y) + z_offset_mm
+    반환: (변형된 items, 히트 포인트 수, 전체 포인트 수)
     """
     if not items or floor_mesh is None:
-        return items
+        return items, 0, 0
     deformed = []
+    total_hits = 0
+    total_pts = 0
     for poly, evals, is_travel in items:
         if poly is None or len(poly) < 2:
             deformed.append((poly, evals, is_travel))
@@ -1379,10 +1396,12 @@ def deform_items_by_floor(
                     tot += float(np.linalg.norm(b[:2] - a[:2])) * EXTRUSION_K
                     new_e.append(tot)
                 evals = np.array(new_e, dtype=float)
-        z_floor, _ = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
+        z_floor, _, h_cnt = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
+        total_hits += h_cnt
+        total_pts += len(p)
         p[:, 2] = p[:, 2] + z_floor + float(z_offset_mm)
         deformed.append((p, evals, is_travel))
-    return deformed
+    return deformed, total_hits, total_pts
 
 
 def compute_nozzle_angles_from_normals(
@@ -1396,16 +1415,11 @@ def compute_nozzle_angles_from_normals(
     invert_ry: bool = False,
     smooth_window: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    표면 법선 벡터 (N, 3)로부터 포인트별 노즐 각도 (rx_arr, ry_arr)를 계산합니다.
-    """
     nrm = np.asarray(normals, dtype=float)
     nx, ny, nz = nrm[:, 0], nrm[:, 1], np.maximum(nrm[:, 2], 1e-6)
-    # 기본 월드 기준 기울기 (deg)
     d_rx = np.rad2deg(np.arctan2(-ny, nz))
     d_ry = np.rad2deg(np.arctan2(nx, np.sqrt(ny * ny + nz * nz)))
 
-    # Rz 회전 프리셋(0 / 90 / -90) 보정
     rz_rad = np.deg2rad(float(rz_deg))
     c, s = np.cos(rz_rad), np.sin(rz_rad)
     r_rx = c * d_rx + s * d_ry
@@ -1579,7 +1593,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
     use_floor = floor_mesh is not None
     if use_floor and len(selected_moves) > 0:
         xy_arr = np.array([[m["x"], m["y"]] for m in selected_moves], dtype=float)
-        z_floor_arr, _ = query_floor_surface(floor_mesh, xy_arr, default_z=0.0)
+        z_floor_arr, _, _ = query_floor_surface(floor_mesh, xy_arr, default_z=0.0)
         for idx_m, mv in enumerate(selected_moves):
             mv = dict(mv)
             mv["z"] = float(mv["z"]) + float(z_floor_arr[idx_m]) + float(floor_z_offset_mm)
@@ -2910,6 +2924,8 @@ if slice_clicked and st.session_state.mesh is not None:
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
     st.session_state.paths_items_raw = items
+    st.session_state.paths_scrub_slider = max_seg
+    st.session_state.paths_scrub_input = max_seg
     if max_seg == 0:
         st.session_state.ui_banner = "슬라이싱 결과가 없습니다. STL 단위, Z 간격, 트림/레이어 폭, 최소 점 간격을 확인하세요."
     else:
@@ -2920,27 +2936,37 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
     floor_up = st.file_uploader("바닥면 STL Import", type=["stl"], key="floor_stl_uploader", help="슬라이싱 이후 바닥면 형상에 따라 경로 Z를 전체 추종 변형합니다.")
     if floor_up is not None:
         floor_bytes = floor_up.getvalue()
-        if st.session_state.get("floor_stl_name") != floor_up.name or st.session_state.get("floor_mesh") is None:
+        if st.session_state.get("floor_stl_name") != floor_up.name or st.session_state.get("floor_mesh_raw") is None:
             try:
-                st.session_state.floor_mesh = load_floor_mesh_from_bytes(floor_bytes)
+                fm = load_floor_mesh_from_bytes(floor_bytes)
+                st.session_state.floor_mesh_raw = fm
+                st.session_state.floor_mesh = fm
                 st.session_state.floor_stl_name = floor_up.name
                 st.success(f"바닥면 STL 로드 완료: {floor_up.name}")
             except Exception as e:
+                st.session_state.floor_mesh_raw = None
                 st.session_state.floor_mesh = None
                 st.error(f"바닥면 STL 로드 실패: {e}")
 
     st.session_state.enable_floor_conform = st.checkbox(
         "바닥면 전체 추종 활성화",
-        value=bool(st.session_state.get("enable_floor_conform", False)),
-        disabled=(st.session_state.get("floor_mesh") is None),
+        value=bool(st.session_state.get("enable_floor_conform", True)),
+        disabled=(st.session_state.get("floor_mesh_raw") is None),
         key="ui_enable_floor_conform",
+    )
+    st.session_state.floor_auto_center_xy = st.checkbox(
+        "바닥면 XY 중심을 모델에 자동 정렬",
+        value=bool(st.session_state.get("floor_auto_center_xy", True)),
+        disabled=(st.session_state.get("floor_mesh_raw") is None),
+        help="바닥면 STL과 출력 모델의 XY 좌표 원점이 다를 때 자동으로 중심을 맞춥니다.",
+        key="ui_floor_auto_center_xy",
     )
     st.session_state.floor_z_offset_mm = st.number_input(
         "바닥면 Z 오프셋 (mm)",
         value=float(st.session_state.get("floor_z_offset_mm", 0.0)),
         step=1.0,
         format="%.2f",
-        disabled=(st.session_state.get("floor_mesh") is None),
+        disabled=(st.session_state.get("floor_mesh_raw") is None),
         key="ui_floor_z_offset_mm",
     )
     st.session_state.floor_resample_mm = st.number_input(
@@ -2950,33 +2976,42 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
         value=float(st.session_state.get("floor_resample_mm", 15.0)),
         step=1.0,
         format="%.1f",
-        disabled=(st.session_state.get("floor_mesh") is None),
+        disabled=(st.session_state.get("floor_mesh_raw") is None),
         key="ui_floor_resample_mm",
     )
     apply_floor_clicked = st.button(
         "바닥면 형상 경로 적용",
         use_container_width=True,
-        disabled=(st.session_state.get("floor_mesh") is None or st.session_state.get("paths_items_raw") is None),
+        disabled=(st.session_state.get("floor_mesh_raw") is None or st.session_state.get("paths_items_raw") is None),
         key="btn_apply_floor_conform",
     )
     if apply_floor_clicked:
         raw_items = st.session_state.get("paths_items_raw")
-        if bool(st.session_state.get("enable_floor_conform", False)) and st.session_state.get("floor_mesh") is not None:
-            deformed_items = deform_items_by_floor(
+        if bool(st.session_state.get("enable_floor_conform", False)) and st.session_state.get("floor_mesh_raw") is not None:
+            fm_use = st.session_state.floor_mesh_raw
+            if bool(st.session_state.get("floor_auto_center_xy", True)):
+                fm_use = align_floor_mesh_xy_to_items(fm_use, raw_items)
+            st.session_state.floor_mesh = fm_use
+            deformed_items, hit_cnt, tot_cnt = deform_items_by_floor(
                 raw_items,
-                st.session_state.floor_mesh,
+                fm_use,
                 z_offset_mm=float(st.session_state.get("floor_z_offset_mm", 0.0)),
                 resample_step_mm=float(st.session_state.get("floor_resample_mm", 15.0)),
             )
             st.session_state.paths_items = deformed_items
-            st.session_state.ui_banner = "바닥면 전체 추종 경로 적용 완료"
+            hit_pct = (100.0 * hit_cnt / tot_cnt) if tot_cnt > 0 else 0.0
+            st.session_state.ui_banner = f"바닥면 전체 추종 적용 완료 (투영 적중: {hit_cnt:,}/{tot_cnt:,}점, {hit_pct:.1f}%)"
         else:
             st.session_state.paths_items = raw_items
             st.session_state.ui_banner = "원본 수평 슬라이싱 경로 복원 완료"
         segs_f = items_to_segments(st.session_state.paths_items, e_on=e_on)
-        st.session_state.paths_scrub = len(segs_f)
+        n_segs_f = len(segs_f)
+        st.session_state.paths_scrub = n_segs_f
+        st.session_state.paths_scrub_slider = n_segs_f
+        st.session_state.paths_scrub_input = n_segs_f
+        st.session_state.view_selected_layers_only = False
         reset_anim_buffers()
-        rebuild_buffers_to(segs_f, len(segs_f))
+        rebuild_buffers_to(segs_f, n_segs_f)
         st.session_state.main_view = "슬라이싱 경로 (3D)"
         st.rerun()
 
@@ -3337,7 +3372,7 @@ def convert_gcode_to_rapid(
 
     if bool(enable_floor_tilt) and floor_mesh is not None and len(nodes) > 0:
         xy_nodes = np.array([[nd["raw_x"], nd["raw_y"]] for nd in nodes], dtype=float)
-        _, node_normals = query_floor_surface(floor_mesh, xy_nodes, default_z=0.0)
+        _, node_normals, _ = query_floor_surface(floor_mesh, xy_nodes, default_z=0.0)
         rx_arr, ry_arr = compute_nozzle_angles_from_normals(
             node_normals,
             base_rx=rx,
