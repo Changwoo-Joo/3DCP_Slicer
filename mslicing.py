@@ -1259,7 +1259,7 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
 
 
 # =========================
-# 바닥면 STL 추종 (전체 추종: Z 변형 + 법선 기반 Rx/Ry 계산)
+# 바닥면 STL 추종 (전체 추종: 순수 NumPy 고속 수직 투영 + 법선 기반 Rx/Ry)
 # =========================
 def load_floor_mesh_from_bytes(raw_bytes: bytes) -> trimesh.Trimesh:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
@@ -1284,52 +1284,127 @@ def load_floor_mesh_from_bytes(raw_bytes: bytes) -> trimesh.Trimesh:
 
 def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, default_z: float = 0.0):
     """
-    주어진 (N, 2) XY 좌표에 대해 바닥면 STL의 최상면 Z 높이와 표면 법선 벡터 (N, 3)를 반환합니다.
-    바닥면 영역 밖의 점은 default_z와 수직 법선 (0, 0, 1)을 사용합니다.
+    외부 Ray 라이브러리(rtree/pyembree) 없이 순수 NumPy 2D 공간 격자 + 무게중심 좌표로
+    바닥면 STL 최상면 Z 높이와 상향 법선 벡터를 고속 계산합니다.
     """
     xy = np.asarray(xy_points, dtype=float)
     n = len(xy)
     z_out = np.full(n, float(default_z), dtype=float)
     normals_out = np.zeros((n, 3), dtype=float)
     normals_out[:, 2] = 1.0
-    if floor_mesh is None or n == 0:
+    if floor_mesh is None or n == 0 or len(floor_mesh.faces) == 0:
         return z_out, normals_out, 0
 
-    z_top = float(floor_mesh.bounds[1, 2]) + 100.0
-    origins = np.column_stack([xy[:, 0], xy[:, 1], np.full(n, z_top, dtype=float)])
-    directions = np.tile(np.array([0.0, 0.0, -1.0], dtype=float), (n, 1))
+    vertices = np.asarray(floor_mesh.vertices, dtype=float)
+    faces = np.asarray(floor_mesh.faces, dtype=np.int32)
+    face_normals = np.asarray(floor_mesh.face_normals, dtype=float)
 
-    try:
-        intersector = trimesh.ray.ray_triangle.RayMeshIntersector(floor_mesh)
-        locs, idx_ray, idx_tri = intersector.intersects_location(
-            ray_origins=origins,
-            ray_directions=directions,
-            multiple_hits=True
-        )
-    except Exception:
+    tris = vertices[faces]
+    v0 = tris[:, 0, :]
+    v1 = tris[:, 1, :]
+    v2 = tris[:, 2, :]
+
+    d00 = v1[:, 0] - v0[:, 0]
+    d01 = v1[:, 1] - v0[:, 1]
+    d10 = v2[:, 0] - v0[:, 0]
+    d11 = v2[:, 1] - v0[:, 1]
+    det = d00 * d11 - d01 * d10
+    valid = np.abs(det) > 1e-12
+    if not np.any(valid):
         return z_out, normals_out, 0
 
-    if len(idx_ray) == 0:
+    v0 = v0[valid]; v1 = v1[valid]; v2 = v2[valid]
+    d00 = d00[valid]; d01 = d01[valid]; d10 = d10[valid]; d11 = d11[valid]
+    inv_det = 1.0 / det[valid]
+    fn = face_normals[valid].copy()
+    fn[fn[:, 2] < 0.0] *= -1.0
+    fn_norm = np.linalg.norm(fn, axis=1, keepdims=True)
+    fn /= np.where(fn_norm < 1e-12, 1.0, fn_norm)
+
+    tmin_x = np.minimum(np.minimum(v0[:, 0], v1[:, 0]), v2[:, 0])
+    tmax_x = np.maximum(np.maximum(v0[:, 0], v1[:, 0]), v2[:, 0])
+    tmin_y = np.minimum(np.minimum(v0[:, 1], v1[:, 1]), v2[:, 1])
+    tmax_y = np.maximum(np.maximum(v0[:, 1], v1[:, 1]), v2[:, 1])
+
+    gx0, gx1 = float(tmin_x.min()), float(tmax_x.max())
+    gy0, gy1 = float(tmin_y.min()), float(tmax_y.max())
+    span_x = max(gx1 - gx0, 1e-6)
+    span_y = max(gy1 - gy0, 1e-6)
+    G = 64
+    cell_x = span_x / G
+    cell_y = span_y / G
+
+    ix0 = np.clip(((tmin_x - gx0) / cell_x).astype(int), 0, G - 1)
+    ix1 = np.clip(((tmax_x - gx0) / cell_x).astype(int), 0, G - 1)
+    iy0 = np.clip(((tmin_y - gy0) / cell_y).astype(int), 0, G - 1)
+    iy1 = np.clip(((tmax_y - gy0) / cell_y).astype(int), 0, G - 1)
+
+    grid = {}
+    for ti in range(len(v0)):
+        for cx in range(ix0[ti], ix1[ti] + 1):
+            for cy in range(iy0[ti], iy1[ti] + 1):
+                key = (cx, cy)
+                if key not in grid:
+                    grid[key] = [ti]
+                else:
+                    grid[key].append(ti)
+    for k in grid:
+        grid[k] = np.asarray(grid[k], dtype=np.int32)
+
+    in_bounds = (
+        (xy[:, 0] >= gx0 - 1e-6) & (xy[:, 0] <= gx1 + 1e-6) &
+        (xy[:, 1] >= gy0 - 1e-6) & (xy[:, 1] <= gy1 + 1e-6)
+    )
+    q_idx_all = np.nonzero(in_bounds)[0]
+    if len(q_idx_all) == 0:
         return z_out, normals_out, 0
+
+    q_cx = np.clip(((xy[q_idx_all, 0] - gx0) / cell_x).astype(int), 0, G - 1)
+    q_cy = np.clip(((xy[q_idx_all, 1] - gy0) / cell_y).astype(int), 0, G - 1)
+    cell_ids = q_cx * G + q_cy
+    order = np.argsort(cell_ids)
+    q_idx_sorted = q_idx_all[order]
+    cell_sorted = cell_ids[order]
+    uniq_cells, starts = np.unique(cell_sorted, return_index=True)
+    ends = np.append(starts[1:], len(cell_sorted))
 
     best_z = np.full(n, -np.inf, dtype=float)
-    best_tri = np.full(n, -1, dtype=int)
-    for loc, r_i, t_i in zip(locs, idx_ray, idx_tri):
-        if loc[2] > best_z[r_i]:
-            best_z[r_i] = float(loc[2])
-            best_tri[r_i] = int(t_i)
+    best_tri = np.full(n, -1, dtype=np.int32)
+    eps = 1e-6
+
+    for cid, s, e in zip(uniq_cells, starts, ends):
+        cx, cy = divmod(int(cid), G)
+        t_ids = grid.get((cx, cy))
+        if t_ids is None:
+            continue
+        q_ids = q_idx_sorted[s:e]
+        px = xy[q_ids, 0][:, None]
+        py = xy[q_ids, 1][:, None]
+
+        rx = px - v0[t_ids, 0][None, :]
+        ry = py - v0[t_ids, 1][None, :]
+        u = (rx * d11[t_ids][None, :] - ry * d10[t_ids][None, :]) * inv_det[t_ids][None, :]
+        v = (d00[t_ids][None, :] * ry - d01[t_ids][None, :] * rx) * inv_det[t_ids][None, :]
+        hit = (u >= -eps) & (v >= -eps) & (u + v <= 1.0 + eps)
+        if not np.any(hit):
+            continue
+        z_vals = (
+            v0[t_ids, 2][None, :]
+            + u * (v1[t_ids, 2] - v0[t_ids, 2])[None, :]
+            + v * (v2[t_ids, 2] - v0[t_ids, 2])[None, :]
+        )
+        z_vals = np.where(hit, z_vals, -np.inf)
+        max_pos = np.argmax(z_vals, axis=1)
+        max_z = z_vals[np.arange(len(q_ids)), max_pos]
+        upd = max_z > best_z[q_ids]
+        if np.any(upd):
+            best_z[q_ids[upd]] = max_z[upd]
+            best_tri[q_ids[upd]] = t_ids[max_pos[upd]]
 
     hit_mask = best_tri >= 0
     hit_count = int(np.sum(hit_mask))
     z_out[hit_mask] = best_z[hit_mask]
-    face_normals = np.asarray(floor_mesh.face_normals, dtype=float)
-    hit_normals = face_normals[best_tri[hit_mask]].copy()
-    flip_mask = hit_normals[:, 2] < 0.0
-    hit_normals[flip_mask] *= -1.0
-    norms = np.linalg.norm(hit_normals, axis=1, keepdims=True)
-    norms = np.where(norms < 1e-12, 1.0, norms)
-    hit_normals /= norms
-    normals_out[hit_mask] = hit_normals
+    normals_out[hit_mask] = fn[best_tri[hit_mask]]
     return z_out, normals_out, hit_count
 
 
@@ -1352,7 +1427,6 @@ def _resample_poly_xy_for_floor(poly: np.ndarray, max_step_mm: float = 15.0) -> 
 
 
 def align_floor_mesh_xy_to_items(floor_mesh: trimesh.Trimesh, items) -> trimesh.Trimesh:
-    """바닥면 STL의 XY 중심을 슬라이싱 경로의 XY 중심에 자동 정렬한 복사본을 반환합니다."""
     if floor_mesh is None or not items:
         return floor_mesh
     pts_list = [np.asarray(poly, dtype=float)[:, :2] for poly, _, _ in items if poly is not None and len(poly) > 0]
@@ -1373,10 +1447,6 @@ def deform_items_by_floor(
     z_offset_mm: float = 0.0,
     resample_step_mm: float = 15.0,
 ) -> Tuple[List[Tuple[np.ndarray, Optional[np.ndarray], bool]], int, int]:
-    """
-    슬라이싱된 items의 모든 경로를 바닥면 STL 상면에 전체 추종(Conformal) 변형합니다.
-    반환: (변형된 items, 히트 포인트 수, 전체 포인트 수)
-    """
     if not items or floor_mesh is None:
         return items, 0, 0
     deformed = []
