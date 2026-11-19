@@ -1259,7 +1259,7 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
 
 
 # =========================
-# 바닥면 STL 추종 (전체 추종: 순수 NumPy 고속 수직 투영 + 미적중 보간 + 법선 기반 Rx/Ry)
+# 바닥면 STL 추종 (전체 추종: 셀 경계 패딩 + Z 클램핑 + 단일점 스파이크 제거 + 법선 기반 Rx/Ry)
 # =========================
 def load_floor_mesh_from_bytes(raw_bytes: bytes) -> trimesh.Trimesh:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
@@ -1317,6 +1317,9 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
     fn_norm = np.linalg.norm(fn, axis=1, keepdims=True)
     fn /= np.where(fn_norm < 1e-12, 1.0, fn_norm)
 
+    tri_zmin = np.minimum(np.minimum(v0[:, 2], v1[:, 2]), v2[:, 2])
+    tri_zmax = np.maximum(np.maximum(v0[:, 2], v1[:, 2]), v2[:, 2])
+
     tmin_x = np.minimum(np.minimum(v0[:, 0], v1[:, 0]), v2[:, 0])
     tmax_x = np.maximum(np.maximum(v0[:, 0], v1[:, 0]), v2[:, 0])
     tmin_y = np.minimum(np.minimum(v0[:, 1], v1[:, 1]), v2[:, 1])
@@ -1330,10 +1333,11 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
     cell_x = span_x / G
     cell_y = span_y / G
 
-    ix0 = np.clip(((tmin_x - gx0) / cell_x).astype(int), 0, G - 1)
-    ix1 = np.clip(((tmax_x - gx0) / cell_x).astype(int), 0, G - 1)
-    iy0 = np.clip(((tmin_y - gy0) / cell_y).astype(int), 0, G - 1)
-    iy1 = np.clip(((tmax_y - gy0) / cell_y).astype(int), 0, G - 1)
+    # ±1 셀 패딩으로 셀 경계 삼각형 누락 원천 차단
+    ix0 = np.clip(((tmin_x - gx0) / cell_x).astype(int) - 1, 0, G - 1)
+    ix1 = np.clip(((tmax_x - gx0) / cell_x).astype(int) + 1, 0, G - 1)
+    iy0 = np.clip(((tmin_y - gy0) / cell_y).astype(int) - 1, 0, G - 1)
+    iy1 = np.clip(((tmax_y - gy0) / cell_y).astype(int) + 1, 0, G - 1)
 
     grid = {}
     for ti in range(len(v0)):
@@ -1366,7 +1370,7 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
 
     best_z = np.full(n, -np.inf, dtype=float)
     best_tri = np.full(n, -1, dtype=np.int32)
-    eps = 1e-4
+    eps = 1e-5
 
     for cid, s, e in zip(uniq_cells, starts, ends):
         cx, cy = divmod(int(cid), G)
@@ -1384,11 +1388,20 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
         hit = (u >= -eps) & (v >= -eps) & (u + v <= 1.0 + eps)
         if not np.any(hit):
             continue
+        # 외삽 오차 방지: u, v 클램핑 후 삼각형 [zmin, zmax] 범위로 제한
+        u_c = np.clip(u, 0.0, 1.0)
+        v_c = np.clip(v, 0.0, 1.0)
+        s_uv = u_c + v_c
+        over_uv = s_uv > 1.0
+        u_c = np.where(over_uv, u_c / np.where(over_uv, s_uv, 1.0), u_c)
+        v_c = np.where(over_uv, v_c / np.where(over_uv, s_uv, 1.0), v_c)
+
         z_vals = (
             v0[t_ids, 2][None, :]
-            + u * (v1[t_ids, 2] - v0[t_ids, 2])[None, :]
-            + v * (v2[t_ids, 2] - v0[t_ids, 2])[None, :]
+            + u_c * (v1[t_ids, 2] - v0[t_ids, 2])[None, :]
+            + v_c * (v2[t_ids, 2] - v0[t_ids, 2])[None, :]
         )
+        z_vals = np.clip(z_vals, tri_zmin[t_ids][None, :], tri_zmax[t_ids][None, :])
         z_vals = np.where(hit, z_vals, -np.inf)
         max_pos = np.argmax(z_vals, axis=1)
         max_z = z_vals[np.arange(len(q_ids)), max_pos]
@@ -1402,8 +1415,6 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
     z_out[hit_mask] = best_z[hit_mask]
     normals_out[hit_mask] = fn[best_tri[hit_mask]]
 
-    # 삼각형 경계 틈새 등으로 미적중된 포인트가 있으면 0.0으로 떨어뜨리지 않고
-    # 인접한 정상 적중 포인트의 Z와 법선으로 선형 보간 (스파이크 완전 제거)
     if 0 < hit_count < n:
         hit_idx = np.nonzero(hit_mask)[0]
         miss_idx = np.nonzero(~hit_mask)[0]
@@ -1414,6 +1425,22 @@ def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, defa
         normals_out[miss_idx] /= np.where(m_norms < 1e-12, 1.0, m_norms)
 
     return z_out, normals_out, hit_count
+
+
+def _despike_z_1d(z_arr: np.ndarray, threshold_mm: float = 2.0) -> np.ndarray:
+    """단일 포인트 V자 스파이크가 있으면 양옆 점 평균으로 보정합니다."""
+    z = np.asarray(z_arr, dtype=float).copy()
+    if len(z) < 3:
+        return z
+    for _ in range(2):
+        mid = 0.5 * (z[:-2] + z[2:])
+        diff = np.abs(z[1:-1] - mid)
+        neighbor_diff = np.abs(z[2:] - z[:-2])
+        spike = (diff > float(threshold_mm)) & (diff > 2.5 * np.maximum(neighbor_diff, 0.5))
+        if not np.any(spike):
+            break
+        z[1:-1] = np.where(spike, mid, z[1:-1])
+    return z
 
 
 def _resample_poly_xy_for_floor(poly: np.ndarray, max_step_mm: float = 15.0) -> np.ndarray:
@@ -1475,6 +1502,8 @@ def deform_items_by_floor(
                     new_e.append(tot)
                 evals = np.array(new_e, dtype=float)
         z_floor, _, h_cnt = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
+        if not is_travel:
+            z_floor = _despike_z_1d(z_floor, threshold_mm=2.0)
         total_hits += h_cnt
         total_pts += len(p)
         p[:, 2] = p[:, 2] + z_floor + float(z_offset_mm)
