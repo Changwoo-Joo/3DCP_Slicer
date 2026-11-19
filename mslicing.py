@@ -1257,12 +1257,188 @@ def make_slice_z_values(mesh, z_int: float) -> List[float]:
         z += zstep
     return zvalues
 
+
+# =========================
+# 바닥면 STL 추종 (전체 추종: Z 변형 + 법선 기반 Rx/Ry 계산)
+# =========================
+def load_floor_mesh_from_bytes(raw_bytes: bytes) -> trimesh.Trimesh:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".stl") as tmp:
+        tmp.write(raw_bytes)
+        tmp_path = tmp.name
+    loaded = trimesh.load(tmp_path)
+    if isinstance(loaded, trimesh.Scene):
+        geoms = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh) and len(g.faces) > 0]
+        if not geoms:
+            raise ValueError("바닥면 STL에 유효한 메시가 없습니다.")
+        mesh_f = trimesh.util.concatenate(geoms)
+    elif isinstance(loaded, trimesh.Trimesh):
+        mesh_f = loaded.copy()
+    else:
+        raise ValueError("바닥면 STL을 Trimesh로 불러올 수 없습니다.")
+    extents = np.asarray(mesh_f.extents, dtype=float)
+    max_extent = float(np.max(extents)) if extents.size else 0.0
+    if 0.0 < max_extent <= 20.0:
+        mesh_f.apply_scale(1000.0)
+    return mesh_f
+
+
+def query_floor_surface(floor_mesh: trimesh.Trimesh, xy_points: np.ndarray, default_z: float = 0.0):
+    """
+    주어진 (N, 2) XY 좌표에 대해 바닥면 STL의 최상면 Z 높이와 표면 법선 벡터 (N, 3)를 반환합니다.
+    바닥면 영역 밖의 점은 default_z와 수직 법선 (0, 0, 1)을 사용합니다.
+    """
+    xy = np.asarray(xy_points, dtype=float)
+    n = len(xy)
+    z_out = np.full(n, float(default_z), dtype=float)
+    normals_out = np.zeros((n, 3), dtype=float)
+    normals_out[:, 2] = 1.0
+    if floor_mesh is None or n == 0:
+        return z_out, normals_out
+
+    z_top = float(floor_mesh.bounds[1, 2]) + 100.0
+    origins = np.column_stack([xy[:, 0], xy[:, 1], np.full(n, z_top, dtype=float)])
+    directions = np.tile(np.array([0.0, 0.0, -1.0], dtype=float), (n, 1))
+
+    try:
+        intersector = trimesh.ray.ray_triangle.RayMeshIntersector(floor_mesh)
+        locs, idx_ray, idx_tri = intersector.intersects_location(
+            ray_origins=origins,
+            ray_directions=directions,
+            multiple_hits=True
+        )
+    except Exception:
+        return z_out, normals_out
+
+    if len(idx_ray) == 0:
+        return z_out, normals_out
+
+    # 동일 XY에 여러 교점이 있으면 가장 높은 Z(상면) 선택
+    best_z = np.full(n, -np.inf, dtype=float)
+    best_tri = np.full(n, -1, dtype=int)
+    for loc, r_i, t_i in zip(locs, idx_ray, idx_tri):
+        if loc[2] > best_z[r_i]:
+            best_z[r_i] = float(loc[2])
+            best_tri[r_i] = int(t_i)
+
+    hit_mask = best_tri >= 0
+    z_out[hit_mask] = best_z[hit_mask]
+    face_normals = np.asarray(floor_mesh.face_normals, dtype=float)
+    hit_normals = face_normals[best_tri[hit_mask]].copy()
+    # 상향 법선(+Z) 보장
+    flip_mask = hit_normals[:, 2] < 0.0
+    hit_normals[flip_mask] *= -1.0
+    norms = np.linalg.norm(hit_normals, axis=1, keepdims=True)
+    norms = np.where(norms < 1e-12, 1.0, norms)
+    hit_normals /= norms
+    normals_out[hit_mask] = hit_normals
+    return z_out, normals_out
+
+
+def _resample_poly_xy_for_floor(poly: np.ndarray, max_step_mm: float = 15.0) -> np.ndarray:
+    pts = np.asarray(poly, dtype=float)
+    if len(pts) < 2 or max_step_mm <= 0.0:
+        return pts
+    out = [pts[0].copy()]
+    for i in range(len(pts) - 1):
+        p1, p2 = pts[i], pts[i + 1]
+        d = float(np.linalg.norm(p2[:2] - p1[:2]))
+        if d > max_step_mm:
+            n_seg = int(np.ceil(d / max_step_mm))
+            for k in range(1, n_seg + 1):
+                alpha = k / n_seg
+                out.append(p1 * (1.0 - alpha) + p2 * alpha)
+        else:
+            out.append(p2.copy())
+    return np.asarray(out, dtype=float)
+
+
+def deform_items_by_floor(
+    items: List[Tuple[np.ndarray, Optional[np.ndarray], bool]],
+    floor_mesh: trimesh.Trimesh,
+    z_offset_mm: float = 0.0,
+    resample_step_mm: float = 15.0,
+) -> List[Tuple[np.ndarray, Optional[np.ndarray], bool]]:
+    """
+    슬라이싱된 items의 모든 경로를 바닥면 STL 상면에 전체 추종(Conformal) 변형합니다.
+    Z_new = Z_slice + Z_floor(X, Y) + z_offset_mm
+    """
+    if not items or floor_mesh is None:
+        return items
+    deformed = []
+    for poly, evals, is_travel in items:
+        if poly is None or len(poly) < 2:
+            deformed.append((poly, evals, is_travel))
+            continue
+        p = np.asarray(poly, dtype=float).copy()
+        if (not is_travel) and resample_step_mm > 0.0:
+            p = _resample_poly_xy_for_floor(p, max_step_mm=float(resample_step_mm))
+            if evals is not None:
+                new_e = [0.0]
+                tot = 0.0
+                for a, b in zip(p[:-1], p[1:]):
+                    tot += float(np.linalg.norm(b[:2] - a[:2])) * EXTRUSION_K
+                    new_e.append(tot)
+                evals = np.array(new_e, dtype=float)
+        z_floor, _ = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
+        p[:, 2] = p[:, 2] + z_floor + float(z_offset_mm)
+        deformed.append((p, evals, is_travel))
+    return deformed
+
+
+def compute_nozzle_angles_from_normals(
+    normals: np.ndarray,
+    base_rx: float,
+    base_ry: float,
+    rz_deg: float = 0.0,
+    tilt_gain: float = 1.0,
+    max_tilt_deg: float = 15.0,
+    invert_rx: bool = False,
+    invert_ry: bool = False,
+    smooth_window: int = 1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    표면 법선 벡터 (N, 3)로부터 포인트별 노즐 각도 (rx_arr, ry_arr)를 계산합니다.
+    """
+    nrm = np.asarray(normals, dtype=float)
+    nx, ny, nz = nrm[:, 0], nrm[:, 1], np.maximum(nrm[:, 2], 1e-6)
+    # 기본 월드 기준 기울기 (deg)
+    d_rx = np.rad2deg(np.arctan2(-ny, nz))
+    d_ry = np.rad2deg(np.arctan2(nx, np.sqrt(ny * ny + nz * nz)))
+
+    # Rz 회전 프리셋(0 / 90 / -90) 보정
+    rz_rad = np.deg2rad(float(rz_deg))
+    c, s = np.cos(rz_rad), np.sin(rz_rad)
+    r_rx = c * d_rx + s * d_ry
+    r_ry = -s * d_rx + c * d_ry
+
+    if invert_rx:
+        r_rx = -r_rx
+    if invert_ry:
+        r_ry = -r_ry
+
+    r_rx = r_rx * float(tilt_gain)
+    r_ry = r_ry * float(tilt_gain)
+
+    if int(smooth_window) > 1 and len(r_rx) >= int(smooth_window):
+        w = int(smooth_window)
+        kernel = np.ones(w, dtype=float) / float(w)
+        r_rx = np.convolve(np.pad(r_rx, (w // 2, w - 1 - w // 2), mode="edge"), kernel, mode="valid")
+        r_ry = np.convolve(np.pad(r_ry, (w // 2, w - 1 - w // 2), mode="edge"), kernel, mode="valid")
+
+    lim = abs(float(max_tilt_deg))
+    r_rx = np.clip(r_rx, -lim, lim)
+    r_ry = np.clip(r_ry, -lim, lim)
+
+    return float(base_rx) + r_rx, float(base_ry) + r_ry
+
+
 def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                    e_on=False, start_e_on=False, start_e_val=0.1,
                    trim_dist=30.0, min_spacing=5.0, auto_start=False, m30_on=False,
                    seq_print=False, seq_group_inner=True, nozzle_width=0.0, enable_inward_offset=False,
                    skip_invalid_offset=True, thin_wall_centerline_threshold_mm=0.1,
-                   use_custom_range=False, custom_start_idx=1, custom_end_idx=None):
+                   use_custom_range=False, custom_start_idx=1, custom_end_idx=None,
+                   floor_mesh=None, floor_z_offset_mm: float = 0.0, floor_resample_mm: float = 15.0):
     g = ["; *** Generated by 3DCP Slicer ***", "G21", "G90"]
     if e_on:
         g.append("M83")
@@ -1400,11 +1576,20 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
         s_idx, e_idx = e_idx, s_idx
 
     selected_moves = all_point_moves[s_idx - 1 : e_idx]
+    use_floor = floor_mesh is not None
+    if use_floor and len(selected_moves) > 0:
+        xy_arr = np.array([[m["x"], m["y"]] for m in selected_moves], dtype=float)
+        z_floor_arr, _ = query_floor_surface(floor_mesh, xy_arr, default_z=0.0)
+        for idx_m, mv in enumerate(selected_moves):
+            mv = dict(mv)
+            mv["z"] = float(mv["z"]) + float(z_floor_arr[idx_m]) + float(floor_z_offset_mm)
+            selected_moves[idx_m] = mv
+
     current_z = None
 
     for i, mv in enumerate(selected_moves):
         px, py, pz = mv["x"], mv["y"], mv["z"]
-        if current_z is None or abs(current_z - pz) > 1e-4:
+        if (not use_floor) and (current_z is None or abs(current_z - pz) > 1e-4):
             current_z = pz
             g.append(f"\n; ---------- Z = {current_z:.2f} mm ----------")
 
@@ -1419,10 +1604,16 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
             else:
                 g.append(f"G01 X{px:.1f} Y{py:.1f} Z{pz:.1f}")
         else:
-            if e_on:
-                g.append(f"G01 X{px:.1f} Y{py:.1f} E{mv['dist'] * EXTRUSION_K:.5f}")
+            if use_floor:
+                if e_on:
+                    g.append(f"G01 X{px:.1f} Y{py:.1f} Z{pz:.1f} E{mv['dist'] * EXTRUSION_K:.5f}")
+                else:
+                    g.append(f"G01 X{px:.1f} Y{py:.1f} Z{pz:.1f}")
             else:
-                g.append(f"G01 X{px:.1f} Y{py:.1f}")
+                if e_on:
+                    g.append(f"G01 X{px:.1f} Y{py:.1f} E{mv['dist'] * EXTRUSION_K:.5f}")
+                else:
+                    g.append(f"G01 X{px:.1f} Y{py:.1f}")
 
     g.append(f"G01 F{feed}")
     if m30_on: g.append("M30")
@@ -2718,10 +2909,76 @@ if slice_clicked and st.session_state.mesh is not None:
     st.session_state.paths_scrub = max_seg
     reset_anim_buffers()
     rebuild_buffers_to(segs, max_seg)
+    st.session_state.paths_items_raw = items
     if max_seg == 0:
         st.session_state.ui_banner = "슬라이싱 결과가 없습니다. STL 단위, Z 간격, 트림/레이어 폭, 최소 점 간격을 확인하세요."
     else:
         st.session_state.ui_banner = f"슬라이싱 완료: 세그먼트 {max_seg:,}개"
+
+# ---- 사이드바: 바닥면 STL 추종 (슬라이싱 이후 경로 Z 변형) ----
+with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False):
+    floor_up = st.file_uploader("바닥면 STL Import", type=["stl"], key="floor_stl_uploader", help="슬라이싱 이후 바닥면 형상에 따라 경로 Z를 전체 추종 변형합니다.")
+    if floor_up is not None:
+        floor_bytes = floor_up.getvalue()
+        if st.session_state.get("floor_stl_name") != floor_up.name or st.session_state.get("floor_mesh") is None:
+            try:
+                st.session_state.floor_mesh = load_floor_mesh_from_bytes(floor_bytes)
+                st.session_state.floor_stl_name = floor_up.name
+                st.success(f"바닥면 STL 로드 완료: {floor_up.name}")
+            except Exception as e:
+                st.session_state.floor_mesh = None
+                st.error(f"바닥면 STL 로드 실패: {e}")
+
+    st.session_state.enable_floor_conform = st.checkbox(
+        "바닥면 전체 추종 활성화",
+        value=bool(st.session_state.get("enable_floor_conform", False)),
+        disabled=(st.session_state.get("floor_mesh") is None),
+        key="ui_enable_floor_conform",
+    )
+    st.session_state.floor_z_offset_mm = st.number_input(
+        "바닥면 Z 오프셋 (mm)",
+        value=float(st.session_state.get("floor_z_offset_mm", 0.0)),
+        step=1.0,
+        format="%.2f",
+        disabled=(st.session_state.get("floor_mesh") is None),
+        key="ui_floor_z_offset_mm",
+    )
+    st.session_state.floor_resample_mm = st.number_input(
+        "곡면 추종 리샘플링 간격 (mm)",
+        min_value=1.0,
+        max_value=200.0,
+        value=float(st.session_state.get("floor_resample_mm", 15.0)),
+        step=1.0,
+        format="%.1f",
+        disabled=(st.session_state.get("floor_mesh") is None),
+        key="ui_floor_resample_mm",
+    )
+    apply_floor_clicked = st.button(
+        "바닥면 형상 경로 적용",
+        use_container_width=True,
+        disabled=(st.session_state.get("floor_mesh") is None or st.session_state.get("paths_items_raw") is None),
+        key="btn_apply_floor_conform",
+    )
+    if apply_floor_clicked:
+        raw_items = st.session_state.get("paths_items_raw")
+        if bool(st.session_state.get("enable_floor_conform", False)) and st.session_state.get("floor_mesh") is not None:
+            deformed_items = deform_items_by_floor(
+                raw_items,
+                st.session_state.floor_mesh,
+                z_offset_mm=float(st.session_state.get("floor_z_offset_mm", 0.0)),
+                resample_step_mm=float(st.session_state.get("floor_resample_mm", 15.0)),
+            )
+            st.session_state.paths_items = deformed_items
+            st.session_state.ui_banner = "바닥면 전체 추종 경로 적용 완료"
+        else:
+            st.session_state.paths_items = raw_items
+            st.session_state.ui_banner = "원본 수평 슬라이싱 경로 복원 완료"
+        segs_f = items_to_segments(st.session_state.paths_items, e_on=e_on)
+        st.session_state.paths_scrub = len(segs_f)
+        reset_anim_buffers()
+        rebuild_buffers_to(segs_f, len(segs_f))
+        st.session_state.main_view = "슬라이싱 경로 (3D)"
+        st.rerun()
 
 if KEY_OK and gen_clicked and st.session_state.mesh is not None:
     gcode_text = generate_gcode(
@@ -2735,7 +2992,10 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         thin_wall_centerline_threshold_mm=thin_wall_centerline_threshold_mm,
         use_custom_range=bool(st.session_state.get("use_point_range", False)),
         custom_start_idx=int(st.session_state.get("custom_pt_start", 1)),
-        custom_end_idx=int(st.session_state.get("custom_pt_end", 64000))
+        custom_end_idx=int(st.session_state.get("custom_pt_end", 64000)),
+        floor_mesh=(st.session_state.get("floor_mesh") if bool(st.session_state.get("enable_floor_conform", False)) else None),
+        floor_z_offset_mm=float(st.session_state.get("floor_z_offset_mm", 0.0)),
+        floor_resample_mm=float(st.session_state.get("floor_resample_mm", 15.0)),
     )
     st.session_state.gcode_text = gcode_text
     st.session_state.ui_banner = "G-code ready"
@@ -2909,6 +3169,13 @@ def convert_gcode_to_rapid(
     start_pt: Dict[str, float] = None,
     end_pt: Dict[str, float] = None,
     auto_ext: bool = True,
+    floor_mesh=None,
+    enable_floor_tilt: bool = False,
+    floor_tilt_gain: float = 1.0,
+    floor_max_tilt_deg: float = 15.0,
+    floor_invert_rx: bool = False,
+    floor_invert_ry: bool = False,
+    floor_smooth_window: int = 3,
 ) -> str:
     slice_max_lines = (MAX_LINES - 2) if use_custom_endpoints else MAX_LINES
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
@@ -3068,15 +3335,37 @@ def convert_gcode_to_rapid(
         s_line = f"{_fmt_pos(sx)},{_fmt_pos(sy)},{_fmt_pos(sz)},{frx},{fry},{frz},{_fmt_ext(sa1, 4)},{_fmt_ext(sa2, 3)},{_fmt_ext(sa3_v, 3)},{_fmt_ext(sa4_v, 4)},000,{int(speed_mm_s):03d}"
         lines_out.append(s_line)
 
+    if bool(enable_floor_tilt) and floor_mesh is not None and len(nodes) > 0:
+        xy_nodes = np.array([[nd["raw_x"], nd["raw_y"]] for nd in nodes], dtype=float)
+        _, node_normals = query_floor_surface(floor_mesh, xy_nodes, default_z=0.0)
+        rx_arr, ry_arr = compute_nozzle_angles_from_normals(
+            node_normals,
+            base_rx=rx,
+            base_ry=ry,
+            rz_deg=rz,
+            tilt_gain=floor_tilt_gain,
+            max_tilt_deg=floor_max_tilt_deg,
+            invert_rx=floor_invert_rx,
+            invert_ry=floor_invert_ry,
+            smooth_window=floor_smooth_window,
+        )
+    else:
+        rx_arr = None
+        ry_arr = None
+
     max_body_lines = (MAX_LINES - 1) if use_custom_endpoints else MAX_LINES
-    for nd in nodes:
+    for idx_nd, nd in enumerate(nodes):
         if len(lines_out) >= max_body_lines: break
         x, y, z = _fmt_pos(nd["x"]), _fmt_pos(nd["y"]), _fmt_pos(nd["z"])
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
         a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
         mat_val = "001" if nd["extr"] else "000"
         spd_val = f"{int(speed_mm_s):03d}"
-        lines_out.append(f"{x},{y},{z},{frx},{fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
+        if rx_arr is not None:
+            nd_frx, nd_fry = _fmt_ang(float(rx_arr[idx_nd])), _fmt_ang(float(ry_arr[idx_nd]))
+        else:
+            nd_frx, nd_fry = frx, fry
+        lines_out.append(f"{x},{y},{z},{nd_frx},{nd_fry},{frz},{a1s},{a2s},{a3s},{a4s},{mat_val},{spd_val}")
 
     # [2] 종료 이동점 추가 (A1~A4 옵션 적용)
     if use_custom_endpoints and end_pt is not None:
@@ -3234,6 +3523,54 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     st.session_state.rapid_end_a3 = st.number_input("END A3", value=float(st.session_state.get("rapid_end_a3", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a3")
                     st.session_state.rapid_end_a4 = st.number_input("END A4", value=float(st.session_state.get("rapid_end_a4", 0.0)), step=10.0, format="%.1f", key="ui_rapid_end_a4")
 
+        with st.sidebar.expander("노즐 각도 바닥면 추종 (Rx/Ry)", expanded=False):
+            has_floor = st.session_state.get("floor_mesh") is not None
+            st.session_state.rapid_floor_tilt_enable = st.checkbox(
+                "바닥면 법선 기반 노즐 각도 자동 조정",
+                value=bool(st.session_state.get("rapid_floor_tilt_enable", False)),
+                disabled=not has_floor,
+                key="ui_rapid_floor_tilt_enable",
+            )
+            st.session_state.rapid_floor_tilt_gain = st.slider(
+                "각도 추종 비율 (0~100%)",
+                min_value=0.0, max_value=1.0,
+                value=float(st.session_state.get("rapid_floor_tilt_gain", 1.0)),
+                step=0.05,
+                disabled=not (has_floor and st.session_state.rapid_floor_tilt_enable),
+                key="ui_rapid_floor_tilt_gain",
+            )
+            st.session_state.rapid_floor_max_tilt = st.number_input(
+                "최대 허용 기울기 (±deg)",
+                min_value=0.0, max_value=45.0,
+                value=float(st.session_state.get("rapid_floor_max_tilt", 15.0)),
+                step=1.0, format="%.1f",
+                disabled=not (has_floor and st.session_state.rapid_floor_tilt_enable),
+                key="ui_rapid_floor_max_tilt",
+            )
+            st.session_state.rapid_floor_smooth = st.number_input(
+                "각도 스무딩 윈도우 (포인트 수)",
+                min_value=1, max_value=31,
+                value=int(st.session_state.get("rapid_floor_smooth", 3)),
+                step=2,
+                disabled=not (has_floor and st.session_state.rapid_floor_tilt_enable),
+                key="ui_rapid_floor_smooth",
+            )
+            col_inv1, col_inv2 = st.columns(2)
+            st.session_state.rapid_floor_inv_rx = col_inv1.checkbox(
+                "Rx 부호 반전",
+                value=bool(st.session_state.get("rapid_floor_inv_rx", False)),
+                disabled=not (has_floor and st.session_state.rapid_floor_tilt_enable),
+                key="ui_rapid_floor_inv_rx",
+            )
+            st.session_state.rapid_floor_inv_ry = col_inv2.checkbox(
+                "Ry 부호 반전",
+                value=bool(st.session_state.get("rapid_floor_inv_ry", False)),
+                disabled=not (has_floor and st.session_state.rapid_floor_tilt_enable),
+                key="ui_rapid_floor_inv_ry",
+            )
+            if not has_floor:
+                st.info("먼저 '바닥면 STL 추종'에서 바닥면 STL을 불러오세요.")
+
         use_endpoints = bool(st.session_state.get("rapid_use_custom_endpoints", False))
         max_slice_limit = 63998 if use_endpoints else MAX_LINES
 
@@ -3286,6 +3623,13 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     start_pt=st_pt_dict,
                     end_pt=ed_pt_dict,
                     auto_ext=bool(st.session_state.get("rapid_endpoints_auto_ext", True)),
+                    floor_mesh=st.session_state.get("floor_mesh"),
+                    enable_floor_tilt=bool(st.session_state.get("rapid_floor_tilt_enable", False)),
+                    floor_tilt_gain=float(st.session_state.get("rapid_floor_tilt_gain", 1.0)),
+                    floor_max_tilt_deg=float(st.session_state.get("rapid_floor_max_tilt", 15.0)),
+                    floor_invert_rx=bool(st.session_state.get("rapid_floor_inv_rx", False)),
+                    floor_invert_ry=bool(st.session_state.get("rapid_floor_inv_ry", False)),
+                    floor_smooth_window=int(st.session_state.get("rapid_floor_smooth", 3)),
                 )
                 st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
             except ValueError as e:
