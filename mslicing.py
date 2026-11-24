@@ -1039,9 +1039,8 @@ def _build_alternating_xy_infill_path(
     layer_idx: int = 0,
     line_count: int = 0,
 ) -> np.ndarray:
-    """X/Y 교차 지그재그: 외곽선을 깔끔히 두르고 내부(poly.buffer(-step))만 X/Y 교차 채움.
-    짝수층: 외곽선 -> X축 왕복 -> 내부 경계 따라 Y시작점으로 연결.
-    홀수층: 제자리 수직 상승 -> Y축 왕복 -> 외곽선 역순 -> X시작점으로 연결."""
+    """순수 X/Y 교차 지그재그(외곽선 루프 없음): 짝수층 X축 왕복, 홀수층 Y축 왕복.
+    양 끝단 스캔라인을 0.5*step 안쪽에서 시작해 원형 접선 부근 뾰족한 삼각형 이탈을 방지."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1062,18 +1061,7 @@ def _build_alternating_xy_infill_path(
 
     step = max(float(step_mm), 1.0)
     xmin, ymin, xmax, ymax = poly.bounds
-
-    try:
-        zz_poly = poly.buffer(-step, join_style=2)
-        if zz_poly.is_empty or zz_poly.area <= 1e-6:
-            zz_poly = poly
-    except Exception:
-        zz_poly = poly
-    if isinstance(zz_poly, MultiPolygon):
-        zz_poly = max(zz_poly.geoms, key=lambda g: g.area)
-
-    zxmin, zymin, zxmax, zymax = zz_poly.bounds
-    eps = min(step * 0.25, 5.0)
+    eps = step * 0.5
 
     def _extract_segs(geom):
         segs = []
@@ -1090,19 +1078,21 @@ def _build_alternating_xy_infill_path(
         return segs
 
     def _scan_x():
-        y_lo, y_hi = zymin + eps, zymax - eps
+        y_lo, y_hi = ymin + eps, ymax - eps
         if y_hi <= y_lo:
-            ys = [0.5 * (zymin + zymax)]
+            ys = [0.5 * (ymin + ymax)]
         else:
             if int(line_count) >= 2:
                 n_lines = int(line_count)
             else:
-                n_lines = max(2, int(round((y_hi - y_lo) / step)) + 1)
+                n_lines = max(3, int(round((y_hi - y_lo) / step)) + 1)
+                if n_lines % 2 == 0:
+                    n_lines += 1
             ys = np.linspace(y_lo, y_hi, n_lines)
         out_pts = []
         for idx, y in enumerate(ys):
             line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
-            segs = _extract_segs(zz_poly.intersection(line))
+            segs = _extract_segs(poly.intersection(line))
             if not segs:
                 continue
             reverse = (idx % 2 == 1)
@@ -1115,19 +1105,21 @@ def _build_alternating_xy_infill_path(
         return out_pts
 
     def _scan_y():
-        x_lo, x_hi = zxmin + eps, zxmax - eps
+        x_lo, x_hi = xmin + eps, xmax - eps
         if x_hi <= x_lo:
-            xs = [0.5 * (zxmin + zxmax)]
+            xs = [0.5 * (xmin + xmax)]
         else:
             if int(line_count) >= 2:
                 n_lines = int(line_count)
             else:
-                n_lines = max(2, int(round((x_hi - x_lo) / step)) + 1)
+                n_lines = max(3, int(round((x_hi - x_lo) / step)) + 1)
+                if n_lines % 2 == 0:
+                    n_lines += 1
             xs = np.linspace(x_hi, x_lo, n_lines)
         out_pts = []
         for idx, x in enumerate(xs):
             line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
-            segs = _extract_segs(zz_poly.intersection(line))
+            segs = _extract_segs(poly.intersection(line))
             if not segs:
                 continue
             reverse = (idx % 2 == 0)
@@ -1144,27 +1136,18 @@ def _build_alternating_xy_infill_path(
     if len(x_pts) < 2 or len(y_pts) < 2:
         return pts
 
-    from shapely.geometry import Point
-    ring = poly.exterior
-    p_entry_x = ring.interpolate(ring.project(Point(float(x_pts[0][0]), float(x_pts[0][1]))))
-    entry_x = np.array([p_entry_x.x, p_entry_x.y], dtype=float)
-    outer_x = _trace_boundary_full_loop(ring, entry_x, step_mm=step, trim_end_mm=step)
-
     if layer_idx % 2 == 0:
-        # 짝수층: 외곽선 -> X축 지그재그 -> 내부 경계를 따라 Y축 시작점으로 자연스럽게 이동
-        path_xy = outer_x + x_pts
-        arc_in = _trace_boundary_shortest(zz_poly.exterior, x_pts[-1], y_pts[0])
-        if arc_in:
-            path_xy.extend(arc_in)
+        zz_pts = list(x_pts)
+        next_start = y_pts[0]
     else:
-        # 홀수층: 제자리 수직 상승 -> Y축 지그재그 -> 외곽선 역순(짝수층 시작점 entry_x에서 정확히 종료)
-        p_exit_y = ring.interpolate(ring.project(Point(float(y_pts[-1][0]), float(y_pts[-1][1]))))
-        exit_y = np.array([p_exit_y.x, p_exit_y.y], dtype=float)
-        outer_y_to_x = _trace_boundary_full_loop(ring, entry_x, step_mm=step, trim_end_mm=step)
-        arc_out = _trace_boundary_shortest(ring, exit_y, outer_y_to_x[-1])
-        path_xy = list(y_pts) + [exit_y] + arc_out + list(reversed(outer_y_to_x))
+        zz_pts = list(y_pts)
+        next_start = x_pts[0]
 
-    arr_xy = np.asarray(path_xy, dtype=float)
+    arc = _trace_boundary_shortest(poly.exterior, zz_pts[-1], next_start)
+    if arc:
+        zz_pts.extend(arc)
+
+    arr_xy = np.asarray(zz_pts, dtype=float)
     return np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
 
 
@@ -1176,8 +1159,7 @@ def _build_continuous_infill_path(
     layer_idx: int = 0,
 ) -> np.ndarray:
     """짝수층: 외곽선(시작점 전 노즐직경 트리밍) -> 내부 지그재그.
-    홀수층: 직전층 내부 끝점에서 수직 상승 -> 내부 지그재그(역순) -> 외곽선.
-    제자리 수직 상승 후 역방향 진행하므로 끝단 추가 트리밍 없이 정확히 맞물림."""
+    홀수층: 직전층 내부 끝점에서 수직 상승 -> 내부 지그재그(역순) -> 외곽선."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -3310,7 +3292,7 @@ with st.sidebar.expander("바닥면 채움 옵션 (연속 면 채움)", expanded
         options=_infill_dir_opts,
         index=_infill_dir_opts.index(_cur_dir_lbl),
         disabled=(not enable_solid_infill),
-        help="X/Y 교차 선택 시 1층 X축 왕복, 2층 Y축 왕복으로 외곽선을 따라 자연스럽게 교차 적층합니다.",
+        help="X/Y 교차 선택 시 외곽선 루프 없이 1층 X축 왕복, 2층 Y축 왕복으로 교차 적층합니다.",
         key="ui_solid_infill_dir",
     )
     st.session_state["solid_infill_dir"] = _infill_dir_map[_sel_dir_lbl]
