@@ -973,34 +973,6 @@ def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_dist: float) -> 
 
 
 
-def _trace_boundary_shortest(ring, p_from: np.ndarray, p_to: np.ndarray) -> List[np.ndarray]:
-    """실제 폴리곤 외곽선(ring)을 따라 p_from에서 p_to까지 최단 호/변 경로 점 리스트를 반환."""
-    from shapely.geometry import Point
-    L = float(ring.length)
-    if L <= 1e-6:
-        return [np.asarray(p_from, dtype=float), np.asarray(p_to, dtype=float)]
-    d1 = float(ring.project(Point(float(p_from[0]), float(p_from[1]))))
-    d2 = float(ring.project(Point(float(p_to[0]), float(p_to[1]))))
-    fwd = (d2 - d1) % L
-    bwd = (d1 - d2) % L
-    dist = min(fwd, bwd)
-    if dist <= 1e-3:
-        return []
-    n_steps = max(2, int(np.ceil(dist / 10.0)))
-    pts = []
-    if fwd <= bwd:
-        for k in range(1, n_steps + 1):
-            dk = (d1 + fwd * (k / n_steps)) % L
-            pt = ring.interpolate(dk)
-            pts.append(np.array([pt.x, pt.y], dtype=float))
-    else:
-        for k in range(1, n_steps + 1):
-            dk = (d1 - bwd * (k / n_steps)) % L
-            pt = ring.interpolate(dk)
-            pts.append(np.array([pt.x, pt.y], dtype=float))
-    return pts
-
-
 def _trace_boundary_full_loop(
     ring,
     p_start: np.ndarray,
@@ -1039,8 +1011,8 @@ def _build_alternating_xy_infill_path(
     layer_idx: int = 0,
     line_count: int = 0,
 ) -> np.ndarray:
-    """순수 X/Y 교차 지그재그(외곽선 루프 없음): 짝수층 X축 왕복, 홀수층 Y축 왕복.
-    양 끝단 스캔라인을 0.5*step 안쪽에서 시작해 원형 접선 부근 뾰족한 삼각형 이탈을 방지."""
+    """순수 X/Y 교차 지그재그(동일 층 내 교차선/복귀선 없음):
+    짝수층은 좌하->우상 X축 왕복, 홀수층은 우상->좌하 Y축 왕복으로 모든 인접선 간격을 노즐 직경(step_mm) 이상 유지."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1077,7 +1049,9 @@ def _build_alternating_xy_infill_path(
                 segs.extend(_extract_segs(g))
         return segs
 
-    def _scan_x():
+    zz_pts = []
+    if layer_idx % 2 == 0:
+        # 짝수층: 좌하 -> 우상 X축 왕복 (홀수 줄 수로 우상단 종료)
         y_lo, y_hi = ymin + eps, ymax - eps
         if y_hi <= y_lo:
             ys = [0.5 * (ymin + ymax)]
@@ -1089,7 +1063,6 @@ def _build_alternating_xy_infill_path(
                 if n_lines % 2 == 0:
                     n_lines += 1
             ys = np.linspace(y_lo, y_hi, n_lines)
-        out_pts = []
         for idx, y in enumerate(ys):
             line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
             segs = _extract_segs(poly.intersection(line))
@@ -1100,11 +1073,10 @@ def _build_alternating_xy_infill_path(
             for p0, p1 in segs:
                 if (p0[0] > p1[0]) != reverse:
                     p0, p1 = p1, p0
-                out_pts.append(p0)
-                out_pts.append(p1)
-        return out_pts
-
-    def _scan_y():
+                zz_pts.append(p0)
+                zz_pts.append(p1)
+    else:
+        # 홀수층: 우상 -> 좌하 Y축 왕복 (홀수 줄 수로 좌하단 종료)
         x_lo, x_hi = xmin + eps, xmax - eps
         if x_hi <= x_lo:
             xs = [0.5 * (xmin + xmax)]
@@ -1116,7 +1088,6 @@ def _build_alternating_xy_infill_path(
                 if n_lines % 2 == 0:
                     n_lines += 1
             xs = np.linspace(x_hi, x_lo, n_lines)
-        out_pts = []
         for idx, x in enumerate(xs):
             line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
             segs = _extract_segs(poly.intersection(line))
@@ -1127,25 +1098,11 @@ def _build_alternating_xy_infill_path(
             for p0, p1 in segs:
                 if (p0[1] > p1[1]) != reverse:
                     p0, p1 = p1, p0
-                out_pts.append(p0)
-                out_pts.append(p1)
-        return out_pts
+                zz_pts.append(p0)
+                zz_pts.append(p1)
 
-    x_pts = _scan_x()
-    y_pts = _scan_y()
-    if len(x_pts) < 2 or len(y_pts) < 2:
+    if len(zz_pts) < 2:
         return pts
-
-    if layer_idx % 2 == 0:
-        zz_pts = list(x_pts)
-        next_start = y_pts[0]
-    else:
-        zz_pts = list(y_pts)
-        next_start = x_pts[0]
-
-    arc = _trace_boundary_shortest(poly.exterior, zz_pts[-1], next_start)
-    if arc:
-        zz_pts.extend(arc)
 
     arr_xy = np.asarray(zz_pts, dtype=float)
     return np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
