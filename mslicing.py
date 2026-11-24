@@ -978,7 +978,7 @@ def _build_continuous_infill_path(
     step_mm: float = 30.0,
     direction: str = "X",
 ) -> np.ndarray:
-    """한쪽 변을 직선으로 이동한 뒤 반대쪽부터 지그재그로 채워 시작점(동일 XY)으로 복귀하는 연속 경로 생성."""
+    """한쪽 변을 직선으로 이동한 뒤, 노즐 직경(step_mm)만큼 떨어진 영역부터 지그재그로 채워 시작점 방향으로 복귀."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1016,15 +1016,29 @@ def _build_continuous_infill_path(
 
     zz_pts = []
     if direction == "Y":
+        # 한쪽 변 직선: y = ymin (xmin -> xmax), 지그재그 영역: y >= ymin + step
+        zz_ymin = ymin + step
+        if zz_ymin < ymax - 1e-3:
+            clip_box = Polygon([
+                (xmin - 10.0, zz_ymin),
+                (xmax + 10.0, zz_ymin),
+                (xmax + 10.0, ymax + 10.0),
+                (xmin - 10.0, ymax + 10.0),
+            ])
+            zz_poly = poly.intersection(clip_box)
+        else:
+            zz_poly = poly
+
         span = xmax - xmin
         if span <= step:
             xs = [0.5 * (xmin + xmax)]
         else:
             n_lines = max(2, int(np.floor(span / step)) + 1)
-            xs = np.linspace(xmax - 0.5 * step, xmin + 0.5 * step, n_lines)
+            xs = np.linspace(xmax, xmin, n_lines)
+
         for idx, x in enumerate(xs):
             line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
-            segs = _extract_segs(poly.intersection(line))
+            segs = _extract_segs(zz_poly.intersection(line))
             if not segs:
                 continue
             reverse = (idx % 2 == 1)
@@ -1034,16 +1048,39 @@ def _build_continuous_infill_path(
                     p0, p1 = p1, p0
                 zz_pts.append(p0)
                 zz_pts.append(p1)
+
+        if len(zz_pts) < 2:
+            return pts
+
+        start_pt = np.array([xmin, ymin], dtype=float)
+        spine_end = np.array([xmax, ymin], dtype=float)
+        path_xy = [start_pt, spine_end] + zz_pts
+        if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
+            path_xy.append(start_pt)
     else:
+        # 한쪽 변 직선: x = xmin (ymin -> ymax), 지그재그 영역: x >= xmin + step
+        zz_xmin = xmin + step
+        if zz_xmin < xmax - 1e-3:
+            clip_box = Polygon([
+                (zz_xmin, ymin - 10.0),
+                (xmax + 10.0, ymin - 10.0),
+                (xmax + 10.0, ymax + 10.0),
+                (zz_xmin, ymax + 10.0),
+            ])
+            zz_poly = poly.intersection(clip_box)
+        else:
+            zz_poly = poly
+
         span = ymax - ymin
         if span <= step:
             ys = [0.5 * (ymin + ymax)]
         else:
             n_lines = max(2, int(np.floor(span / step)) + 1)
-            ys = np.linspace(ymax - 0.5 * step, ymin + 0.5 * step, n_lines)
+            ys = np.linspace(ymax, ymin, n_lines)
+
         for idx, y in enumerate(ys):
             line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
-            segs = _extract_segs(poly.intersection(line))
+            segs = _extract_segs(zz_poly.intersection(line))
             if not segs:
                 continue
             reverse = (idx % 2 == 1)
@@ -1054,19 +1091,14 @@ def _build_continuous_infill_path(
                 zz_pts.append(p0)
                 zz_pts.append(p1)
 
-    if len(zz_pts) < 2:
-        return pts
+        if len(zz_pts) < 2:
+            return pts
 
-    first_zz = zz_pts[0]
-    last_zz = zz_pts[-1]
-    if direction == "Y":
-        start_pt = np.array([last_zz[0], first_zz[1]], dtype=float)
-    else:
-        start_pt = np.array([first_zz[0], last_zz[1]], dtype=float)
-
-    path_xy = [start_pt] + zz_pts
-    if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
-        path_xy.append(start_pt)
+        start_pt = np.array([xmin, ymin], dtype=float)
+        spine_end = np.array([xmin, ymax], dtype=float)
+        path_xy = [start_pt, spine_end] + zz_pts
+        if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
+            path_xy.append(start_pt)
 
     arr_xy = np.asarray(path_xy, dtype=float)
     out = np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
@@ -1884,6 +1916,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                                 _infill_step = 30.0
                             _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
                             infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                            infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
                             simplified = simplify_segment(closed_mid, float(min_spacing))
@@ -2213,6 +2246,7 @@ def compute_slice_paths_with_travel(
                                 _infill_step = 30.0
                             _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
                             infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                            infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
                             simplified = simplify_segment(closed_mid, float(min_spacing))
