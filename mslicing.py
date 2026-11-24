@@ -1157,7 +1157,8 @@ def _build_continuous_infill_path(
     line_count: int = 0,
     layer_idx: int = 0,
 ) -> np.ndarray:
-    """실제 도형 외곽선(원형/사각형 모서리 유지)을 한 바퀴 돌되 시작점 전 노즐 직경(step_mm)만큼 트리밍하고, 안쪽 영역을 지그재그로 채움."""
+    """실제 도형 외곽선(원형/사각형 모서리 유지)을 한 바퀴 돌되 시작점 전 노즐 직경(step_mm)만큼 트리밍하고, 안쪽 영역을 지그재그로 채움.
+    짝수/홀수 층마다 시작·종료 끝점을 번갈아 맞춰 층간 이동 시 도형 내부를 가로지르는 선이 생기지 않도록 함."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1250,6 +1251,10 @@ def _build_continuous_infill_path(
 
     if len(zz_pts) < 2:
         return pts
+
+    # 홀수 층은 지그재그 순서를 반전해 직전 층 종료 지점 바로 옆 외곽선에서 시작 (층간 내부 가로지름 제거)
+    if layer_idx % 2 == 1:
+        zz_pts = list(reversed(zz_pts))
 
     from shapely.geometry import Point
     ring = poly.exterior
