@@ -1481,15 +1481,29 @@ def deform_items_by_floor(
     floor_mesh: trimesh.Trimesh,
     z_offset_mm: float = 0.0,
     resample_step_mm: float = 15.0,
-) -> Tuple[List[Tuple[np.ndarray, Optional[np.ndarray], bool]], int, int]:
+    conform_mode: str = "vertical",
+    layer_height_mm: float = 15.0,
+    return_meta: bool = False,
+):
+    meta = {
+        "mode": conform_mode,
+        "z_floor_ref": 0.0,
+        "n_layers": 1,
+        "layer_height_mm": float(layer_height_mm),
+    }
     if not items or floor_mesh is None:
-        return items, 0, 0
-    deformed = []
+        return (items, 0, 0, meta) if return_meta else (items, 0, 0)
+
+    # 사전 패스: 리샘플링 및 바닥면 높이/법선 조회
+    prepared = []
+    print_z_vals = []
+    print_floor_z_vals = []
     total_hits = 0
     total_pts = 0
+
     for poly, evals, is_travel in items:
         if poly is None or len(poly) < 2:
-            deformed.append((poly, evals, is_travel))
+            prepared.append((poly, evals, is_travel, None, None))
             continue
         p = np.asarray(poly, dtype=float).copy()
         if (not is_travel) and resample_step_mm > 0.0:
@@ -1501,13 +1515,61 @@ def deform_items_by_floor(
                     tot += float(np.linalg.norm(b[:2] - a[:2])) * EXTRUSION_K
                     new_e.append(tot)
                 evals = np.array(new_e, dtype=float)
-        z_floor, _, h_cnt = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
+        z_floor, normals, h_cnt = query_floor_surface(floor_mesh, p[:, :2], default_z=0.0)
         if not is_travel:
             z_floor = _despike_z_1d(z_floor, threshold_mm=2.0)
+            print_z_vals.append(p[:, 2])
+            print_floor_z_vals.append(z_floor)
         total_hits += h_cnt
         total_pts += len(p)
-        p[:, 2] = p[:, 2] + z_floor + float(z_offset_mm)
-        deformed.append((p, evals, is_travel))
+        prepared.append((p, evals, is_travel, z_floor, normals))
+
+    z_min_orig = 0.0
+    z_max_orig = 0.0
+    z_span = 0.0
+    z_floor_ref = 0.0
+    n_layers = 1
+    if print_z_vals:
+        all_pz = np.concatenate(print_z_vals)
+        uniq_z = np.unique(np.round(all_pz, 3))
+        n_layers = max(1, int(len(uniq_z)))
+        z_min_orig = float(uniq_z[0])
+        z_max_orig = float(uniq_z[-1])
+        z_span = max(z_max_orig - z_min_orig, 0.0)
+    if print_floor_z_vals:
+        z_floor_ref = float(np.mean(np.concatenate(print_floor_z_vals)))
+
+    h0 = (z_span / float(n_layers - 1)) if (n_layers > 1 and z_span > 1e-6) else float(layer_height_mm)
+    meta = {
+        "mode": conform_mode,
+        "z_floor_ref": z_floor_ref,
+        "n_layers": n_layers,
+        "layer_height_mm": h0,
+    }
+
+    deformed = []
+    for p, evals, is_travel, z_floor, normals in prepared:
+        if p is None or z_floor is None:
+            deformed.append((p, evals, is_travel))
+            continue
+        p_out = p.copy()
+        if conform_mode == "normal_fan":
+            h_vals = p_out[:, 2] + float(z_offset_mm)
+            p_out[:, 0] = p_out[:, 0] + h_vals * normals[:, 0]
+            p_out[:, 1] = p_out[:, 1] + h_vals * normals[:, 1]
+            p_out[:, 2] = z_floor + h_vals * normals[:, 2]
+        elif conform_mode == "top_flatten":
+            if z_span > 1e-6:
+                t = np.clip((p_out[:, 2] - z_min_orig) / z_span, 0.0, 1.0)
+            else:
+                t = np.zeros(len(p_out), dtype=float)
+            p_out[:, 2] = p_out[:, 2] + (1.0 - t) * z_floor + t * z_floor_ref + float(z_offset_mm)
+        else:
+            p_out[:, 2] = p_out[:, 2] + z_floor + float(z_offset_mm)
+        deformed.append((p_out, evals, is_travel))
+
+    if return_meta:
+        return deformed, total_hits, total_pts, meta
     return deformed, total_hits, total_pts
 
 
@@ -3116,6 +3178,30 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
         disabled=(st.session_state.get("floor_mesh_raw") is None),
         key="ui_enable_floor_conform",
     )
+    _floor_mode_options = [
+        "수직 추종 (기존)",
+        "법선 방향 부채꼴 (기울기 추종)",
+        "상단 평탄화 + 가변 속도",
+    ]
+    _floor_mode_to_key = {
+        "수직 추종 (기존)": "vertical",
+        "법선 방향 부채꼴 (기울기 추종)": "normal_fan",
+        "상단 평탄화 + 가변 속도": "top_flatten",
+    }
+    _key_to_floor_mode = {v: k for k, v in _floor_mode_to_key.items()}
+    _cur_mode_label = _key_to_floor_mode.get(
+        st.session_state.get("floor_conform_mode", "vertical"),
+        "수직 추종 (기존)",
+    )
+    _sel_mode_label = st.selectbox(
+        "바닥면 추종 모드",
+        options=_floor_mode_options,
+        index=_floor_mode_options.index(_cur_mode_label),
+        disabled=(st.session_state.get("floor_mesh_raw") is None or not bool(st.session_state.get("enable_floor_conform", True))),
+        help="수직 추종: 기존 Z축 이동 / 법선 방향 부채꼴: 바닥 기울기(법선) 방향 적층 / 상단 평탄화 + 가변 속도: 상단 수평 보정 및 RAPID 속도 비례 조절",
+        key="ui_floor_conform_mode",
+    )
+    st.session_state.floor_conform_mode = _floor_mode_to_key[_sel_mode_label]
     st.session_state.floor_auto_center_xy = st.checkbox(
         "바닥면 XY 중심을 모델에 자동 정렬",
         value=bool(st.session_state.get("floor_auto_center_xy", True)),
@@ -3154,16 +3240,21 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
             if bool(st.session_state.get("floor_auto_center_xy", True)):
                 fm_use = align_floor_mesh_xy_to_items(fm_use, raw_items)
             st.session_state.floor_mesh = fm_use
-            deformed_items, hit_cnt, tot_cnt = deform_items_by_floor(
+            _fmode = str(st.session_state.get("floor_conform_mode", "vertical"))
+            deformed_items, hit_cnt, tot_cnt, f_meta = deform_items_by_floor(
                 raw_items,
                 fm_use,
                 z_offset_mm=float(st.session_state.get("floor_z_offset_mm", 0.0)),
                 resample_step_mm=float(st.session_state.get("floor_resample_mm", 15.0)),
+                conform_mode=_fmode,
+                layer_height_mm=float(z_int),
+                return_meta=True,
             )
             st.session_state.paths_items = deformed_items
             st.session_state.floor_applied_flag = True
+            st.session_state.floor_flatten_meta = f_meta
             hit_pct = (100.0 * hit_cnt / tot_cnt) if tot_cnt > 0 else 0.0
-            st.session_state.ui_banner = f"바닥면 전체 추종 적용 완료 (투영 적중: {hit_cnt:,}/{tot_cnt:,}점, {hit_pct:.1f}%)"
+            st.session_state.ui_banner = f"바닥면 추종 적용 완료 [{_sel_mode_label}] (투영 적중: {hit_cnt:,}/{tot_cnt:,}점, {hit_pct:.1f}%)"
         else:
             st.session_state.paths_items = raw_items
             st.session_state.floor_applied_flag = False
@@ -3391,6 +3482,10 @@ def convert_gcode_to_rapid(
     floor_invert_rx: bool = False,
     floor_invert_ry: bool = False,
     floor_smooth_window: int = 3,
+    floor_conform_mode: str = "vertical",
+    flatten_z_floor_ref: float = 0.0,
+    flatten_layer_count: int = 1,
+    flatten_layer_height_mm: float = 15.0,
 ) -> str:
     slice_max_lines = (MAX_LINES - 2) if use_custom_endpoints else MAX_LINES
     key = "0" if abs(rz - 0.0) < 1e-6 else ("90" if abs(rz - 90.0) < 1e-6 else ("-90" if abs(rz + 90.0) < 1e-6 else None))
@@ -3568,6 +3663,17 @@ def convert_gcode_to_rapid(
         rx_arr = None
         ry_arr = None
 
+    if floor_conform_mode == "top_flatten" and floor_mesh is not None and len(nodes) > 0:
+        xy_nodes_spd = np.array([[nd["raw_x"], nd["raw_y"]] for nd in nodes], dtype=float)
+        z_floor_nodes, _, _ = query_floor_surface(floor_mesh, xy_nodes_spd, default_z=float(flatten_z_floor_ref))
+        denom_layers = max(int(flatten_layer_count) - 1, 1)
+        h0 = max(float(flatten_layer_height_mm), 1e-3)
+        h_local = h0 - (z_floor_nodes - float(flatten_z_floor_ref)) / float(denom_layers)
+        h_local_safe = np.maximum(h_local, 1e-3)
+        speed_arr = float(speed_mm_s) * (h0 / h_local_safe)
+    else:
+        speed_arr = None
+
     max_body_lines = (MAX_LINES - 1) if use_custom_endpoints else MAX_LINES
     for idx_nd, nd in enumerate(nodes):
         if len(lines_out) >= max_body_lines: break
@@ -3575,7 +3681,11 @@ def convert_gcode_to_rapid(
         a3_v, a4_v = (nd["a4"], nd["a3"]) if swap_a3_a4 else (nd["a3"], nd["a4"])
         a1s, a2s, a3s, a4s = _fmt_ext(nd["a1"], 4), _fmt_ext(nd["a2"], 3), _fmt_ext(a3_v, 3), _fmt_ext(a4_v, 4)
         mat_val = "001" if nd["extr"] else "000"
-        spd_val = f"{int(speed_mm_s):03d}"
+        if speed_arr is not None:
+            spd_int = max(1, int(round(float(speed_arr[idx_nd]))))
+            spd_val = f"{spd_int:03d}"
+        else:
+            spd_val = f"{int(speed_mm_s):03d}"
         if rx_arr is not None:
             nd_frx, nd_fry = _fmt_ang(float(rx_arr[idx_nd])), _fmt_ang(float(ry_arr[idx_nd]))
         else:
@@ -3845,6 +3955,14 @@ if KEY_OK and st.session_state.show_rapid_panel:
                     floor_invert_rx=bool(st.session_state.get("rapid_floor_inv_rx", False)),
                     floor_invert_ry=bool(st.session_state.get("rapid_floor_inv_ry", False)),
                     floor_smooth_window=int(st.session_state.get("rapid_floor_smooth", 3)),
+                    floor_conform_mode=(
+                        str(st.session_state.get("floor_conform_mode", "vertical"))
+                        if (bool(st.session_state.get("enable_floor_conform", False)) and bool(st.session_state.get("floor_applied_flag", False)))
+                        else "vertical"
+                    ),
+                    flatten_z_floor_ref=float((st.session_state.get("floor_flatten_meta") or {}).get("z_floor_ref", 0.0)),
+                    flatten_layer_count=int((st.session_state.get("floor_flatten_meta") or {}).get("n_layers", 1)),
+                    flatten_layer_height_mm=float((st.session_state.get("floor_flatten_meta") or {}).get("layer_height_mm", z_int)),
                 )
                 st.sidebar.success(f"Rapid(*.MODX) 변환 완료 (Rz={st.session_state.rapid_rz:.2f}°)")
             except ValueError as e:
