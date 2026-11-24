@@ -1494,7 +1494,6 @@ def deform_items_by_floor(
     if not items or floor_mesh is None:
         return (items, 0, 0, meta) if return_meta else (items, 0, 0)
 
-    # 사전 패스: 리샘플링 및 바닥면 높이/법선 조회
     prepared = []
     print_z_vals = []
     print_floor_z_vals = []
@@ -2421,6 +2420,12 @@ def make_base_fig(height=820) -> go.Figure:
     fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                line=dict(width=6, dash="solid", color=CAP_COLOR),
                                name="Caps Emphasis", showlegend=False))
+    fig.add_trace(go.Mesh3d(
+        x=[], y=[], z=[], i=[], j=[], k=[],
+        color="#B89F7D", opacity=0.45, flatshading=True,
+        lighting=dict(ambient=0.6, diffuse=0.85, roughness=0.9, specular=0.1),
+        name="Floor STL", showlegend=False, hoverinfo="skip",
+    ))
     fig.update_layout(
         scene=dict(aspectmode="data", camera=dict(projection=dict(type="orthographic"))),
         height=height, margin=dict(l=0, r=0, t=10, b=0),
@@ -2428,7 +2433,7 @@ def make_base_fig(height=820) -> go.Figure:
     )
     return fig
 
-def ensure_traces(fig: go.Figure, want=5):
+def ensure_traces(fig: go.Figure, want=6):
     def add_solid():
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=4, dash="solid", color=PATH_COLOR_DEFAULT),
@@ -2445,12 +2450,20 @@ def ensure_traces(fig: go.Figure, want=5):
         fig.add_trace(go.Scatter3d(x=[], y=[], z=[], mode="lines",
                                    line=dict(width=6, dash="solid", color=CAP_COLOR),
                                    showlegend=False))
+    def add_floor():
+        fig.add_trace(go.Mesh3d(
+            x=[], y=[], z=[], i=[], j=[], k=[],
+            color="#B89F7D", opacity=0.45, flatshading=True,
+            lighting=dict(ambient=0.6, diffuse=0.85, roughness=0.9, specular=0.1),
+            name="Floor STL", showlegend=False, hoverinfo="skip",
+        ))
     while len(fig.data) < want:
         n = len(fig.data)
         if n == 0: add_solid()
         elif n == 1: add_dot()
         elif n in (2, 3): add_off()
-        else: add_caps()
+        elif n == 4: add_caps()
+        else: add_floor()
 
 def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool, segments_for_hover=None):
     ensure_traces(fig, want=5)
@@ -2504,6 +2517,16 @@ def update_fig_with_buffers(fig: go.Figure, show_offsets: bool, show_caps: bool,
         fig.data[4].x = buf["caps"]["x"]; fig.data[4].y = buf["caps"]["y"]; fig.data[4].z = buf["caps"]["z"]
     else:
         fig.data[4].x = []; fig.data[4].y = []; fig.data[4].z = []
+    ensure_traces(fig, want=6)
+    fm_vis = st.session_state.get("floor_mesh")
+    if fm_vis is not None and bool(st.session_state.get("floor_show_in_3d", True)) and len(fm_vis.faces) > 0:
+        fv = fm_vis.vertices
+        ff = fm_vis.faces
+        fig.data[5].x = fv[:, 0]; fig.data[5].y = fv[:, 1]; fig.data[5].z = fv[:, 2]
+        fig.data[5].i = ff[:, 0]; fig.data[5].j = ff[:, 1]; fig.data[5].k = ff[:, 2]
+    else:
+        fig.data[5].x = []; fig.data[5].y = []; fig.data[5].z = []
+        fig.data[5].i = []; fig.data[5].j = []; fig.data[5].k = []
 
 # ======= 치수 계산 유틸 =======
 def _bbox_from_buffer(buf_dict):
@@ -3177,6 +3200,12 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
         value=bool(st.session_state.get("enable_floor_conform", True)),
         disabled=(st.session_state.get("floor_mesh_raw") is None),
         key="ui_enable_floor_conform",
+    )
+    st.session_state.floor_show_in_3d = st.checkbox(
+        "3D 경로에 바닥면 STL 함께 표시",
+        value=bool(st.session_state.get("floor_show_in_3d", True)),
+        disabled=(st.session_state.get("floor_mesh_raw") is None),
+        key="ui_floor_show_in_3d",
     )
     _floor_mode_options = [
         "수직 추종 (기존)",
