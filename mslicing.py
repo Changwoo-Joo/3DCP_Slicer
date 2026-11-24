@@ -1007,8 +1007,9 @@ def _trace_boundary_full_loop(
     step_mm: float = 10.0,
     trim_end_mm: float = 0.0,
 ) -> List[np.ndarray]:
-    """실제 폴리곤 외곽선(ring)을 p_start부터 한 바퀴 돌되, 시작점과 겹치지 않도록 trim_end_mm(노즐 직경)만큼 덜 돌고 멈춘 점 리스트 반환."""
+    """원본 꼭짓점(사각형 90도 모서리 등)을 100% 유지하면서 외곽선을 한 바퀴 돌고, 시작점 전 trim_end_mm만큼 덜 돌고 멈춤."""
     from shapely.geometry import Point
+    from shapely.ops import substring
     L = float(ring.length)
     if L <= 1e-6:
         return [np.asarray(p_start, dtype=float)]
@@ -1016,13 +1017,20 @@ def _trace_boundary_full_loop(
     loop_len = max(L - max(float(trim_end_mm), 0.0), 0.0)
     if loop_len <= 1e-3:
         return [np.asarray(p_start, dtype=float)]
-    n_steps = max(16, int(np.ceil(loop_len / max(min(step_mm, 15.0), 5.0))))
-    pts = []
-    for k in range(n_steps + 1):
-        dk = (d0 + loop_len * (k / n_steps)) % L
-        pt = ring.interpolate(dk)
-        pts.append(np.array([pt.x, pt.y], dtype=float))
-    return pts
+
+    d_end = d0 + loop_len
+    coords = []
+    if d_end <= L:
+        seg = substring(ring, d0, d_end)
+        coords.extend(list(seg.coords))
+    else:
+        seg1 = substring(ring, d0, L)
+        seg2 = substring(ring, 0.0, d_end - L)
+        coords.extend(list(seg1.coords))
+        c2 = list(seg2.coords)
+        if c2:
+            coords.extend(c2[1:] if len(coords) > 0 and np.linalg.norm(np.asarray(coords[-1][:2]) - np.asarray(c2[0][:2])) < 1e-6 else c2)
+    return [np.array([float(c[0]), float(c[1])], dtype=float) for c in coords]
 
 
 def _build_alternating_xy_infill_path(
@@ -1149,7 +1157,7 @@ def _build_continuous_infill_path(
     line_count: int = 0,
     layer_idx: int = 0,
 ) -> np.ndarray:
-    """실제 도형 외곽선을 한 바퀴 돌되 시작점 전 노즐 직경(step_mm)만큼 트리밍하고, 안쪽 영역을 지그재그로 채움."""
+    """실제 도형 외곽선(원형/사각형 모서리 유지)을 한 바퀴 돌되 시작점 전 노즐 직경(step_mm)만큼 트리밍하고, 안쪽 영역을 지그재그로 채움."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1187,7 +1195,7 @@ def _build_continuous_infill_path(
         return segs
 
     try:
-        zz_poly = poly.buffer(-step)
+        zz_poly = poly.buffer(-step, join_style=2)
         if zz_poly.is_empty or zz_poly.area <= 1e-6:
             zz_poly = poly
     except Exception:
@@ -1243,15 +1251,11 @@ def _build_continuous_infill_path(
     if len(zz_pts) < 2:
         return pts
 
-    if layer_idx % 2 == 1:
-        zz_pts = list(reversed(zz_pts))
-
     from shapely.geometry import Point
     ring = poly.exterior
     p_entry_ext = ring.interpolate(ring.project(Point(float(zz_pts[0][0]), float(zz_pts[0][1]))))
     entry_pt = np.array([p_entry_ext.x, p_entry_ext.y], dtype=float)
 
-    # 외곽선을 한 바퀴 돌되 시작점과 겹치지 않도록 노즐 직경(step)만큼 덜 돌고 안쪽 지그재그로 진입
     outer_loop = _trace_boundary_full_loop(ring, entry_pt, step_mm=step, trim_end_mm=step)
     path_xy = outer_loop + zz_pts
 
