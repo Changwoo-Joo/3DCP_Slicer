@@ -999,6 +999,7 @@ def _build_continuous_infill_path(
 
     step = max(float(step_mm), 1.0)
     xmin, ymin, xmax, ymax = poly.bounds
+    eps = min(0.5, step * 0.05)
 
     def _extract_segs(geom):
         segs = []
@@ -1016,7 +1017,6 @@ def _build_continuous_infill_path(
 
     zz_pts = []
     if direction == "Y":
-        # 한쪽 변 직선: y = ymin (xmin -> xmax), 지그재그 영역: y >= ymin + step
         zz_ymin = ymin + step
         if zz_ymin < ymax - 1e-3:
             clip_box = Polygon([
@@ -1029,12 +1029,16 @@ def _build_continuous_infill_path(
         else:
             zz_poly = poly
 
-        span = xmax - xmin
-        if span <= step:
+        x_lo = xmin + eps
+        x_hi = xmax - eps
+        if x_hi <= x_lo:
             xs = [0.5 * (xmin + xmax)]
         else:
-            n_lines = max(2, int(np.floor(span / step)) + 1)
-            xs = np.linspace(xmax, xmin, n_lines)
+            span = x_hi - x_lo
+            n_lines = max(2, int(round(span / step)) + 1)
+            if n_lines % 2 == 1:
+                n_lines += 1
+            xs = np.linspace(x_hi, x_lo, n_lines)
 
         for idx, x in enumerate(xs):
             line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
@@ -1058,7 +1062,6 @@ def _build_continuous_infill_path(
         if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
             path_xy.append(start_pt)
     else:
-        # 한쪽 변 직선: x = xmin (ymin -> ymax), 지그재그 영역: x >= xmin + step
         zz_xmin = xmin + step
         if zz_xmin < xmax - 1e-3:
             clip_box = Polygon([
@@ -1071,12 +1074,16 @@ def _build_continuous_infill_path(
         else:
             zz_poly = poly
 
-        span = ymax - ymin
-        if span <= step:
+        y_lo = ymin + eps
+        y_hi = ymax - eps
+        if y_hi <= y_lo:
             ys = [0.5 * (ymin + ymax)]
         else:
-            n_lines = max(2, int(np.floor(span / step)) + 1)
-            ys = np.linspace(ymax, ymin, n_lines)
+            span = y_hi - y_lo
+            n_lines = max(2, int(round(span / step)) + 1)
+            if n_lines % 2 == 1:
+                n_lines += 1
+            ys = np.linspace(y_hi, y_lo, n_lines)
 
         for idx, y in enumerate(ys):
             line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
@@ -1913,8 +1920,12 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                         if 'st' in globals() and bool(st.session_state.get('enable_solid_infill', False)):
                             _infill_step = float(st.session_state.get('nozzle_diameter_mm', 0.0))
                             if _infill_step <= 0.0:
-                                _infill_step = 30.0
-                            _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
+                                _infill_step = float(trim_dist) if float(trim_dist) > 0.0 else 30.0
+                            _infill_dir_cfg = str(st.session_state.get('solid_infill_dir', 'X'))
+                            if _infill_dir_cfg == 'XY':
+                                _infill_dir = 'X' if (zidx % 2 == 0) else 'Y'
+                            else:
+                                _infill_dir = _infill_dir_cfg
                             infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
@@ -2185,7 +2196,7 @@ def compute_slice_paths_with_travel(
     for sub_idx, sub_mesh in enumerate(sub_meshes):
         z_values = make_slice_z_values(sub_mesh, z_int)
 
-        for z in z_values:
+        for z_idx, z in enumerate(z_values):
             display_z = z + 0.5 * float(z_int)
             sec = sub_mesh.section(plane_origin=[0, 0, z], plane_normal=[0, 0, 1])
             if sec is None:
@@ -2243,8 +2254,12 @@ def compute_slice_paths_with_travel(
                         if 'st' in globals() and bool(st.session_state.get('enable_solid_infill', False)):
                             _infill_step = float(st.session_state.get('nozzle_diameter_mm', 0.0))
                             if _infill_step <= 0.0:
-                                _infill_step = 30.0
-                            _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
+                                _infill_step = float(trim_dist) if float(trim_dist) > 0.0 else 30.0
+                            _infill_dir_cfg = str(st.session_state.get('solid_infill_dir', 'X'))
+                            if _infill_dir_cfg == 'XY':
+                                _infill_dir = 'X' if (z_idx % 2 == 0) else 'Y'
+                            else:
+                                _infill_dir = _infill_dir_cfg
                             infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
@@ -3107,18 +3122,20 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     enable_solid_infill = st.checkbox(
         "연속 면 채움 (직선+지그재그)",
         value=bool(st.session_state.get("enable_solid_infill", False)),
-        help="한쪽 변을 직선으로 이동한 뒤 노즐 직경 간격으로 지그재그 채움을 수행해 동일 XY 위치에서 다음 레이어로 올라갑니다.",
+        help="한쪽 변을 직선으로 이동한 뒤 노즐 직경(미입력 시 트림 거리) 간격으로 지그재그 채움을 수행해 동일 XY 위치에서 다음 레이어로 올라갑니다.",
         key="ui_enable_solid_infill",
     )
     st.session_state["enable_solid_infill"] = bool(enable_solid_infill)
-    _infill_dir_opts = ["X축 왕복", "Y축 왕복"]
-    _infill_dir_map = {"X축 왕복": "X", "Y축 왕복": "Y"}
-    _cur_dir_lbl = "Y축 왕복" if st.session_state.get("solid_infill_dir", "X") == "Y" else "X축 왕복"
+    _infill_dir_opts = ["X축 왕복", "Y축 왕복", "X/Y 교차 (지그재그)"]
+    _infill_dir_map = {"X축 왕복": "X", "Y축 왕복": "Y", "X/Y 교차 (지그재그)": "XY"}
+    _infill_rev_map = {v: k for k, v in _infill_dir_map.items()}
+    _cur_dir_lbl = _infill_rev_map.get(st.session_state.get("solid_infill_dir", "X"), "X축 왕복")
     _sel_dir_lbl = st.selectbox(
         "지그재그 채움 방향",
         options=_infill_dir_opts,
         index=_infill_dir_opts.index(_cur_dir_lbl),
         disabled=(not enable_solid_infill),
+        help="X/Y 교차 선택 시 1층 X축 왕복, 2층 Y축 왕복으로 레이어마다 교차 채움합니다.",
         key="ui_solid_infill_dir",
     )
     st.session_state["solid_infill_dir"] = _infill_dir_map[_sel_dir_lbl]
