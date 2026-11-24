@@ -1039,7 +1039,7 @@ def _build_alternating_xy_infill_path(
     layer_idx: int = 0,
     line_count: int = 0,
 ) -> np.ndarray:
-    """X/Y 교차 지그재그: 짝수층 X축 왕복, 홀수층 Y축 왕복. 원형 등 비사각형 단면에서도 다음 층 시작점까지 외곽선을 따라 자연스럽게 연결."""
+    """X/Y 교차 지그재그: 짝수층 X축 왕복, 홀수층 Y축 왕복. 다음 층 시작점까지 외곽선을 따라 정확히 연결해 제자리 수직 상승."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -2082,7 +2082,6 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                             _infill_lines = int(st.session_state.get('solid_infill_line_count', 0))
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=zidx, line_count=_infill_lines)
-                                infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             else:
                                 infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=zidx)
                             simplified = simplify_segment(infill_path, float(min_spacing))
@@ -2416,7 +2415,6 @@ def compute_slice_paths_with_travel(
                             _infill_lines = int(st.session_state.get('solid_infill_line_count', 0))
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=z_idx, line_count=_infill_lines)
-                                infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             else:
                                 infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=z_idx)
                             simplified = simplify_segment(infill_path, float(min_spacing))
