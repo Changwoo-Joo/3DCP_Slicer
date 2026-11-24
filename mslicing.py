@@ -1001,17 +1001,25 @@ def _trace_boundary_shortest(ring, p_from: np.ndarray, p_to: np.ndarray) -> List
     return pts
 
 
-def _trace_boundary_full_loop(ring, p_start: np.ndarray, step_mm: float = 10.0) -> List[np.ndarray]:
-    """실제 폴리곤 외곽선(ring)을 p_start부터 한 바퀴(360도) 완전히 돌아 복귀하는 점 리스트 반환."""
+def _trace_boundary_full_loop(
+    ring,
+    p_start: np.ndarray,
+    step_mm: float = 10.0,
+    trim_end_mm: float = 0.0,
+) -> List[np.ndarray]:
+    """실제 폴리곤 외곽선(ring)을 p_start부터 한 바퀴 돌되, 시작점과 겹치지 않도록 trim_end_mm(노즐 직경)만큼 덜 돌고 멈춘 점 리스트 반환."""
     from shapely.geometry import Point
     L = float(ring.length)
     if L <= 1e-6:
         return [np.asarray(p_start, dtype=float)]
     d0 = float(ring.project(Point(float(p_start[0]), float(p_start[1]))))
-    n_steps = max(16, int(np.ceil(L / max(min(step_mm, 15.0), 5.0))))
+    loop_len = max(L - max(float(trim_end_mm), 0.0), 0.0)
+    if loop_len <= 1e-3:
+        return [np.asarray(p_start, dtype=float)]
+    n_steps = max(16, int(np.ceil(loop_len / max(min(step_mm, 15.0), 5.0))))
     pts = []
     for k in range(n_steps + 1):
-        dk = (d0 + L * (k / n_steps)) % L
+        dk = (d0 + loop_len * (k / n_steps)) % L
         pt = ring.interpolate(dk)
         pts.append(np.array([pt.x, pt.y], dtype=float))
     return pts
@@ -1141,7 +1149,7 @@ def _build_continuous_infill_path(
     line_count: int = 0,
     layer_idx: int = 0,
 ) -> np.ndarray:
-    """실제 도형 외곽선(원형/사각형 등)을 360도 완전히 둘러싼 뒤, 노즐 직경(step_mm)만큼 안쪽 영역을 지그재그로 채움."""
+    """실제 도형 외곽선을 한 바퀴 돌되 시작점 전 노즐 직경(step_mm)만큼 트리밍하고, 안쪽 영역을 지그재그로 채움."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1243,7 +1251,8 @@ def _build_continuous_infill_path(
     p_entry_ext = ring.interpolate(ring.project(Point(float(zz_pts[0][0]), float(zz_pts[0][1]))))
     entry_pt = np.array([p_entry_ext.x, p_entry_ext.y], dtype=float)
 
-    outer_loop = _trace_boundary_full_loop(ring, entry_pt, step_mm=step)
+    # 외곽선을 한 바퀴 돌되 시작점과 겹치지 않도록 노즐 직경(step)만큼 덜 돌고 안쪽 지그재그로 진입
+    outer_loop = _trace_boundary_full_loop(ring, entry_pt, step_mm=step, trim_end_mm=step)
     path_xy = outer_loop + zz_pts
 
     arr_xy = np.asarray(path_xy, dtype=float)
