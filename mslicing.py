@@ -2867,7 +2867,7 @@ if uploaded is not None:
             st.session_state["selected_mesh_idx"] = selected_idx
             st.session_state["stl_cur_dim_x"] = 0.0  # 객체 변경 시 치수 재계산 유도
             st.rerun()
-with st.sidebar.expander("STL 치수(X, Y, Z 크기) 수정", expanded=True):
+with st.sidebar.expander("STL 치수(X, Y, Z 크기) 수정", expanded=False):
     cur_dx = float(st.session_state.get("stl_cur_dim_x", 0.0))
     cur_dy = float(st.session_state.get("stl_cur_dim_y", 0.0))
     cur_dz = float(st.session_state.get("stl_cur_dim_z", 0.0))
@@ -3004,9 +3004,7 @@ with st.sidebar.expander("G-code 포인트(좌표) 범위 지정", expanded=Fals
     default_end_val = 63998 if st.session_state.get("rapid_use_custom_endpoints", False) else 64000
     pt_end_num = col_pt2.number_input("끝 번호", min_value=1, max_value=100000, value=int(st.session_state.get("custom_pt_end", default_end_val)), step=1, disabled=not use_point_range, key="custom_pt_end")
 
-gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
-if gen_clicked and not KEY_OK:
-    st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
+
 
 if uploaded is not None:
     is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
@@ -3299,7 +3297,9 @@ with st.sidebar.expander("바닥면 STL 추종 (전체 추종)", expanded=False)
         st.session_state.main_view = "슬라이싱 경로 (3D)"
         st.rerun()
 
-if KEY_OK and gen_clicked and st.session_state.mesh is not None:
+def _run_gcode_generation():
+    if st.session_state.mesh is None:
+        return None
     if (
         bool(st.session_state.get("enable_floor_conform", False))
         and bool(st.session_state.get("floor_applied_flag", False))
@@ -3334,6 +3334,14 @@ if KEY_OK and gen_clicked and st.session_state.mesh is not None:
         )
         st.session_state.gcode_text = gcode_text
         st.session_state.ui_banner = "G-code ready"
+    return gcode_text
+
+gen_clicked = st.sidebar.button("G-code 생성", use_container_width=True, disabled=not KEY_OK)
+if gen_clicked and not KEY_OK:
+    st.sidebar.warning("라이선스키를 입력해야 코드생성 및 부가기능을 사용할 수 있습니다.")
+
+if KEY_OK and gen_clicked and st.session_state.mesh is not None:
+    _run_gcode_generation()
 
 if st.session_state.get("gcode_text"):
     base = st.session_state.get("base_name", "output")
@@ -3934,12 +3942,16 @@ if KEY_OK and st.session_state.show_rapid_panel:
             xyz_count = _extract_xyz_lines_count(gtxt)
             over = (xyz_count > max_slice_limit)
 
-        save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(gtxt is None))
-        if gtxt is None:
-            st.sidebar.info("먼저 G-code 생성 버튼으로 G-code를 생성하세요.")
-        elif over:
+        save_rapid_clicked = st.sidebar.button("Rapid 변환", use_container_width=True, disabled=(st.session_state.mesh is None))
+        if save_rapid_clicked:
+            if gtxt is None:
+                gtxt = _run_gcode_generation()
+            if gtxt is not None:
+                xyz_count = _extract_xyz_lines_count(gtxt)
+                over = (xyz_count > max_slice_limit)
+        if gtxt is not None and over:
             st.sidebar.error(f"G-code가 {max_slice_limit:,}줄을 초과하여 Rapid 파일 변환할 수 없습니다.")
-        elif save_rapid_clicked:
+        elif save_rapid_clicked and gtxt is not None:
             try:
                 st_pt_dict = {
                     "x": float(st.session_state.get("rapid_start_x", 0.0)),
