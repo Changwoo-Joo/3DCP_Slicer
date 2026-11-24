@@ -971,6 +971,107 @@ def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_dist: float) -> 
     return out, False
 
 
+
+
+def _build_continuous_infill_path(
+    seg3d_closed: np.ndarray,
+    step_mm: float = 30.0,
+    direction: str = "X",
+) -> np.ndarray:
+    """한쪽 변을 직선으로 이동한 뒤 반대쪽부터 지그재그로 채워 시작점(동일 XY)으로 복귀하는 연속 경로 생성."""
+    pts = np.asarray(seg3d_closed, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 3:
+        return pts
+    z_val = float(pts[0, 2]) if pts.shape[1] >= 3 else 0.0
+    xy = pts[:, :2]
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    try:
+        poly = Polygon(xy)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+    except Exception:
+        return pts
+    if poly.is_empty or poly.area <= 1e-6:
+        return pts
+    if isinstance(poly, MultiPolygon):
+        poly = max(poly.geoms, key=lambda g: g.area)
+
+    step = max(float(step_mm), 1.0)
+    xmin, ymin, xmax, ymax = poly.bounds
+
+    def _extract_segs(geom):
+        segs = []
+        if geom.is_empty:
+            return segs
+        gtype = geom.geom_type
+        if gtype == "LineString":
+            c = np.asarray(geom.coords, dtype=float)
+            if len(c) >= 2:
+                segs.append((c[0], c[-1]))
+        elif gtype in ("MultiLineString", "GeometryCollection"):
+            for g in geom.geoms:
+                segs.extend(_extract_segs(g))
+        return segs
+
+    zz_pts = []
+    if direction == "Y":
+        span = xmax - xmin
+        if span <= step:
+            xs = [0.5 * (xmin + xmax)]
+        else:
+            n_lines = max(2, int(np.floor(span / step)) + 1)
+            xs = np.linspace(xmax - 0.5 * step, xmin + 0.5 * step, n_lines)
+        for idx, x in enumerate(xs):
+            line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
+            segs = _extract_segs(poly.intersection(line))
+            if not segs:
+                continue
+            reverse = (idx % 2 == 1)
+            segs.sort(key=lambda s: min(s[0][1], s[1][1]), reverse=reverse)
+            for p0, p1 in segs:
+                if (p0[1] > p1[1]) != reverse:
+                    p0, p1 = p1, p0
+                zz_pts.append(p0)
+                zz_pts.append(p1)
+    else:
+        span = ymax - ymin
+        if span <= step:
+            ys = [0.5 * (ymin + ymax)]
+        else:
+            n_lines = max(2, int(np.floor(span / step)) + 1)
+            ys = np.linspace(ymax - 0.5 * step, ymin + 0.5 * step, n_lines)
+        for idx, y in enumerate(ys):
+            line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
+            segs = _extract_segs(poly.intersection(line))
+            if not segs:
+                continue
+            reverse = (idx % 2 == 1)
+            segs.sort(key=lambda s: min(s[0][0], s[1][0]), reverse=reverse)
+            for p0, p1 in segs:
+                if (p0[0] > p1[0]) != reverse:
+                    p0, p1 = p1, p0
+                zz_pts.append(p0)
+                zz_pts.append(p1)
+
+    if len(zz_pts) < 2:
+        return pts
+
+    first_zz = zz_pts[0]
+    last_zz = zz_pts[-1]
+    if direction == "Y":
+        start_pt = np.array([last_zz[0], first_zz[1]], dtype=float)
+    else:
+        start_pt = np.array([first_zz[0], last_zz[1]], dtype=float)
+
+    path_xy = [start_pt] + zz_pts
+    if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
+        path_xy.append(start_pt)
+
+    arr_xy = np.asarray(path_xy, dtype=float)
+    out = np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
+    return out
+
 def trim_open_line_tail(segment: np.ndarray, trim_distance: float) -> np.ndarray:
     pts = np.asarray(segment, dtype=float)
     if len(pts) < 2 or trim_distance <= 0:
@@ -1777,15 +1878,23 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                             closed_mid, offset_inverted = _offset_inward_closed_path(closed_mid, float(nozzle_width))
                             if offset_inverted and skip_invalid_offset:
                                 continue
-                        simplified = simplify_segment(closed_mid, float(min_spacing))
-                        shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                        if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-                            r_val = float(st.session_state.get('fillet_r', 20.0))
-                            shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                            rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                            shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
-                        simplified = trim_closed_ring_tail(shifted, trim_dist)
-                        simplified = simplify_segment(simplified, float(min_spacing))
+                        if 'st' in globals() and bool(st.session_state.get('enable_solid_infill', False)):
+                            _infill_step = float(st.session_state.get('nozzle_diameter_mm', 0.0))
+                            if _infill_step <= 0.0:
+                                _infill_step = 30.0
+                            _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
+                            infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                            simplified = simplify_segment(infill_path, float(min_spacing))
+                        else:
+                            simplified = simplify_segment(closed_mid, float(min_spacing))
+                            shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                            if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                                r_val = float(st.session_state.get('fillet_r', 20.0))
+                                shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                                rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                                shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                            simplified = trim_closed_ring_tail(shifted, trim_dist)
+                            simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -2098,15 +2207,23 @@ def compute_slice_paths_with_travel(
                             if offset_inverted and skip_invalid_offset:
                                 start_pt = closed_mid[0]
                                 continue
-                        simplified = simplify_segment(closed_mid, float(min_spacing))
-                        shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
-                        if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
-                            r_val = float(st.session_state.get('fillet_r', 20.0))
-                            shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
-                            rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
-                            shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
-                        simplified = trim_closed_ring_tail(shifted, trim_dist)
-                        simplified = simplify_segment(simplified, float(min_spacing))
+                        if 'st' in globals() and bool(st.session_state.get('enable_solid_infill', False)):
+                            _infill_step = float(st.session_state.get('nozzle_diameter_mm', 0.0))
+                            if _infill_step <= 0.0:
+                                _infill_step = 30.0
+                            _infill_dir = str(st.session_state.get('solid_infill_dir', 'X'))
+                            infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                            simplified = simplify_segment(infill_path, float(min_spacing))
+                        else:
+                            simplified = simplify_segment(closed_mid, float(min_spacing))
+                            shifted, _ = shift_to_nearest_start(simplified, ref_point=current_ref_pt)
+                            if 'st' in globals() and 'enable_fillet' in st.session_state and st.session_state.get('enable_fillet', False):
+                                r_val = float(st.session_state.get('fillet_r', 20.0))
+                                shifted_closed = np.vstack([ensure_open_ring(shifted), ensure_open_ring(shifted)[0]])
+                                rounded = _apply_fillet_to_path(shifted_closed, r_mm=r_val, spacing_mm=min_spacing)
+                                shifted, _ = shift_to_nearest_start(rounded, ref_point=current_ref_pt)
+                            simplified = trim_closed_ring_tail(shifted, trim_dist)
+                            simplified = simplify_segment(simplified, float(min_spacing))
                 if len(simplified) < 2:
                     continue
 
@@ -2953,6 +3070,24 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     st.session_state["enable_inward_offset"] = bool(enable_inward_offset)
     skip_invalid_offset = st.checkbox("역오프셋/소멸 구간은 출력하지 않고 종료", value=bool(st.session_state.get("skip_invalid_offset", True)))
     st.session_state["skip_invalid_offset"] = bool(skip_invalid_offset)
+    enable_solid_infill = st.checkbox(
+        "연속 면 채움 (직선+지그재그)",
+        value=bool(st.session_state.get("enable_solid_infill", False)),
+        help="한쪽 변을 직선으로 이동한 뒤 노즐 직경 간격으로 지그재그 채움을 수행해 동일 XY 위치에서 다음 레이어로 올라갑니다.",
+        key="ui_enable_solid_infill",
+    )
+    st.session_state["enable_solid_infill"] = bool(enable_solid_infill)
+    _infill_dir_opts = ["X축 왕복", "Y축 왕복"]
+    _infill_dir_map = {"X축 왕복": "X", "Y축 왕복": "Y"}
+    _cur_dir_lbl = "Y축 왕복" if st.session_state.get("solid_infill_dir", "X") == "Y" else "X축 왕복"
+    _sel_dir_lbl = st.selectbox(
+        "지그재그 채움 방향",
+        options=_infill_dir_opts,
+        index=_infill_dir_opts.index(_cur_dir_lbl),
+        disabled=(not enable_solid_infill),
+        key="ui_solid_infill_dir",
+    )
+    st.session_state["solid_infill_dir"] = _infill_dir_map[_sel_dir_lbl]
 
 # [수정] 기존 UI에 있던 auto_start 체크박스 삭제 완료
 m30_on = st.sidebar.checkbox("M30 추가", value=False)
