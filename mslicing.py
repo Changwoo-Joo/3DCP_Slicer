@@ -1001,6 +1001,22 @@ def _trace_boundary_shortest(ring, p_from: np.ndarray, p_to: np.ndarray) -> List
     return pts
 
 
+def _trace_boundary_full_loop(ring, p_start: np.ndarray, step_mm: float = 10.0) -> List[np.ndarray]:
+    """실제 폴리곤 외곽선(ring)을 p_start부터 한 바퀴(360도) 완전히 돌아 복귀하는 점 리스트 반환."""
+    from shapely.geometry import Point
+    L = float(ring.length)
+    if L <= 1e-6:
+        return [np.asarray(p_start, dtype=float)]
+    d0 = float(ring.project(Point(float(p_start[0]), float(p_start[1]))))
+    n_steps = max(16, int(np.ceil(L / max(min(step_mm, 15.0), 5.0))))
+    pts = []
+    for k in range(n_steps + 1):
+        dk = (d0 + L * (k / n_steps)) % L
+        pt = ring.interpolate(dk)
+        pts.append(np.array([pt.x, pt.y], dtype=float))
+    return pts
+
+
 def _build_alternating_xy_infill_path(
     seg3d_closed: np.ndarray,
     step_mm: float = 30.0,
@@ -1110,7 +1126,6 @@ def _build_alternating_xy_infill_path(
         zz_pts = list(y_pts)
         next_start = x_pts[0]
 
-    # 현재 층 끝점에서 다음 층 시작점까지 도형 내부를 가로지르지 않고 실제 외곽선(원호/변)을 따라 연결
     arc = _trace_boundary_shortest(poly.exterior, zz_pts[-1], next_start)
     if arc:
         zz_pts.extend(arc)
@@ -1124,8 +1139,9 @@ def _build_continuous_infill_path(
     step_mm: float = 30.0,
     direction: str = "X",
     line_count: int = 0,
+    layer_idx: int = 0,
 ) -> np.ndarray:
-    """실제 도형 외곽선을 따라 이동한 뒤, 노즐 직경(step_mm)만큼 떨어진 내부 영역을 지그재그로 채워 시작점으로 복귀."""
+    """실제 도형 외곽선(원형/사각형 등)을 360도 완전히 둘러싼 뒤, 노즐 직경(step_mm)만큼 안쪽 영역을 지그재그로 채움."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1162,7 +1178,6 @@ def _build_continuous_infill_path(
                 segs.extend(_extract_segs(g))
         return segs
 
-    # 지그재그 영역은 실제 외곽선에서 노즐 직경(step)만큼 안쪽으로 오프셋 (원형/사각형 모두 외곽선과 정확히 step 간격 유지)
     try:
         zz_poly = poly.buffer(-step)
         if zz_poly.is_empty or zz_poly.area <= 1e-6:
@@ -1181,8 +1196,6 @@ def _build_continuous_infill_path(
                 n_lines = int(line_count)
             else:
                 n_lines = max(2, int(round((x_hi - x_lo) / step)) + 1)
-                if n_lines % 2 == 1:
-                    n_lines += 1
             xs = np.linspace(x_hi, x_lo, n_lines)
         for idx, x in enumerate(xs):
             line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
@@ -1205,8 +1218,6 @@ def _build_continuous_infill_path(
                 n_lines = int(line_count)
             else:
                 n_lines = max(2, int(round((y_hi - y_lo) / step)) + 1)
-                if n_lines % 2 == 1:
-                    n_lines += 1
             ys = np.linspace(y_hi, y_lo, n_lines)
         for idx, y in enumerate(ys):
             line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
@@ -1224,18 +1235,16 @@ def _build_continuous_infill_path(
     if len(zz_pts) < 2:
         return pts
 
-    # 실제 외곽선(원형이면 원호, 사각형이면 직선 변)을 따라 시작점 -> 지그재그 진입점 연결 후 내부 지그재그 채움
+    if layer_idx % 2 == 1:
+        zz_pts = list(reversed(zz_pts))
+
     from shapely.geometry import Point
     ring = poly.exterior
-    p_start_ext = ring.interpolate(ring.project(Point(float(zz_pts[-1][0]), float(zz_pts[-1][1]))))
     p_entry_ext = ring.interpolate(ring.project(Point(float(zz_pts[0][0]), float(zz_pts[0][1]))))
-    start_pt = np.array([p_start_ext.x, p_start_ext.y], dtype=float)
     entry_pt = np.array([p_entry_ext.x, p_entry_ext.y], dtype=float)
 
-    spine_pts = [start_pt] + _trace_boundary_shortest(ring, start_pt, entry_pt)
-    path_xy = spine_pts + zz_pts
-    if np.linalg.norm(path_xy[-1] - start_pt) > 1e-3:
-        path_xy.append(start_pt)
+    outer_loop = _trace_boundary_full_loop(ring, entry_pt, step_mm=step)
+    path_xy = outer_loop + zz_pts
 
     arr_xy = np.asarray(path_xy, dtype=float)
     out = np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
@@ -2056,7 +2065,7 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=zidx, line_count=_infill_lines)
                             else:
-                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines)
+                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=zidx)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
@@ -2390,7 +2399,7 @@ def compute_slice_paths_with_travel(
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=z_idx, line_count=_infill_lines)
                             else:
-                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines)
+                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=z_idx)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
@@ -3252,7 +3261,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
 
 with st.sidebar.expander("바닥면 채움 옵션 (연속 면 채움)", expanded=False):
     enable_solid_infill = st.checkbox(
-        "바닥면 채움 활성화 (직선+지그재그 / 교차)",
+        "바닥면 채움 활성화 (외곽선+지그재그 / 교차)",
         value=bool(st.session_state.get("enable_solid_infill", False)),
         help="노즐 직경(미입력 시 트림 거리) 간격 또는 지정 줄 수로 내부를 연속 채움하며 끝단 트림 거리를 적용해 다음 레이어로 올라갑니다.",
         key="ui_enable_solid_infill",
