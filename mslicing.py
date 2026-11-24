@@ -973,6 +973,104 @@ def _offset_inward_closed_path(seg3d_closed: np.ndarray, offset_dist: float) -> 
 
 
 
+def _build_alternating_xy_infill_path(
+    seg3d_closed: np.ndarray,
+    step_mm: float = 30.0,
+    layer_idx: int = 0,
+) -> np.ndarray:
+    """X/Y 교차 지그재그: 짝수층은 (xmin,ymin)->(xmax,ymax) X축 왕복, 홀수층은 (xmax,ymax)->(xmin,ymin) Y축 왕복으로 역방향 없이 90도 회전하며 자연스럽게 적층."""
+    pts = np.asarray(seg3d_closed, dtype=float)
+    if pts.ndim != 2 or pts.shape[0] < 3:
+        return pts
+    z_val = float(pts[0, 2]) if pts.shape[1] >= 3 else 0.0
+    xy = pts[:, :2]
+    if np.linalg.norm(xy[0] - xy[-1]) > 1e-9:
+        xy = np.vstack([xy, xy[0]])
+    try:
+        poly = Polygon(xy)
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+    except Exception:
+        return pts
+    if poly.is_empty or poly.area <= 1e-6:
+        return pts
+    if isinstance(poly, MultiPolygon):
+        poly = max(poly.geoms, key=lambda g: g.area)
+
+    step = max(float(step_mm), 1.0)
+    xmin, ymin, xmax, ymax = poly.bounds
+    eps = min(0.5, step * 0.05)
+
+    def _extract_segs(geom):
+        segs = []
+        if geom.is_empty:
+            return segs
+        gtype = geom.geom_type
+        if gtype == "LineString":
+            c = np.asarray(geom.coords, dtype=float)
+            if len(c) >= 2:
+                segs.append((c[0], c[-1]))
+        elif gtype in ("MultiLineString", "GeometryCollection"):
+            for g in geom.geoms:
+                segs.extend(_extract_segs(g))
+        return segs
+
+    zz_pts = []
+    if layer_idx % 2 == 0:
+        # 짝수층: (xmin, ymin)에서 +X로 시작 -> +Y로 이동하며 X축 왕복 -> (xmax, ymax)에서 +X로 종료 (홀수 줄 수)
+        y_lo = ymin + eps
+        y_hi = ymax - eps
+        if y_hi <= y_lo:
+            ys = [0.5 * (ymin + ymax)]
+        else:
+            span = y_hi - y_lo
+            n_lines = max(3, int(round(span / step)) + 1)
+            if n_lines % 2 == 0:
+                n_lines += 1
+            ys = np.linspace(y_lo, y_hi, n_lines)
+        for idx, y in enumerate(ys):
+            line = LineString([(xmin - 10.0, y), (xmax + 10.0, y)])
+            segs = _extract_segs(poly.intersection(line))
+            if not segs:
+                continue
+            reverse = (idx % 2 == 1)
+            segs.sort(key=lambda s: min(s[0][0], s[1][0]), reverse=reverse)
+            for p0, p1 in segs:
+                if (p0[0] > p1[0]) != reverse:
+                    p0, p1 = p1, p0
+                zz_pts.append(p0)
+                zz_pts.append(p1)
+    else:
+        # 홀수층: (xmax, ymax)에서 90도 꺾어 -Y로 시작 -> -X로 이동하며 Y축 왕복 -> (xmin, ymin)에서 -Y로 종료 (홀수 줄 수)
+        x_lo = xmin + eps
+        x_hi = xmax - eps
+        if x_hi <= x_lo:
+            xs = [0.5 * (xmin + xmax)]
+        else:
+            span = x_hi - x_lo
+            n_lines = max(3, int(round(span / step)) + 1)
+            if n_lines % 2 == 0:
+                n_lines += 1
+            xs = np.linspace(x_hi, x_lo, n_lines)
+        for idx, x in enumerate(xs):
+            line = LineString([(x, ymin - 10.0), (x, ymax + 10.0)])
+            segs = _extract_segs(poly.intersection(line))
+            if not segs:
+                continue
+            reverse = (idx % 2 == 0)  # idx=0: T->B (-Y), idx=1: B->T (+Y), ..., last: T->B (-Y)
+            segs.sort(key=lambda s: min(s[0][1], s[1][1]), reverse=reverse)
+            for p0, p1 in segs:
+                if (p0[1] > p1[1]) != reverse:
+                    p0, p1 = p1, p0
+                zz_pts.append(p0)
+                zz_pts.append(p1)
+
+    if len(zz_pts) < 2:
+        return pts
+    arr_xy = np.asarray(zz_pts, dtype=float)
+    return np.column_stack([arr_xy[:, 0], arr_xy[:, 1], np.full(len(arr_xy), z_val, dtype=float)])
+
+
 def _build_continuous_infill_path(
     seg3d_closed: np.ndarray,
     step_mm: float = 30.0,
@@ -1923,10 +2021,9 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                                 _infill_step = float(trim_dist) if float(trim_dist) > 0.0 else 30.0
                             _infill_dir_cfg = str(st.session_state.get('solid_infill_dir', 'X'))
                             if _infill_dir_cfg == 'XY':
-                                _infill_dir = 'X' if (zidx % 2 == 0) else 'Y'
+                                infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=zidx)
                             else:
-                                _infill_dir = _infill_dir_cfg
-                            infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
@@ -2257,10 +2354,9 @@ def compute_slice_paths_with_travel(
                                 _infill_step = float(trim_dist) if float(trim_dist) > 0.0 else 30.0
                             _infill_dir_cfg = str(st.session_state.get('solid_infill_dir', 'X'))
                             if _infill_dir_cfg == 'XY':
-                                _infill_dir = 'X' if (z_idx % 2 == 0) else 'Y'
+                                infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=z_idx)
                             else:
-                                _infill_dir = _infill_dir_cfg
-                            infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir)
+                                infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg)
                             infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
@@ -3122,7 +3218,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
     enable_solid_infill = st.checkbox(
         "연속 면 채움 (직선+지그재그)",
         value=bool(st.session_state.get("enable_solid_infill", False)),
-        help="한쪽 변을 직선으로 이동한 뒤 노즐 직경(미입력 시 트림 거리) 간격으로 지그재그 채움을 수행해 동일 XY 위치에서 다음 레이어로 올라갑니다.",
+        help="노즐 직경(미입력 시 트림 거리) 간격으로 내부를 연속 지그재그 채움하며 끝단 트림 거리를 적용해 다음 레이어로 올라갑니다.",
         key="ui_enable_solid_infill",
     )
     st.session_state["enable_solid_infill"] = bool(enable_solid_infill)
@@ -3135,7 +3231,7 @@ with st.sidebar.expander("노즐 직경/오프셋 옵션", expanded=False):
         options=_infill_dir_opts,
         index=_infill_dir_opts.index(_cur_dir_lbl),
         disabled=(not enable_solid_infill),
-        help="X/Y 교차 선택 시 1층 X축 왕복, 2층 Y축 왕복으로 레이어마다 교차 채움합니다.",
+        help="X/Y 교차 선택 시 1층 X축 왕복 종료 지점에서 90도 꺾어 2층 Y축 왕복으로 역방향 없이 자연스럽게 교차 적층합니다.",
         key="ui_solid_infill_dir",
     )
     st.session_state["solid_infill_dir"] = _infill_dir_map[_sel_dir_lbl]
