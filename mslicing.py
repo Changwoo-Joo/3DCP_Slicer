@@ -1159,7 +1159,7 @@ def _build_continuous_infill_path(
 ) -> np.ndarray:
     """짝수층: 외곽선(시작점 전 노즐직경 트리밍) -> 내부 지그재그.
     홀수층: 직전층 내부 끝점에서 수직 상승 -> 내부 지그재그(역순) -> 외곽선.
-    대각선 층간 이동선 없이 모든 층이 충돌 없이 수직 상승으로 이어짐."""
+    제자리 수직 상승 후 역방향 진행하므로 끝단 추가 트리밍 없이 정확히 맞물림."""
     pts = np.asarray(seg3d_closed, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 3:
         return pts
@@ -1260,10 +1260,8 @@ def _build_continuous_infill_path(
     outer_loop = _trace_boundary_full_loop(ring, entry_pt, step_mm=step, trim_end_mm=step)
 
     if layer_idx % 2 == 0:
-        # 짝수층: 외곽선 -> 내부 지그재그
         path_xy = outer_loop + zz_pts
     else:
-        # 홀수층: 직전층 끝점(내부)에서 수직 상승 -> 내부 지그재그 역순 -> 외곽선 역순
         path_xy = list(reversed(zz_pts)) + list(reversed(outer_loop))
 
     arr_xy = np.asarray(path_xy, dtype=float)
@@ -2084,9 +2082,9 @@ def generate_gcode(mesh, z_int=30.0, feed=2000, ref_pt_user=(0.0, 0.0),
                             _infill_lines = int(st.session_state.get('solid_infill_line_count', 0))
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=zidx, line_count=_infill_lines)
+                                infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             else:
                                 infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=zidx)
-                            infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
                             simplified = simplify_segment(closed_mid, float(min_spacing))
@@ -2418,9 +2416,9 @@ def compute_slice_paths_with_travel(
                             _infill_lines = int(st.session_state.get('solid_infill_line_count', 0))
                             if _infill_dir_cfg == 'XY':
                                 infill_path = _build_alternating_xy_infill_path(closed_mid, step_mm=_infill_step, layer_idx=z_idx, line_count=_infill_lines)
+                                infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             else:
                                 infill_path = _build_continuous_infill_path(closed_mid, step_mm=_infill_step, direction=_infill_dir_cfg, line_count=_infill_lines, layer_idx=z_idx)
-                            infill_path = trim_open_line_tail(infill_path, float(trim_dist))
                             simplified = simplify_segment(infill_path, float(min_spacing))
                         else:
                             simplified = simplify_segment(closed_mid, float(min_spacing))
@@ -3283,7 +3281,7 @@ with st.sidebar.expander("바닥면 채움 옵션 (연속 면 채움)", expanded
     enable_solid_infill = st.checkbox(
         "바닥면 채움 활성화 (외곽선+지그재그 / 교차)",
         value=bool(st.session_state.get("enable_solid_infill", False)),
-        help="노즐 직경(미입력 시 트림 거리) 간격 또는 지정 줄 수로 내부를 연속 채움하며 끝단 트림 거리를 적용해 다음 레이어로 올라갑니다.",
+        help="노즐 직경(미입력 시 트림 거리) 간격 또는 지정 줄 수로 내부를 연속 채움합니다.",
         key="ui_enable_solid_infill",
     )
     st.session_state["enable_solid_infill"] = bool(enable_solid_infill)
