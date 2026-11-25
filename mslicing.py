@@ -7,8 +7,6 @@ import trimesh
 from shapely.geometry import Polygon, MultiPolygon, LineString
 from shapely.ops import linemerge
 import tempfile
-import io
-import zipfile
 import plotly.graph_objects as go
 from typing import List, Tuple, Optional, Dict, Any
 from datetime import date, datetime
@@ -1478,25 +1476,6 @@ def _apply_rotation_about_centroid(mesh: trimesh.Trimesh, rz_deg: float = 0.0, r
     Ry = trimesh.transformations.rotation_matrix(np.deg2rad(float(ry_deg)), [0, 1, 0])
     M = T2 @ (Rz @ Rx @ Ry) @ T1
     m.apply_transform(M)
-    return m
-
-
-def _apply_object_transform(mesh: trimesh.Trimesh, tf: Optional[Dict[str, float]] = None, scale_to_mm: float = 1.0) -> trimesh.Trimesh:
-    m = mesh.copy()
-    if scale_to_mm != 1.0:
-        m.apply_scale(scale_to_mm)
-    if not tf:
-        return m
-    dx = float(tf.get("dx", 0.0))
-    dy = float(tf.get("dy", 0.0))
-    dz = float(tf.get("dz", 0.0))
-    rx = float(tf.get("rx", 0.0))
-    ry = float(tf.get("ry", 0.0))
-    rz = float(tf.get("rz", 0.0))
-    if abs(dx) > 1e-12 or abs(dy) > 1e-12 or abs(dz) > 1e-12:
-        m = _apply_translation_to_mesh(m, dx=dx, dy=dy, dz=dz)
-    if abs(rx) > 1e-12 or abs(ry) > 1e-12 or abs(rz) > 1e-12:
-        m = _apply_rotation_about_centroid(m, rz_deg=rz, rx_deg=rx, ry_deg=ry)
     return m
 
 
@@ -3050,8 +3029,6 @@ if uploaded is not None:
         st.session_state["stl_cur_dim_x"] = 0.0
         st.session_state["stl_cur_dim_y"] = 0.0
         st.session_state["stl_cur_dim_z"] = 0.0
-        st.session_state["stl_object_transforms"] = {}
-        st.session_state["obj_edit_idx"] = 0
     elif "raw_stl_bytes" not in st.session_state:
         st.session_state["raw_stl_bytes"] = uploaded.read()
 
@@ -3190,26 +3167,55 @@ with st.sidebar.expander("STL 치수(X, Y, Z 크기) 수정", expanded=False):
         st.sidebar.success("STL 치수(크기)를 적용했습니다.")
         st.rerun()
 
-with st.sidebar.expander("STL 위치/회전 보정", expanded=False):
-    move_x = st.number_input("이동 X(mm)", value=float(st.session_state.get("stl_move_x", 0.0)), step=10.0, format="%.3f")
-    move_y = st.number_input("이동 Y(mm)", value=float(st.session_state.get("stl_move_y", 0.0)), step=10.0, format="%.3f")
-    move_z = st.number_input("이동 Z(mm)", value=float(st.session_state.get("stl_move_z", 0.0)), step=10.0, format="%.3f")
+def _stl_auto_positive_position():
+    current = st.session_state.get("mesh")
+    if current is None or len(current.vertices) == 0:
+        st.session_state["stl_auto_message"] = "먼저 STL을 업로드하고 회전을 적용하세요."
+        return
+    bounds = np.asarray(current.bounds, dtype=float)
+    if not np.isfinite(bounds).all():
+        st.session_state["stl_auto_message"] = "유효한 모델 좌표가 없습니다."
+        return
+    delta = -bounds[0]
+    for axis, amount in zip("xyz", delta):
+        old = float(st.session_state.get("stl_move_" + axis, 0.0)) if st.session_state.get("stl_apply_move", False) else 0.0
+        total = old + float(amount)
+        if abs(total) < 1e-10:
+            total = 0.0
+        st.session_state["stl_move_" + axis] = total
+        st.session_state["ui_stl_move_" + axis] = total
+    st.session_state["stl_apply_move"] = True
+    st.session_state["main_view"] = "STL 미리보기"
+    st.session_state["stl_auto_message"] = "자동이동 적용: X/Y/Z 최소좌표를 각각 0으로 정렬했습니다."
+
+
+with st.sidebar.expander("STL 위치/회전 보정 · 자동이동 · STL 저장", expanded=True):
+    for axis in "xyz":
+        if "ui_stl_move_" + axis not in st.session_state:
+            st.session_state["ui_stl_move_" + axis] = float(st.session_state.get("stl_move_" + axis, 0.0))
+    move_x = st.number_input("이동 X(mm)", step=10.0, format="%.6f", key="ui_stl_move_x")
+    move_y = st.number_input("이동 Y(mm)", step=10.0, format="%.6f", key="ui_stl_move_y")
+    move_z = st.number_input("이동 Z(mm)", step=10.0, format="%.6f", key="ui_stl_move_z")
     if st.button("이동 적용", use_container_width=True, key="apply_stl_move"):
-        st.session_state["stl_move_x"] = float(move_x)
-        st.session_state["stl_move_y"] = float(move_y)
-        st.session_state["stl_move_z"] = float(move_z)
+        for axis, value in zip("xyz", (move_x, move_y, move_z)):
+            st.session_state["stl_move_" + axis] = float(value)
         st.session_state["stl_apply_move"] = True
-        st.sidebar.success("STL 이동 좌표를 적용했습니다.")
+        st.session_state["main_view"] = "STL 미리보기"
 
     rot_x = st.number_input("회전 Rx(deg)", value=float(st.session_state.get("stl_rot_x", 0.0)), step=1.0, format="%.3f")
     rot_y = st.number_input("회전 Ry(deg)", value=float(st.session_state.get("stl_rot_y", 0.0)), step=1.0, format="%.3f")
     rot_z = st.number_input("회전 Rz(deg)", value=float(st.session_state.get("stl_rot_z", 0.0)), step=1.0, format="%.3f")
     if st.button("회전 적용", use_container_width=True, key="apply_stl_rot"):
-        st.session_state["stl_rot_x"] = float(rot_x)
-        st.session_state["stl_rot_y"] = float(rot_y)
-        st.session_state["stl_rot_z"] = float(rot_z)
+        for axis, value in zip("xyz", (rot_x, rot_y, rot_z)):
+            st.session_state["stl_rot_" + axis] = float(value)
         st.session_state["stl_apply_rot"] = True
-        st.sidebar.success("중심점 기준 STL 회전을 적용했습니다.")
+        st.session_state["main_view"] = "STL 미리보기"
+    st.button("자동이동 (X/Y/Z 최소좌표 → 0)", on_click=_stl_auto_positive_position,
+              use_container_width=True, key="auto_positive_stl", disabled=(uploaded is None))
+    st.caption("회전 적용 후 자동이동을 누르세요. 이동 X/Y/Z에는 원래 위치 기준 총 이동량이 표시됩니다. 모델 좌표는 0 이상으로 정렬되지만 이동량 자체는 음수일 수 있습니다.")
+    if st.session_state.get("stl_auto_message"):
+        st.info(st.session_state.pop("stl_auto_message"))
+    stl_save_slot = st.container()
 
 
 # =========================
@@ -3344,34 +3350,24 @@ if uploaded is not None:
     is_new_upload = (st.session_state.get("last_uploaded_name") != getattr(uploaded, "name", None))
     discrete_objects = st.session_state.get("stl_discrete_objects", [])
     selected_idx = int(st.session_state.get("selected_mesh_idx", 0))
-    obj_transforms = st.session_state.get("stl_object_transforms", {})
-
-    if not discrete_objects:
+    if len(discrete_objects) > 1:
+        if selected_idx == 0:
+            mesh = trimesh.util.concatenate(discrete_objects)
+        elif selected_idx - 1 < len(discrete_objects):
+            mesh = discrete_objects[selected_idx - 1].copy()
+        else:
+            mesh = discrete_objects[0].copy()
+    elif len(discrete_objects) == 1:
+        mesh = discrete_objects[0].copy()
+    else:
         st.error("유효한 메시 형상을 찾을 수 없습니다.")
         st.stop()
-
-    raw_ref_mesh = trimesh.util.concatenate(discrete_objects) if len(discrete_objects) > 1 else discrete_objects[0]
-    raw_extents = np.asarray(raw_ref_mesh.extents, dtype=float)
-    raw_max_extent = float(np.max(raw_extents)) if raw_extents.size else 0.0
-    scale_to_mm = 1000.0 if (0.0 < raw_max_extent <= 20.0) else 1.0
-    st.session_state["stl_scale_to_mm"] = scale_to_mm
-
-    transformed_objects = [
-        _apply_object_transform(obj, obj_transforms.get(i), scale_to_mm=scale_to_mm)
-        for i, obj in enumerate(discrete_objects)
-    ]
-    st.session_state["stl_transformed_objects"] = transformed_objects
-
-    if len(transformed_objects) > 1:
-        if selected_idx == 0:
-            mesh = trimesh.util.concatenate(transformed_objects)
-        elif selected_idx - 1 < len(transformed_objects):
-            mesh = transformed_objects[selected_idx - 1].copy()
-        else:
-            mesh = transformed_objects[0].copy()
-    else:
-        mesh = transformed_objects[0].copy()
     extents = np.asarray(mesh.extents, dtype=float)
+    max_extent = float(np.max(extents)) if extents.size else 0.0
+    scale_to_mm = 1000.0 if (0.0 < max_extent <= 20.0) else 1.0
+    if scale_to_mm != 1.0:
+        mesh.apply_scale(scale_to_mm)
+        extents = np.asarray(mesh.extents, dtype=float)
 
     if is_new_upload or st.session_state.get("stl_cur_dim_x", 0.0) == 0.0:
         st.session_state["stl_cur_dim_x"] = float(extents[0]) if len(extents) > 0 else 0.0
@@ -3459,6 +3455,14 @@ if uploaded is not None:
 
     st.session_state.mesh = mesh
 
+    with stl_save_slot:
+        st.download_button(
+            "현재 선택 객체 STL 저장",
+            data=trimesh.exchange.stl.export_stl(mesh),
+            file_name=f"{Path(getattr(uploaded, 'name', 'model.stl')).stem}_object{int(st.session_state.get('selected_mesh_idx', 0))}_transformed.stl",
+            mime="model/stl", use_container_width=True, key="download_transformed_selected_stl")
+        st.caption("상단 STL 객체 선택에서 개별 객체를 선택하면 그 객체만 저장합니다. 전체 객체 선택 시 통합 STL을 저장합니다.")
+
 
 
     with st.sidebar.expander("STL 폭/두께 강제 조절 (2.5D)", expanded=False):
@@ -3481,111 +3485,6 @@ if uploaded is not None:
                 mime="model/stl",
                 use_container_width=True
             )
-
-    with st.sidebar.expander("객체별 위치/회전 변환 및 개별 STL 저장", expanded=False):
-        t_objs = st.session_state.get("stl_transformed_objects", [])
-        if len(t_objs) == 0:
-            st.info("업로드된 STL 객체가 없습니다.")
-        else:
-            obj_labels = [
-                f"객체 {i+1} (면: {len(obj.faces)}개, W:{obj.extents[0]:.1f} H:{obj.extents[1]:.1f} Z:{obj.extents[2]:.1f})"
-                for i, obj in enumerate(t_objs)
-            ]
-            cur_edit_idx = int(st.session_state.get("obj_edit_idx", 0))
-            if cur_edit_idx >= len(obj_labels):
-                cur_edit_idx = 0
-
-            edit_label = st.selectbox(
-                "변환할 객체 선택",
-                options=obj_labels,
-                index=cur_edit_idx,
-                key="ui_obj_edit_select",
-            )
-            edit_idx = obj_labels.index(edit_label)
-            st.session_state["obj_edit_idx"] = edit_idx
-
-            cur_tf = st.session_state.get("stl_object_transforms", {}).get(
-                edit_idx, {"dx": 0.0, "dy": 0.0, "dz": 0.0, "rx": 0.0, "ry": 0.0, "rz": 0.0}
-            )
-
-            c_mx, c_my, c_mz = st.columns(3)
-            o_dx = c_mx.number_input("이동 X", value=float(cur_tf.get("dx", 0.0)), step=10.0, format="%.2f", key=f"obj_dx_{edit_idx}")
-            o_dy = c_my.number_input("이동 Y", value=float(cur_tf.get("dy", 0.0)), step=10.0, format="%.2f", key=f"obj_dy_{edit_idx}")
-            o_dz = c_mz.number_input("이동 Z", value=float(cur_tf.get("dz", 0.0)), step=10.0, format="%.2f", key=f"obj_dz_{edit_idx}")
-
-            c_rx, c_ry, c_rz = st.columns(3)
-            o_rx = c_rx.number_input("회전 Rx", value=float(cur_tf.get("rx", 0.0)), step=5.0, format="%.2f", key=f"obj_rx_{edit_idx}")
-            o_ry = c_ry.number_input("회전 Ry", value=float(cur_tf.get("ry", 0.0)), step=5.0, format="%.2f", key=f"obj_ry_{edit_idx}")
-            o_rz = c_rz.number_input("회전 Rz", value=float(cur_tf.get("rz", 0.0)), step=5.0, format="%.2f", key=f"obj_rz_{edit_idx}")
-
-            b_apply, b_reset = st.columns(2)
-            if b_apply.button("선택 객체 적용", use_container_width=True, key="btn_apply_obj_tf"):
-                tfs = dict(st.session_state.get("stl_object_transforms", {}))
-                tfs[edit_idx] = {
-                    "dx": float(o_dx), "dy": float(o_dy), "dz": float(o_dz),
-                    "rx": float(o_rx), "ry": float(o_ry), "rz": float(o_rz),
-                }
-                st.session_state["stl_object_transforms"] = tfs
-                st.session_state.main_view = "STL 미리보기"
-                st.rerun()
-
-            if b_reset.button("선택 객체 초기화", use_container_width=True, key="btn_reset_obj_tf"):
-                tfs = dict(st.session_state.get("stl_object_transforms", {}))
-                tfs.pop(edit_idx, None)
-                st.session_state["stl_object_transforms"] = tfs
-                st.session_state.main_view = "STL 미리보기"
-                st.rerun()
-
-            if st.button("전체 객체 변환 초기화", use_container_width=True, key="btn_reset_all_obj_tf"):
-                st.session_state["stl_object_transforms"] = {}
-                st.session_state.main_view = "STL 미리보기"
-                st.rerun()
-
-            base_stl_name = Path(getattr(uploaded, "name", "model.stl")).stem or "model"
-            sel_stl_bytes = trimesh.exchange.stl.export_stl(t_objs[edit_idx])
-            st.download_button(
-                label=f"객체 {edit_idx+1} STL 저장",
-                data=sel_stl_bytes,
-                file_name=f"{base_stl_name}_obj{edit_idx+1}.stl",
-                mime="model/stl",
-                use_container_width=True,
-                key=f"dl_single_obj_stl_{edit_idx}",
-            )
-
-            st.markdown("---")
-            export_sel_labels = st.multiselect(
-                "개별 저장할 객체 선택",
-                options=obj_labels,
-                default=obj_labels,
-                key="ui_obj_export_multiselect",
-            )
-            export_indices = [obj_labels.index(lbl) for lbl in export_sel_labels]
-
-            if export_indices:
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for idx in export_indices:
-                        obj_bytes = trimesh.exchange.stl.export_stl(t_objs[idx])
-                        zf.writestr(f"{base_stl_name}_obj{idx+1}.stl", obj_bytes)
-                st.download_button(
-                    label=f"선택 {len(export_indices)}개 객체 각각 STL로 일괄 저장 (ZIP)",
-                    data=zip_buf.getvalue(),
-                    file_name=f"{base_stl_name}_objects_stl.zip",
-                    mime="application/zip",
-                    use_container_width=True,
-                    key="dl_multi_obj_stl_zip",
-                )
-
-                for idx in export_indices:
-                    obj_bytes = trimesh.exchange.stl.export_stl(t_objs[idx])
-                    st.download_button(
-                        label=f"개별 다운로드: 객체 {idx+1} (.stl)",
-                        data=obj_bytes,
-                        file_name=f"{base_stl_name}_obj{idx+1}.stl",
-                        mime="model/stl",
-                        use_container_width=True,
-                        key=f"dl_each_obj_stl_{idx}",
-                    )
 
 
     if uploaded is not None and hasattr(uploaded, "name"):
